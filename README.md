@@ -24,6 +24,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Area | Status |
 | --- | --- |
 | Connections (PG / MySQL / SQLite), passwords in OS keychain | Done |
+| TLS modes + CA/client cert paths (PG / MySQL); config schema v2 | Done (M1-8) |
 | Schema / table / view sidebar | Done |
 | Virtualized grid, typed cells, bounded result window | Done |
 | Run SQL, cancel, streaming + load-more | Done |

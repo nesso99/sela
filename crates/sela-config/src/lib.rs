@@ -11,6 +11,8 @@ mod tabs;
 pub use secrets::{
     CachingSecrets, KeyringStore, MemorySecretStore, PasswordPersistence, SecretStore,
 };
-pub use sela_core::{Engine, PersistedTab, PersistedTabs, SavedConnection, TabKind};
-pub use store::{config_dir, ConfigError, ConfigStore};
+pub use sela_core::{
+    Engine, PersistedTab, PersistedTabs, SavedConnection, TabKind, TlsMode, TlsSettings,
+};
+pub use store::{config_dir, ConfigError, ConfigStore, SCHEMA_VERSION};
 pub use tabs::TabStore;

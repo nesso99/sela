@@ -18,13 +18,16 @@ fn map_sqlx_error(err: &SqlxError) -> DbError {
             vendor_code: None,
         },
         SqlxError::Database(db) => classify_database(db.as_ref()),
-        SqlxError::Io(_) | SqlxError::Tls(_) | SqlxError::Protocol(_) | SqlxError::PoolClosed => {
-            DbError::Connection {
-                message,
-                sqlstate: None,
-                vendor_code: None,
-            }
-        }
+        SqlxError::Tls(_) => DbError::Tls {
+            message,
+            sqlstate: None,
+            vendor_code: None,
+        },
+        SqlxError::Io(_) | SqlxError::Protocol(_) | SqlxError::PoolClosed => DbError::Connection {
+            message,
+            sqlstate: None,
+            vendor_code: None,
+        },
         SqlxError::PoolTimedOut => DbError::Timeout {
             message,
             sqlstate: None,
@@ -219,6 +222,20 @@ mod tests {
             "refused",
         )));
         assert!(matches!(err, DbError::Connection { .. }));
+    }
+
+    #[test]
+    fn tls_handshake_is_tls_not_auth() {
+        let err = map_sqlx_error(&SqlxError::Tls(
+            "certificate verify failed: hostname mismatch".into(),
+        ));
+        match &err {
+            DbError::Tls { message, .. } => {
+                assert!(message.contains("hostname") || message.contains("certificate"));
+            }
+            other => panic!("expected Tls, got {other:?}"),
+        }
+        assert!(!matches!(err, DbError::Auth { .. }));
     }
 
     #[test]

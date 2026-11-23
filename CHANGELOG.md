@@ -10,6 +10,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 
 ### Added
 
+- Per-connection TLS for PostgreSQL and MySQL: modes `disable` / `prefer` / `require` / `verify-ca` / `verify-full`, optional CA and client certificate paths, `DbError::Tls` for handshake/cert failures, and `connections.json` `schema_version` 2 (PR #15). Legacy v1 `ssl: true` maps in memory to `require` (no migration rewriter). Client keys must be unencrypted PEM for now. CI job `db-tls-postgres` exercises require, verify-ca, verify-full hostname mismatch, and hostssl-only disable.
 - Cargo workspace with `sela-core`, `sela-drivers`, `sela-config`, and `sela-app` (binary `sela`) (#2).
 - Drivers for PostgreSQL, MySQL, and SQLite via sqlx; typed `Value` decode for NUMERIC, UUID, JSON, timestamptz, and related types (#3, #5).
 - Saved connections with passwords in the OS keychain (`keyring`); never written to `connections.json`.

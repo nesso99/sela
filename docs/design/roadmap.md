@@ -35,7 +35,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | 6 | M1-4 | Editor (highlight, statement-at-cursor, multi-statement) | US-08 minus autocomplete | Backlog |
 | 7 | M1-5 | History | US-10 | Backlog |
 | 8 | M1-7 | Selection, copy, themes | US-14 + light/dark | Backlog |
-| 9 | M1-8 | TLS + config v2 | TLS modes; `schema_version` → 2 with **no migration code** (no users yet) | Backlog |
+| 9 | M1-8 | TLS + config v2 | TLS modes; `schema_version` → 2 with **no migration code**; Postgres TLS CI | In review (PR #15) |
 | 10 | M1-9 | Postgres text-cast fallback | Own dedicated PR | Backlog |
 
 ### M1-2a details

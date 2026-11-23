@@ -191,3 +191,60 @@ jobs:
 
       - name: cargo test (drivers with Postgres and MySQL)
         run: cargo test -p sela-drivers -- --nocapture
+
+  # Postgres with SSL: throwaway certs generated in the job (never committed).
+  db-tls-postgres:
+    name: db-tls-postgres
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux GPUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libsqlite3-dev libssl-dev \
+            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
+            libasound2-dev fonts-dejavu-core openssl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Generate TLS certs and start Postgres 16 with SSL
+        run: |
+          set -euo pipefail
+          CERT_DIR="${RUNNER_TEMP}/sela-pg-tls"
+          mkdir -p "$CERT_DIR"
+          ./scripts/gen-pg-tls-certs.sh "$CERT_DIR"
+          # postgres image runs as uid 999
+          sudo chown 999:999 "$CERT_DIR/server.key" "$CERT_DIR/server.crt" \
+            "$CERT_DIR/ca.crt" "$CERT_DIR/pg_hba.conf"
+          sudo chmod 600 "$CERT_DIR/server.key"
+          docker run -d --name sela-pg-tls \
+            -e POSTGRES_USER=sela \
+            -e POSTGRES_PASSWORD=sela \
+            -e POSTGRES_DB=sample \
+            -p 5433:5432 \
+            -v "$CERT_DIR:/certs:ro" \
+            postgres:16 \
+            -c ssl=on \
+            -c ssl_cert_file=/certs/server.crt \
+            -c ssl_key_file=/certs/server.key \
+            -c hba_file=/certs/pg_hba.conf
+          for i in $(seq 1 60); do
+            if docker exec sela-pg-tls pg_isready -U sela -d sample; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec sela-pg-tls pg_isready -U sela -d sample
+          echo "SELA_PG_TLS_URL=postgres://sela:sela@127.0.0.1:5433/sample" >> "$GITHUB_ENV"
+          echo "SELA_PG_TLS_CA=$CERT_DIR/ca.crt" >> "$GITHUB_ENV"
+
+      - name: cargo test (Postgres TLS)
+        run: cargo test -p sela-drivers postgres_tls -- --nocapture

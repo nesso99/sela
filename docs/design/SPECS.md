@@ -145,6 +145,7 @@ See [benchmarks.md](../dev/benchmarks.md).
 ```rust
 pub enum DbError {
     Connection { message, sqlstate, vendor_code },
+    Tls { message, sqlstate, vendor_code },
     Auth { message, sqlstate, vendor_code },
     Query { message, sqlstate, vendor_code },
     Timeout { message, sqlstate, vendor_code },
@@ -156,10 +157,11 @@ pub enum DbError {
 ```
 
 - Drivers map vendor / sqlx failures and preserve SQLSTATE / MySQL errno when available.
+- `sqlx::Error::Tls` (handshake / cert verification) maps to [`DbError::Tls`], distinct from [`Auth`].
 - UI shows `Display` text; never log passwords or connection strings that embed passwords.
 - Errors must not silently become NULL, empty success, or a wrong success path (see [CONTRIBUTING.md](../../CONTRIBUTING.md) checklist).
 
-Future variants considered earlier (Tls, Ssh, Syntax { position }, Constraint, Permission) can be added as needs arise without collapsing classification.
+Future variants considered earlier (Ssh, Syntax { position }, Constraint, Permission) can be added as needs arise without collapsing classification.
 
 ---
 
@@ -193,46 +195,50 @@ Paths:
 
 `SELA_CONFIG_DIR` overrides the directory. File mode `0600` on Unix. Atomic write (temp + rename).
 
-Keychain: service `app.sela.database` via `keyring`. Fallback: keep password in process memory and tell the user on the status bar (`MemorySecretStore` / `CachingSecrets`).
+Keychain: service `app.sela.database` via `keyring`. Account = connection id for the DB password. Fallback: keep the password in process memory and tell the user on the status bar (`MemorySecretStore` / `CachingSecrets`). Passwords never enter `connections.json`.
 
-### Config schema v2 (M1-8)
+### Config schema v2 (M1-8) — done
 
-Bump `schema_version` to **2**. **No migration code** — there are no users yet; old shapes can be dropped. See [ADR 0006](../adr/0006-no-migrations-before-release.md).
+`schema_version` is **2**. **No migration code** — a v1 file still loads; the next save writes v2. See [ADR 0006](../adr/0006-no-migrations-before-release.md). When `tls` is absent, the legacy boolean `ssl` is read in memory only: `ssl: true` → `require`, `ssl: false` / missing → `disable` (the previous checkbox default). The boolean is never rewritten; the next save emits `tls` (or omits it when still default).
 
-Target shape (illustrative):
+TLS fields on each connection (Postgres / MySQL only; SQLite ignores them in the UI and on connect):
+
+| Field | Values / notes |
+| --- | --- |
+| `tls.mode` | `disable` (default) / `prefer` / `require` / `verify-ca` / `verify-full` |
+| `tls.ca_path` | Optional CA PEM path (required for verify-ca / verify-full) |
+| `tls.client_cert_path` / `tls.client_key_path` | Optional; both set or both empty. Paths only; keys must be unencrypted PEM today |
+
+Mapped to sqlx: Postgres `PgSslMode::{Disable,Prefer,Require,VerifyCa,VerifyFull}`; MySQL `MySqlSslMode::{Disabled,Preferred,Required,VerifyCa,VerifyIdentity}`.
+
+Current on-disk shape (fields beyond TLS land in later milestones):
 
 ```json
 {
   "schema_version": 2,
-  "groups": [{ "id": "g1", "name": "Work" }],
   "connections": [{
     "id": "uuid",
     "name": "prod-orders",
     "engine": "postgres",
-    "group": "g1",
-    "color": "red",
-    "tag": "production",
-    "safe_mode": "confirm_writes",
     "host": "10.0.0.5",
     "port": 5432,
     "username": "app",
     "database": "orders",
-    "tls": { "mode": "verify-full", "ca_path": "~/certs/ca.pem" },
-    "ssh": {
-      "host": "bastion.example.com",
-      "port": 22,
-      "user": "ops",
-      "auth": "agent",
-      "key_path": null
-    },
-    "password_policy": "keychain"
+    "tls": {
+      "mode": "verify-full",
+      "ca_path": "/path/to/ca.pem",
+      "client_cert_path": "/path/to/client.crt",
+      "client_key_path": "/path/to/client.key"
+    }
   }]
 }
 ```
 
+Postgres TLS is covered in CI (`db-tls-postgres`): throwaway certs generated in the job; `require` and `verify-ca` succeed; `verify-full` against `127.0.0.1` with a `localhost`-only SAN fails as `DbError::Tls`; `hostssl`-only `disable` fails as a non-Tls connection error. MySQL live TLS and passphrase-protected client keys remain follow-ups.
+
 History / saved queries: `history.sqlite` with FTS5 (M1-5), default cap ~10 000 entries; optional disable for production connections.
 
-Env for integration tests: `SELA_POSTGRES_URL`, `SELA_MYSQL_URL` (optional schema overrides `SELA_POSTGRES_SCHEMA`, `SELA_MYSQL_SCHEMA`).
+Env for integration tests: `SELA_POSTGRES_URL`, `SELA_MYSQL_URL` (optional schema overrides `SELA_POSTGRES_SCHEMA`, `SELA_MYSQL_SCHEMA`). TLS suite: `SELA_PG_TLS_URL`, `SELA_PG_TLS_CA` (see [building-and-testing.md](../dev/building-and-testing.md)).
 
 ---
 
@@ -328,7 +334,7 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 | M1-4 Editor | Highlight, multi-statement | Backlog |
 | M1-5 History | `history.sqlite` FTS | Backlog |
 | M1-7 Selection / copy / themes | Grid selection model | Backlog |
-| M1-8 TLS + config v2 | No migration; schema_version 2 | Backlog |
+| M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done |
 | M1-9 PG text-cast fallback | Own PR | Backlog |
 
 ---
