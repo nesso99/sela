@@ -20,25 +20,30 @@ pub fn column_meta(column: &impl sqlx::Column) -> ColumnMeta {
 }
 
 pub fn read_postgres_cell(row: &PgRow, index: usize) -> Value {
-    let type_name = type_name(row, index);
-    if let Some(early) = early_value(probe_null(row, index), &type_name) {
-        return early;
-    }
-    match type_name.as_str() {
-        "BOOL" => get_bool(row, index).unwrap_or_else(|| other(&type_name, row, index)),
+    let strategy = row
+        .columns()
+        .get(index)
+        .map(|column| crate::pg_decode::strategy_for_type_info(column.type_info()))
+        .unwrap_or(crate::pg_decode::PgDecodeStrategy::Fallback);
+    crate::pg_decode::read_postgres_cell_with_strategy(row, index, strategy)
+}
+
+/// Typed decode for built-in scalars already mapped to [`Value`] variants.
+/// Extended Postgres types (arrays, inet, enums, …) are handled by [`crate::pg_decode`].
+pub(crate) fn read_postgres_native(row: &PgRow, index: usize, type_name: &str) -> Value {
+    match type_name {
+        "BOOL" => get_bool(row, index).unwrap_or_else(|| other(type_name, row, index)),
         "INT2" | "INT4" | "INT8" | "OID" => {
-            get_int(row, index).unwrap_or_else(|| other(&type_name, row, index))
+            get_int(row, index).unwrap_or_else(|| other(type_name, row, index))
         }
         "FLOAT4" | "FLOAT8" => {
-            get_float(row, index).unwrap_or_else(|| other(&type_name, row, index))
+            get_float(row, index).unwrap_or_else(|| other(type_name, row, index))
         }
-        "NUMERIC" | "MONEY" => {
-            get_decimal(row, index).unwrap_or_else(|| other(&type_name, row, index))
-        }
+        "NUMERIC" => get_decimal(row, index).unwrap_or_else(|| other(type_name, row, index)),
         "TEXT" | "VARCHAR" | "NAME" | "XML" | "CITEXT" | "CHAR" | "BPCHAR" | "\"CHAR\"" => {
-            get_text(row, index).unwrap_or_else(|| other(&type_name, row, index))
+            get_text(row, index).unwrap_or_else(|| other(type_name, row, index))
         }
-        "BYTEA" => get_bytes(row, index).unwrap_or_else(|| other(&type_name, row, index)),
+        "BYTEA" => get_bytes(row, index).unwrap_or_else(|| other(type_name, row, index)),
         "UUID" => {
             if let Ok(value) = row.try_get::<Uuid, _>(index) {
                 Value::Uuid(value)
@@ -47,20 +52,20 @@ pub fn read_postgres_cell(row: &PgRow, index: usize) -> Value {
                     .map(Value::Uuid)
                     .unwrap_or_else(|_| Value::text(text))
             } else {
-                other(&type_name, row, index)
+                other(type_name, row, index)
             }
         }
-        "JSON" | "JSONB" => get_json(row, index).unwrap_or_else(|| other(&type_name, row, index)),
-        "DATE" => get_date(row, index).unwrap_or_else(|| other(&type_name, row, index)),
-        "TIME" => get_time(row, index).unwrap_or_else(|| other(&type_name, row, index)),
-        "TIMESTAMP" => get_timestamp(row, index).unwrap_or_else(|| other(&type_name, row, index)),
+        "JSON" | "JSONB" => get_json(row, index).unwrap_or_else(|| other(type_name, row, index)),
+        "DATE" => get_date(row, index).unwrap_or_else(|| other(type_name, row, index)),
+        "TIME" => get_time(row, index).unwrap_or_else(|| other(type_name, row, index)),
+        "TIMESTAMP" => get_timestamp(row, index).unwrap_or_else(|| other(type_name, row, index)),
         "TIMESTAMPTZ" => {
             if let Ok(value) = row.try_get::<DateTime<FixedOffset>, _>(index) {
                 Value::TimestampTz(value)
             } else if let Ok(value) = row.try_get::<DateTime<Utc>, _>(index) {
                 Value::TimestampTz(utc_to_fixed(value))
             } else {
-                other(&type_name, row, index)
+                other(type_name, row, index)
             }
         }
         "INTERVAL" => match row.try_get::<sqlx::postgres::types::PgInterval, _>(index) {
@@ -69,9 +74,9 @@ pub fn read_postgres_cell(row: &PgRow, index: usize) -> Value {
                 days: value.days,
                 microseconds: value.microseconds,
             }),
-            Err(_) => other(&type_name, row, index),
+            Err(_) => other(type_name, row, index),
         },
-        _ => other(&type_name, row, index),
+        _ => other(type_name, row, index),
     }
 }
 
@@ -197,14 +202,14 @@ pub fn read_sqlite_cell(row: &SqliteRow, index: usize) -> Value {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NullProbe {
+pub(crate) enum NullProbe {
     Null,
     Present,
     /// `try_get_raw` failed — must not be treated as SQL NULL.
     Error,
 }
 
-fn probe_null<R>(row: &R, index: usize) -> NullProbe
+pub(crate) fn probe_null<R>(row: &R, index: usize) -> NullProbe
 where
     R: Row,
     usize: ColumnIndex<R>,
@@ -222,7 +227,7 @@ where
 }
 
 /// Map a null probe to an early-return value. `None` means decode the typed cell.
-fn early_value(probe: NullProbe, type_name: &str) -> Option<Value> {
+pub(crate) fn early_value(probe: NullProbe, type_name: &str) -> Option<Value> {
     match probe {
         NullProbe::Null => Some(Value::Null),
         NullProbe::Error => Some(Value::decode_error(type_name)),
@@ -230,7 +235,7 @@ fn early_value(probe: NullProbe, type_name: &str) -> Option<Value> {
     }
 }
 
-fn type_name<R>(row: &R, index: usize) -> String
+pub(crate) fn type_name<R>(row: &R, index: usize) -> String
 where
     R: Row,
 {
@@ -240,7 +245,7 @@ where
         .unwrap_or_else(|| "VALUE".into())
 }
 
-fn other<R>(type_name: &str, row: &R, index: usize) -> Value
+pub(crate) fn other<R>(type_name: &str, row: &R, index: usize) -> Value
 where
     R: Row,
     usize: ColumnIndex<R>,

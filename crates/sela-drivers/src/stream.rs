@@ -18,12 +18,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use sqlx::Executor;
+use sqlx::{Executor, Row as _};
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{ColumnMeta, DbError, StreamBatch, StreamOutcome, Value};
 
-use crate::decode::{column_meta, read_mysql_cell, read_postgres_cell, read_sqlite_cell};
+use crate::decode::{column_meta, read_mysql_cell, read_sqlite_cell};
+use crate::pg_decode::{
+    read_postgres_cell_with_strategy, strategies_from_columns, PgDecodeStrategy,
+};
 
 pub(crate) async fn stream_postgres(
     pool: &sqlx::PgPool,
@@ -57,6 +60,8 @@ pub(crate) async fn stream_postgres(
 
     let sink_meta = sink.clone();
     let mut columns = Vec::new();
+    // Cache one decode strategy per column for the lifetime of this result.
+    let mut strategies: Option<Vec<PgDecodeStrategy>> = None;
     let result = {
         let mut stream = sqlx::query(sql).fetch(&mut *conn);
         drain_stream::<sqlx::Postgres, _, _>(
@@ -68,7 +73,14 @@ pub(crate) async fn stream_postgres(
             cancel.clone(),
             sink,
             started,
-            read_postgres_cell,
+            |row, index| {
+                let plan = strategies.get_or_insert_with(|| strategies_from_columns(row.columns()));
+                let strategy = plan
+                    .get(index)
+                    .copied()
+                    .unwrap_or(PgDecodeStrategy::Fallback);
+                read_postgres_cell_with_strategy(row, index, strategy)
+            },
         )
         .await
     };
@@ -252,12 +264,12 @@ async fn drain_stream<DB, S, F>(
     cancel: CancellationToken,
     sink: async_channel::Sender<StreamBatch>,
     started: Instant,
-    read_cell: F,
+    mut read_cell: F,
 ) -> Result<StreamOutcome, DbError>
 where
     DB: sqlx::Database,
     S: StreamExt<Item = Result<DB::Row, sqlx::Error>> + Unpin,
-    F: Fn(&DB::Row, usize) -> Value,
+    F: FnMut(&DB::Row, usize) -> Value,
     DB::Row: sqlx::Row,
 {
     use sqlx::Row as _;

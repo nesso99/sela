@@ -10,8 +10,11 @@ publish.workspace = true
 [dependencies]
 async-channel = { workspace = true }
 async-trait = { workspace = true }
+bit-vec = "0.6"
 chrono = { workspace = true }
 futures-util = { workspace = true }
+ipnetwork = "0.20"
+mac_address = "1"
 rust_decimal = { workspace = true }
 sela-core = { workspace = true }
 serde_json = { workspace = true }
