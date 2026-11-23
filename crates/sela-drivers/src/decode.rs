@@ -150,7 +150,10 @@ pub fn read_sqlite_cell(row: &SqliteRow, index: usize) -> Value {
         "REAL" | "FLOAT" | "DOUBLE" => {
             get_float(row, index).unwrap_or_else(|| other(&type_name, row, index))
         }
-        "TEXT" | "NUMERIC" => {
+        // TEXT affinity (TEXT/CHAR/CLOB/VARCHAR…): always Text so leading zeros stay exact.
+        "TEXT" => get_text(row, index).unwrap_or_else(|| other(&type_name, row, index)),
+        // NUMERIC affinity may store integer, real, or text; probe richer types first.
+        "NUMERIC" => {
             if let Some(value) = get_int(row, index) {
                 value
             } else if let Some(value) = get_float(row, index) {
@@ -174,6 +177,7 @@ pub fn read_sqlite_cell(row: &SqliteRow, index: usize) -> Value {
             })
             .or_else(|| get_text(row, index))
             .unwrap_or_else(|| other(&type_name, row, index)),
+        // Undeclared / unknown declared types: probe storage classes dynamically.
         _ => {
             if let Some(value) = get_int(row, index) {
                 value

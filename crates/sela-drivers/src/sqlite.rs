@@ -339,4 +339,45 @@ mod tests {
         assert_eq!(row[3].display(), "hello");
         assert_eq!(row[8].display(), "NULL");
     }
+
+    #[tokio::test]
+    async fn text_affinity_keeps_leading_zeros() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SqliteSession::open(&dir.path().join("text_affinity.sqlite"), true)
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE codes (
+                    id INTEGER PRIMARY KEY,
+                    padded TEXT,
+                    zip CHAR(5),
+                    note VARCHAR(32)
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO codes (id, padded, zip, note) VALUES (1, '007', '02134', 'ok')")
+            .await
+            .unwrap();
+
+        let outcome = run_user_sql(
+            &session,
+            "SELECT padded, zip, note FROM codes WHERE id = 1",
+            10,
+            0,
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = outcome else {
+            panic!("rows");
+        };
+        let row = &rows.page.rows[0];
+        assert_eq!(row[0], Value::Text("007".into()));
+        assert_eq!(row[1], Value::Text("02134".into()));
+        assert_eq!(row[2], Value::Text("ok".into()));
+        assert_eq!(row[0].display(), "007");
+        assert_eq!(row[1].display(), "02134");
+    }
 }

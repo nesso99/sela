@@ -27,7 +27,10 @@ impl MysqlSession {
                 MySqlSslMode::Required
             } else {
                 MySqlSslMode::Disabled
-            });
+            })
+            // TIMESTAMP has no offset on the wire; sqlx's DateTime<Utc> decode assumes the
+            // session time_zone is UTC. Pin +00:00 so TIMESTAMP -> TimestampTz stays consistent.
+            .timezone(Some("+00:00".into()));
         let pool = MySqlPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
@@ -39,10 +42,15 @@ impl MysqlSession {
 
     #[cfg(test)]
     pub async fn connect_url(url: &str) -> Result<Self, DbError> {
+        let options: MySqlConnectOptions = url
+            .parse()
+            .map_err(|err| DbError::config(format!("invalid MySQL URL: {err}")))?;
+        // Same pin as connect(): TIMESTAMP -> TimestampTz requires session UTC.
+        let options = options.timezone(Some("+00:00".into()));
         let pool = MySqlPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
-            .connect(url)
+            .connect_with(options)
             .await
             .map_err(crate::sqlx_err)?;
         Ok(Self { pool })
@@ -271,23 +279,11 @@ mod tests {
                 NaiveDateTime::parse_from_str("2024-01-02 03:04:05", "%Y-%m-%d %H:%M:%S").unwrap()
             )
         );
-        match &row[14] {
-            Value::TimestampTz(value) => {
-                let expected = FixedOffset::east_opt(0)
-                    .unwrap()
-                    .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
-                    .unwrap();
-                assert_eq!(*value, expected);
-            }
-            Value::Timestamp(value) => {
-                assert_eq!(
-                    *value,
-                    NaiveDateTime::parse_from_str("2024-01-02 03:04:05", "%Y-%m-%d %H:%M:%S")
-                        .unwrap()
-                );
-            }
-            other => panic!("unexpected timestamp value: {other:?}"),
-        }
+        let expected_tz = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+            .unwrap();
+        assert_eq!(row[14], Value::TimestampTz(expected_tz));
         assert!(row[15].is_null());
         assert_eq!(row[10].display(), "{\"a\":1}");
 
