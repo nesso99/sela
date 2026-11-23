@@ -107,7 +107,7 @@ macro_rules! query_page {
         let described = sqlx::Executor::describe(pool, sql)
             .await
             .map_err($crate::sqlx_err)?;
-        let mut columns: Vec<$crate::ColumnMeta> = described
+        let mut columns: Vec<::sela_core::ColumnMeta> = described
             .columns()
             .iter()
             .map($crate::column_meta)
@@ -130,7 +130,7 @@ macro_rules! query_page {
             }
             rows.push(cells);
         }
-        Ok($crate::QueryPage {
+        Ok(::sela_core::QueryPage {
             columns,
             rows,
             duration: std::time::Duration::ZERO,

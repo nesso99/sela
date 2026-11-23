@@ -31,7 +31,7 @@ pub async fn run_user_sql(
     offset: u64,
 ) -> Result<StatementOutcome, DbError> {
     let started = Instant::now();
-    let sql = sql::normalize_sql(sql).map_err(|err| DbError::message(err.to_string()))?;
+    let sql = sql::normalize_sql(sql).map_err(|err| DbError::query(err.to_string()))?;
     match sql::classify(&sql) {
         StatementKind::Execute => {
             let rows_affected = session.execute(&sql).await?;
@@ -84,7 +84,7 @@ pub async fn preview_table(
     offset: u64,
 ) -> Result<StatementOutcome, DbError> {
     let sql = sql::select_all(session.dialect(), schema, table)
-        .map_err(|err| DbError::message(err.to_string()))?;
+        .map_err(|err| DbError::query(err.to_string()))?;
     run_user_sql(session, &sql, limit, offset).await
 }
 
