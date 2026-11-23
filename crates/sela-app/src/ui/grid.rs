@@ -5,11 +5,11 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, App, IntoElement, SharedString, Window};
 
-use sela_core::{Cell, ColumnMeta, QueryPage};
+use sela_core::{ColumnMeta, QueryPage, Value};
 
 pub struct GridDelegate {
     pub columns: Vec<ColumnMeta>,
-    pub rows: Vec<Vec<Cell>>,
+    pub rows: Vec<Vec<Value>>,
     pub loading: bool,
     pub empty_message: SharedString,
 }
@@ -72,7 +72,7 @@ impl TableDelegate for GridDelegate {
             .get(row_ix)
             .and_then(|row| row.get(col_ix))
             .cloned()
-            .unwrap_or(Cell::Null);
+            .unwrap_or(Value::Null);
         let null = cell.is_null();
         let color = if null {
             cx.theme().muted_foreground
@@ -89,7 +89,7 @@ impl TableDelegate for GridDelegate {
             .text_color(color)
             .font_family(cx.theme().mono_font_family.clone())
             .when(null, |cell| cell.italic())
-            .child(cell.display().to_string())
+            .child(cell.display().into_owned())
     }
 
     fn loading(&self, _: &App) -> bool {
@@ -112,8 +112,7 @@ impl TableDelegate for GridDelegate {
         self.rows
             .get(row_ix)
             .and_then(|row| row.get(col_ix))
-            .map(Cell::display)
-            .unwrap_or("NULL")
-            .to_string()
+            .map(|cell| cell.display().into_owned())
+            .unwrap_or_else(|| "NULL".into())
     }
 }

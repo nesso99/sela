@@ -27,7 +27,10 @@ impl MysqlSession {
                 MySqlSslMode::Required
             } else {
                 MySqlSslMode::Disabled
-            });
+            })
+            // TIMESTAMP has no offset on the wire; sqlx's DateTime<Utc> decode assumes the
+            // session time_zone is UTC. Pin +00:00 so TIMESTAMP -> TimestampTz stays consistent.
+            .timezone(Some("+00:00".into()));
         let pool = MySqlPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
@@ -39,10 +42,15 @@ impl MysqlSession {
 
     #[cfg(test)]
     pub async fn connect_url(url: &str) -> Result<Self, DbError> {
+        let options: MySqlConnectOptions = url
+            .parse()
+            .map_err(|err| DbError::config(format!("invalid MySQL URL: {err}")))?;
+        // Same pin as connect(): TIMESTAMP -> TimestampTz requires session UTC.
+        let options = options.timezone(Some("+00:00".into()));
         let pool = MySqlPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
-            .connect(url)
+            .connect_with(options)
             .await
             .map_err(crate::sqlx_err)?;
         Ok(Self { pool })
@@ -99,7 +107,7 @@ impl DatabaseSession for MysqlSession {
     }
 
     async fn query(&self, sql: &str) -> Result<QueryPage, DbError> {
-        crate::query_page!(&self.pool, sql)
+        crate::query_page!(&self.pool, sql, crate::read_mysql_cell)
     }
 
     async fn execute(&self, sql: &str) -> Result<u64, DbError> {
@@ -114,7 +122,10 @@ impl DatabaseSession for MysqlSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sela_core::{run_user_sql, StatementOutcome};
+    use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
+    use rust_decimal::Decimal;
+    use sela_core::{run_user_sql, StatementOutcome, Value};
+    use std::str::FromStr;
 
     #[tokio::test]
     async fn mysql_round_trip_when_configured() {
@@ -164,5 +175,118 @@ mod tests {
         assert!(rows.page.rows[1][0].is_null());
         assert_eq!(rows.total_rows, Some(2));
         session.execute("DROP TABLE sela_probe").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_typed_value_round_trip_when_configured() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql typed values: set SELA_MYSQL_URL to run this test");
+            return;
+        };
+        let session = MysqlSession::connect_url(&url)
+            .await
+            .expect("mysql connect");
+        session
+            .execute("DROP TABLE IF EXISTS sela_types")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_types (
+                    flag TINYINT(1),
+                    bit_flag BIT(1),
+                    small SMALLINT,
+                    mid INT,
+                    big BIGINT,
+                    big_u BIGINT UNSIGNED,
+                    real_num DOUBLE,
+                    amount DECIMAL(12,4),
+                    label VARCHAR(64),
+                    payload BLOB,
+                    doc JSON,
+                    born DATE,
+                    punched TIME,
+                    seen DATETIME,
+                    seen_ts TIMESTAMP NULL,
+                    missing TEXT
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "INSERT INTO sela_types VALUES (
+                    1,
+                    b'1',
+                    1,
+                    -42,
+                    9223372036854775807,
+                    18446744073709551615,
+                    2.5,
+                    1234.5678,
+                    'hello',
+                    X'6869',
+                    JSON_OBJECT('a', 1),
+                    '2024-01-02',
+                    '03:04:05',
+                    '2024-01-02 03:04:05',
+                    '2024-01-02 03:04:05',
+                    NULL
+                )",
+            )
+            .await
+            .unwrap();
+
+        let outcome = run_user_sql(
+            &session,
+            "SELECT flag, bit_flag, small, mid, big, big_u, real_num, amount, label, payload,
+                    doc, born, punched, seen, seen_ts, missing
+             FROM sela_types",
+            10,
+            0,
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = outcome else {
+            panic!("rows");
+        };
+        let row = &rows.page.rows[0];
+        assert_eq!(row[0], Value::Bool(true));
+        assert_eq!(row[1], Value::Bool(true));
+        assert_eq!(row[2], Value::Int(1));
+        assert_eq!(row[3], Value::Int(-42));
+        assert_eq!(row[4], Value::Int(i64::MAX));
+        assert_eq!(row[5], Value::UInt(u64::MAX));
+        assert_eq!(row[6], Value::Float(2.5));
+        assert_eq!(
+            row[7],
+            Value::Decimal(Decimal::from_str("1234.5678").unwrap())
+        );
+        assert_eq!(row[8], Value::Text("hello".into()));
+        assert_eq!(row[9], Value::Bytes(b"hi".to_vec()));
+        assert_eq!(row[10], Value::Json(serde_json::json!({"a": 1})));
+        assert_eq!(
+            row[11],
+            Value::Date(NaiveDate::from_ymd_opt(2024, 1, 2).unwrap())
+        );
+        assert_eq!(
+            row[12],
+            Value::Time(NaiveTime::from_hms_opt(3, 4, 5).unwrap())
+        );
+        assert_eq!(
+            row[13],
+            Value::Timestamp(
+                NaiveDateTime::parse_from_str("2024-01-02 03:04:05", "%Y-%m-%d %H:%M:%S").unwrap()
+            )
+        );
+        let expected_tz = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+            .unwrap();
+        assert_eq!(row[14], Value::TimestampTz(expected_tz));
+        assert!(row[15].is_null());
+        assert_eq!(row[10].display(), "{\"a\":1}");
+
+        session.execute("DROP TABLE sela_types").await.unwrap();
     }
 }

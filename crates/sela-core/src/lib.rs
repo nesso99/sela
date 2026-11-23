@@ -17,6 +17,6 @@ pub use sql::{
     strip_comments, wrap_count, wrap_page, SqlError, StatementKind,
 };
 pub use types::{
-    Cell, ColumnMeta, Dialect, Engine, ExecOutcome, QueryPage, RelationKind, RowSet, SchemaInfo,
-    StatementOutcome, TableInfo, PAGE_SIZE,
+    ColumnMeta, Dialect, Engine, ExecOutcome, Interval, QueryPage, RelationKind, RowSet,
+    SchemaInfo, StatementOutcome, TableInfo, Value, PAGE_SIZE,
 };
