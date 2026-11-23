@@ -1,5 +1,7 @@
 # Sela
 
+[![CI](https://github.com/nesso99/sela/actions/workflows/ci.yml/badge.svg)](https://github.com/nesso99/sela/actions/workflows/ci.yml)
+
 Sela is a native desktop database client for PostgreSQL, MySQL, and SQLite. It is an early slice of a TablePlus-style app: save a connection, browse schemas and tables, page through rows, and run SQL.
 
 The window is [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), pinned through [GPUI Kit](https://github.com/longbridge/gpui-kit) **0.10.0**. That release depends on `gpui-pre` **0.3.12** (the published GPUI snapshot GPUI Kit was built against). Tables, inputs, and the sidebar tree come from `gpui-component` in the same release.
@@ -123,7 +125,7 @@ cargo test -p sela-config
 
 SQLite tests use a temporary file and do not need a server. They cover the catalog, NULL versus text, blobs, paging at 100 rows, a trailing line comment, empty result columns, and statement errors.
 
-PostgreSQL and MySQL tests run only when their URL is set. Otherwise they print a skip line and pass.
+PostgreSQL and MySQL tests run only when their URL is set. Otherwise they print a skip line and pass. When the URL is set but the database is unreachable, the test fails.
 
 ```bash
 export SELA_POSTGRES_URL='postgres://sela:sela@127.0.0.1:5432/sample?sslmode=disable'

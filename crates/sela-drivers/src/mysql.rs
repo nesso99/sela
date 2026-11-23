@@ -123,7 +123,7 @@ mod tests {
         let schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
         let session = MysqlSession::connect_url(&url)
             .await
-            .expect("mysql connect");
+            .unwrap_or_else(|err| panic!("SELA_MYSQL_URL is set but MySQL is unreachable: {err}"));
         session
             .execute("DROP TABLE IF EXISTS sela_probe")
             .await

@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux GPUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libsqlite3-dev libssl-dev \
+            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
+            libasound2-dev fonts-dejavu-core
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux GPUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libsqlite3-dev libssl-dev \
+            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
+            libasound2-dev fonts-dejavu-core
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build
+        run: cargo build --workspace
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  db-integration:
+    name: db-integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sela
+          POSTGRES_PASSWORD: sela
+          POSTGRES_DB: sample
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sela -d sample"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: sela
+          MYSQL_USER: sela
+          MYSQL_PASSWORD: sela
+          MYSQL_DATABASE: sample
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -usela -psela"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      SELA_POSTGRES_URL: postgres://sela:sela@127.0.0.1:5432/sample?sslmode=disable
+      SELA_MYSQL_URL: mysql://sela:sela@127.0.0.1:3306/sample?ssl-mode=disabled
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux GPUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libsqlite3-dev libssl-dev \
+            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
+            libasound2-dev fonts-dejavu-core
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test (drivers with Postgres and MySQL)
+        run: cargo test -p sela-drivers -- --nocapture
