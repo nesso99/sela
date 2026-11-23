@@ -20,9 +20,9 @@ Ship two `ThemeConfig` values, light and dark, each containing the override keys
 { "theme": "dark" }
 ```
 
-`theme` is `light` or `dark`. A missing or unreadable file means `dark`, which is what the binary does today. This file is not `connections.json` and it is not config schema v2.
+`theme` is `light`, `dark`, or `system`. A missing or unreadable file means `dark`, which is what the binary does today. This file is not `connections.json` and it is not config schema v2. When `theme` is `system`, startup and later OS appearance changes call `Theme::sync_system_appearance`. When it is `light` or `dark`, call `Theme::change` with that mode and ignore later OS changes.
 
-The status bar grows one `xsmall` ghost button, labeled `Light` or `Dark` for the mode that is on. Click toggles. It sits after the History button from the history spec and before the source label. The bar stays 28px.
+The status bar grows one `xsmall` ghost menu, after the History button and before the source label. The bar stays 28px. The label is the current choice: `Light`, `Dark`, or `System`. The menu items are those three. `System` follows the OS appearance. If a platform build cannot report window appearance, the menu is Light and Dark only. The check is in the implementation notes. Dark is still the default.
 
 Tokens that have no `ThemeColor` field live in a small `SelaPalette` the UI picks from `theme.mode`. They are listed as gaps. Do not overload `danger` or `success` for those roles: in the kit those fields are button fills, and the light fill/foreground pairs fail 4.5:1 (`neutral-50` on green-500 is 2.18:1, on yellow-500 is 1.84:1, on cyan-500 is 2.33:1, on red-500 is 3.61:1).
 
@@ -114,7 +114,7 @@ Basics for the SQL editor. The kit's `highlight.syntax` block is the store (`The
 | syntax.comment | `#525252` | `#9D9D9D` | editor | 7.81 / 7.30 | `syntax.comment` and `syntax.comment.doc` |
 | editor.line_number | `#525252` | `#8F8F8F` | editor | 7.81 / 6.12 | `editor.line_number` |
 
-Light comment and light line number are overrides. The kit comment `#007FFF` is 3.83:1 on white. The kit line number `#929292` is 3.11:1. Dark values in this table are the kit's and already clear 4.5:1.
+Light comment and light line number are overrides. The kit comment `#007FFF` is 3.83:1 on white. The kit line number `#929292` is 3.11:1. Comments stay `#525252` (7.81:1), the same gray as muted text. Dark values in this table are the kit's and already clear 4.5:1.
 
 Keyword, string, number, comment, and plain are the set M1-7 has to get right. Identifier text uses syntax.plain. A fuller highlight theme can land with the editor work. It must not put a new color under 4.5:1 on bg.editor.
 
@@ -256,24 +256,29 @@ Gaps, with no `ThemeColor` field in gpui-component 0.10.0:
 
 | Action | Shortcut | Bound today |
 | --- | --- | --- |
-| Toggle light and dark | Click the status button | no |
+| Choose Light, Dark, or System | The status menu | no |
 
-There is no shortcut. `secondary-,` stays reserved for a future settings window. The status button is the M1-7 control.
+There is no shortcut. `secondary-,` stays reserved for a future settings window. The status menu is the M1-7 control.
 
 ## Implementation notes for engineering
 
 - Build the two `ThemeConfig`s from the kit defaults plus [Overrides](#overrides). Put font size, mono size, radius, and the highlight block on both, or a mode switch restores the kit value on the side that omitted it.
 - Apply with `Theme::apply_config` or by replacing `light_theme` / `dark_theme` and then calling `Theme::change`. Do not set `colors` in the same edit that sets `mode`.
-- `ui/mod.rs` stays on dark for the first frame when `settings.json` is missing.
+- `ui/mod.rs` stays on dark for the first frame when `settings.json` is missing or `theme` is `dark`.
+- System is available when the open window can report appearance. In gpui-kit 0.10, `Window::appearance()` returns `WindowAppearance` (`Light`, `Dark`, `VibrantLight`, `VibrantDark`). `ThemeMode` implements `From<WindowAppearance>`: vibrant variants map to Dark and Light. `Theme::sync_system_appearance(Some(window), cx)` reads `window.appearance()`, and uses `cx.window_appearance()` only when no window is passed. The kit comment says to prefer `window.appearance()` on Linux. Call `window.appearance()` once while bringing the window up. If that value is a `WindowAppearance`, show System. If a target build has no appearance API, omit System and ship Light and Dark. Do not add System on a platform where the call is missing.
+- When the setting is `system`, call `Theme::sync_system_appearance` at startup and on an OS appearance change. When it is `light` or `dark`, call `Theme::change` and do not follow later OS changes.
 - `SelaPalette` is a `const` for each mode. Select it from `cx.theme().mode`. Do not encode those colors as extra keys in the theme JSON unless the loader is confirmed to keep unknown keys. The 0.10 schema drops what it does not know.
 - Grid: `DataTable::new(...).stripe(true).bordered(true)` gains the XSmall size. Stripe uses `table_even`. Selection uses `table_active`.
 - NULL stays `muted_foreground` and italic. Decode-error stops sharing that style. The main-window spec already requires the two to look different. This file is the color.
 - The error banner's contrast is part of this milestone. Leaving it on `danger` / `danger_foreground` keeps a 3.61:1 light pair.
 - Check the ratios in [Color](#color) when a token changes. The swatch HTML under `images/theme-swatches.html` is the picture of these hex values. Regenerating the PNG is a documentation step, not a test.
 
-## Open questions
+## Decisions
 
-1. Light and dark only, or a third System value that calls `Theme::sync_system_appearance`? The method exists on `Theme`. M1-7 as specified does not follow the OS.
-2. Dark chrome is `#171717` against a `#0A0A0A` canvas. The sidebar today is `muted` (`#262626`), which is more obvious. Is `#171717` enough of a step?
-3. `font_size` 13 changes every kit control. Is that the density we want, or should the kit stay at 16 and only the grid and the editor go to 12px mono?
-4. Light comments are `#525252`, the same gray as muted text, because the kit's blue comment fails 4.5:1. A blue that clears 4.5:1 (blue-700 `#1D4ED8`, 6.70:1 on white) would keep comments blue. Which one?
+1. The status menu offers Light, Dark, and System when `Window::appearance()` is available. System follows the OS through `Theme::sync_system_appearance`. If that API is missing on a platform, the menu is Light and Dark only. Dark is the default.
+2. Light-theme SQL comments stay `#525252`.
+
+## Still open
+
+1. Dark chrome is `#171717` against a `#0A0A0A` canvas. The sidebar today is `muted` (`#262626`), which is a larger step. Is `#171717` enough?
+2. `font_size` 13 changes every kit control. Should the kit stay at 16, with only the grid and the editor at 12px mono?

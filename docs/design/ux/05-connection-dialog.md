@@ -7,10 +7,11 @@ Shortcut notation is in [README-batch2.md](./README-batch2.md). `secondary` is C
 What the form does today, so the spec does not invent it as new:
 
 - Engine buttons PostgreSQL, MySQL, SQLite. The selected engine is the primary button. The others are ghost.
-- Name, then host, port, user, database, and a `Require SSL` checkbox for network engines. SQLite shows a file path instead, and submit forces `ssl` off and clears the network fields.
+- Name, then host, port, user, database. SQLite shows a file path instead and clears the network fields on submit.
+- M1-8 (#15, on `main`) stores `TlsSettings` and, for network engines, shows SSL mode buttons plus CA, client certificate, and client key path fields. `TlsMode::default` is `disable`. A file with no `tls` object loads as disable. Legacy `ssl: true` with no `tls` object loads as require. SQLite ignores TLS.
 - Password is a masked `Input` with `mask_toggle`, network engines only. It never enters `connections.json`. The keychain service is `app.sela.database`.
 - One primary button, `Save connection`. It writes the keychain, writes JSON, and always reconnects (`save_draft` clears the session and calls `connect_id`).
-- Validation strings from `SavedConnection::validate` and one form-only port message. They are listed again below and stay the wording.
+- `SavedConnection::validate` already checks the client-cert pair and a missing CA for verify-ca / verify-full. Those strings stay. File-not-found checks below are new dialog checks.
 
 ![Postgres connection with TLS set to verify full, after a failed test](images/connection-postgres.png)
 
@@ -92,7 +93,13 @@ Shown for PostgreSQL and MySQL. Hidden for SQLite.
 
 The control is a select, not a row of cards. The menu row is the mode name plus the explanation. The explanation of the selected mode is repeated under the select in `text.muted`, one line.
 
-Default for a new connection is `disable`. That matches `ssl: false` today, and it matches the connecting doc for the docker containers (`Leave Require SSL off`). An existing file that still has `ssl: true` and no `tls` object opens as `require`. `ssl: false` with no `tls` object opens as `disable`.
+A new Postgres or MySQL connection opens with the mode set to `prefer`. That is a dialog default only. `TlsMode`'s serde default stays `disable`, so a saved file with no `tls` value still loads as disable. Legacy `ssl: true` and no `tls` object still loads as `require`, which is what #15 does. Do not change `TlsMode::default` to Prefer. A new SQLite connection has no TLS section.
+
+When the selected mode is Prefer, the line under the explanation is:
+
+> prefer may fall back to unencrypted; use require or verify-full for remote servers
+
+That hint is hidden for the other modes. The docker sample still works on Prefer, because Prefer falls back when the server has no TLS. Remote servers should use Require or Verify full.
 
 | Mode | Explanation | Postgres `PgSslMode` | MySQL `MySqlSslMode` |
 | --- | --- | --- | --- |
@@ -132,13 +139,13 @@ Which fields accept input:
 
 Disabled fields stay visible and keep their text, so switching to Disable and back does not wipe a path. They are not focusable while disabled. Disable does not send the paths to the driver. The paths are still saved, so the next time the user picks Verify CA the fields are filled.
 
-Client certificate and client key are a pair. The mode never requires them. If one field is non-empty, the other must be non-empty too. A client key passphrase is not a field. The key file on disk is what the driver reads.
+Client certificate and client key are a pair. The mode never requires them. If one field is non-empty, the other must be non-empty too. There is no client-key passphrase field. rustls needs an unencrypted PEM. A passphrase-protected key is backlog ([roadmap.md](../roadmap.md)); if it is built later, the passphrase goes to the OS keychain and never into JSON. The key file on disk is what the driver reads.
 
 The driver reads the files at connect time. The file bytes are not copied into `connections.json`.
 
 ### What is stored
 
-M1-8 replaces `ssl: bool` with a `tls` object. [SPECS.md](../SPECS.md) already shows `mode` and `ca_path`. This dialog adds the two client paths. There is no migration code. A file that still has `ssl` and no `tls` is read with the mapping above. Saving writes `tls` and stops writing `ssl`.
+The object is `TlsSettings` as shipped in #15. Field names are `ca_path`, `client_cert_path`, and `client_key_path`. Empty strings are omitted on save (`skip_serializing_if`). A file that still has `ssl` and no `tls` is read with the mapping above. Saving writes `tls` and stops writing `ssl`.
 
 ```json
 "tls": {
@@ -205,11 +212,11 @@ Show one error, the first failure in field order. Keep the existing strings.
 | Port parses as 0 | `Port must be between 1 and 65535.` |
 | Empty user | `User is required.` |
 | Empty database | `Database name is required.` |
-| Verify CA or Verify full with an empty CA | `Choose a CA certificate for this TLS mode.` |
+| Verify CA or Verify full with an empty CA | `CA certificate path is required for verify-ca and verify-full.` |
 | CA path set, or required, and missing or a directory | `CA certificate was not found.` |
 | Client certificate missing or a directory | `Client certificate was not found.` |
 | Client key missing or a directory | `Client key was not found.` |
-| Only one of the client pair is set | `Client certificate and client key are set together.` |
+| Only one of the client pair is set | `Client certificate and client key paths must both be set, or both empty.` |
 
 TLS checks run only when the engine is Postgres or MySQL and the mode is not the reason to skip them. In Disable, skip the file checks. In Prefer and Require, check a path only when it is non-empty, and check the client pair when either side is non-empty. The `~` expansion applies before the existence check.
 
@@ -233,20 +240,24 @@ Focus order is the field order above, then Cancel, Test, Save, Save & connect. T
 ## Implementation notes for engineering
 
 - Widen `open_dialog` from `px(460.)` to `px(560.)`. Keep `window.open_dialog`. Pin the button row and let the field list scroll.
-- Replace the `Require SSL` checkbox with the TLS select. Delete the checkbox rather than leaving both.
-- Map modes with the table in the TLS section. Today's code is the two-branch form: `ssl == true` becomes `PgSslMode::Require` / `MySqlSslMode::Required`, and false becomes `Disable` / `Disabled`. After M1-8 that branch is gone.
+- #15 already replaced the Require SSL checkbox with mode buttons and path fields. Keep that data path. This dialog turns the mode buttons into the select described above, adds Browse, Test, Save, and the Prefer hint. A new network connection sets the select to Prefer in the form. Leave `TlsMode::default` as Disable.
+- Map modes with the table in the TLS section. Postgres uses `PgSslMode`. MySQL verify-full uses `MySqlSslMode::VerifyIdentity`.
 - Postgres setters on `PgConnectOptions` are `ssl_mode`, `ssl_root_cert`, `ssl_client_cert`, and `ssl_client_key`. MySQL setters on `MySqlConnectOptions` are `ssl_mode`, `ssl_ca`, `ssl_client_cert`, and `ssl_client_key`. Confirm those names against sqlx 0.8 before wiring them. Pass paths only when the mode uses them. Expand `~` in the driver, and also before the dialog's existence check.
 - `connect` is the function Test and Save & connect both use, so SQLite keeps `create_if_missing: false` and the 12 second timeout. Test should call it and drop the `DatabaseSession`. It should not assign `Workspace.session`.
 - Save is a new path next to `save_draft`. It writes secrets and `store.save` and does not set `session = None` and does not call `connect_id`. Save & connect keeps the current `save_draft` sequence.
 - A failed keychain read must not take the empty-secret branch of `CachingSecrets::set`. That branch deletes the item. Thread a "password was loaded" flag through the draft.
 - The memory-only warning has to be visible. Today it is stored on `TabView.note`, and the status bar renders `view.status` only. Put that sentence in the status text.
-- `client_cert_path` and `client_key_path` are not in the illustrative JSON in SPECS yet. SPECS should gain them when M1-8 is implemented. This spec is the field list until then.
+- Field names are `ca_path`, `client_cert_path`, and `client_key_path` on `TlsSettings` (#15).
 - The history checkbox writes `record_history`. It does not open the history panel.
+- Do not add a client-key passphrase control. rustls needs an unencrypted PEM. The follow-up is on the M1 backlog in [roadmap.md](../roadmap.md).
 
-## Open questions
+## Decisions
 
-1. Is `disable` the right default for a new network connection? libpq and sqlx default to prefer. `disable` matches the app today and the docker instructions. Prefer would make a first connection to a TLS-only host succeed, and it would also hide a misconfigured server.
-2. Should Save exist, or is Save & connect the only write, as TablePlus-style Connect is? Save is specified so editing a host does not drop the live session.
-3. sqlx reads a client key file and has no passphrase field in this dialog. Do we need a key passphrase for M1-8, or is an unencrypted key file enough until SSH (M3)?
-4. Verify full checks the Host field. Do we want a separate "certificate hostname" override when the host is an IP, or is that a later setting?
-5. SPECS shows `ca_path` only. Confirm `client_cert_path` and `client_key_path` as the JSON names before M1-8 writes files.
+1. New Postgres and MySQL connections default the mode select to Prefer. Saved configs with no `tls` value keep loading as disable. `TlsMode::default` stays Disable. The Prefer hint is the sentence in the TLS section.
+2. The dialog keeps both Save and Save & connect. Save does not reconnect. Save & connect does.
+3. No client-key passphrase in this dialog. It is backlog. The key file is an unencrypted PEM.
+4. The JSON names are `ca_path`, `client_cert_path`, and `client_key_path`.
+
+## Still open
+
+Verify full checks the Host field. A separate certificate-hostname override, for when Host is an IP, is not in this dialog.

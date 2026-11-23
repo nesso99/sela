@@ -17,7 +17,7 @@ The sidebar stays the schema tree. A history row has to show a SQL preview at th
 | Panel closed | 0 | No leftover bar |
 | Panel open | 196px default | Min 96. Max 50% of the content column |
 | Splitter | 5px hit area, drawn as a 1px line | Drag the top edge. Double-click resets to 196 |
-| Header | 28px | Title, scope, outcome, search, Clear |
+| Header | 28px | Title, scope, outcome, search, Clear history |
 | Row | 26px | Same height as the dense grid row in [06-theme-tokens.md](./06-theme-tokens.md) |
 | Error detail | 22px | Only when the selected row failed |
 
@@ -99,9 +99,9 @@ Switching tabs retargets `This connection` to the new tab's connection. `All` do
 
 The choice lasts for the session. It is not written to `connections.json`.
 
-Recording can be turned off per connection. The switch is `Record query history` on the connection dialog ([05-connection-dialog.md](./05-connection-dialog.md)), default on. While it is off, editor runs on that connection do not insert rows. Rows already stored stay until the user deletes or clears them. The panel says so when the scope is that connection: `History is off for {name}.` A `Turn on` button on that empty state flips the flag and saves the connection record. It does not open a session.
+Recording is on by default. The only off switch is `Record query history` on the connection dialog ([05-connection-dialog.md](./05-connection-dialog.md)). It is not tied to a production tag. While it is off, editor runs on that connection do not insert rows. Rows already stored stay until the user deletes them or uses Clear history. The panel says so when the scope is that connection: `History is off for {name}.` A `Turn on` button on that empty state flips the flag and saves the connection record. It does not open a session.
 
-There is no production tag on a connection yet (M2-5). Until that exists, off is a manual choice. The flag is `record_history` on `SavedConnection`, `#[serde(default = "default_true")]`. It is not inside the TLS object, and it does not need a `schema_version` bump. See [ADR 0006](../../adr/0006-no-migrations-before-release.md).
+The flag is `record_history` on `SavedConnection`, `#[serde(default = "default_true")]`. It is not inside the TLS object, and it does not need a `schema_version` bump. See [ADR 0006](../../adr/0006-no-migrations-before-release.md).
 
 ## Actions
 
@@ -110,9 +110,20 @@ There is no production tag on a connection yet (M2-5). Until that exists, off is
 | Open in a new tab | Default. `Enter` or double-click. A new query tab on the row's connection, SQL in the editor, not run. If that connection was deleted, the item is disabled. |
 | Insert into the editor | `secondary-enter`. Inserts at the caret, or replaces the selection, in the active tab's editor. Table tabs have an editor today. Does not run. Does not change the tab's connection. |
 | Copy | `secondary-c` with the list focused. The full statement, not the ellipsized preview. With the search field focused, copy keeps the field's own clipboard behavior. |
-| Rerun | `secondary-shift-enter`. Opens a new query tab on the row's connection and runs through the normal run path. No extra confirm in M1-5. Safe mode does not exist until M2. |
+| Rerun | `secondary-shift-enter`. See below. |
 | Delete | `secondary-backspace` on the list. One row. No confirm. |
-| Clear | The header button only. No shortcut. Confirms with the existing alert pattern. Scope `This connection`: title `Clear history for {name}?`, description `Queries stored for this connection are removed. The database is left untouched.`, OK button `Clear` (danger). Scope `All`: title `Clear all query history?`, same OK button. |
+| Clear history | The header button, labeled `Clear history`. No shortcut. Confirms with the existing alert pattern. Scope `This connection`: title `Clear history for {name}?`, description `Queries stored for this connection are removed. The database is left untouched.`, OK button `Clear history` (danger). Scope `All`: title `Clear all query history?`, same OK button. |
+
+Rerun opens a new query tab on the row's connection and uses the normal run path. It runs immediately only when `is_safe_to_rerun_for_load_more` returns true. That is the same classifier load-more uses (`sela-core`). Anything else opens a confirm dialog before the run:
+
+| Piece | Value |
+| --- | --- |
+| Title | `Rerun this statement?` |
+| Body | The full statement, monospace, scrolling after about 8 lines |
+| Cancel | Default button. Focused. `Enter` and `Escape` both cancel. |
+| Rerun | The other button. Click or `Tab` then `Enter`. It is not the default. |
+
+The dialog does not replace safe mode. Safe mode is still M2. The classifier's known limit stays: `SELECT my_func()` counts as safe. Do not add a second classifier for this dialog.
 
 Open and Insert do not auto-run. Rerun is the action that runs.
 
@@ -137,11 +148,11 @@ A file that cannot be read is renamed to `history.sqlite.bad` (replace an older 
 
 The file is `{config_dir}/history.sqlite`, next to `connections.json`. Unix mode `0600`. The directory is the one `SELA_CONFIG_DIR` already overrides.
 
-The cap is 10,000 rows for the whole file, not per connection. After each insert, in the same transaction, delete the oldest rows past the cap. There is no time-based expiry.
+The cap is one global limit of 10,000 rows for the whole file. A busy connection can push out another connection's older rows. After each insert, in the same transaction, delete the oldest rows past the cap. There is no per-connection cap and no time-based expiry.
 
 FTS5 indexes `sql` only. Scope and outcome are ordinary columns.
 
-Deleting a connection does not delete its rows. Clear and Delete are how rows go away. Deleting the connection still deletes the keychain item, as it does today.
+Deleting a connection does not delete its rows. Clear history and Delete are how rows go away. Deleting the connection still deletes the keychain item, as it does today. The file is unencrypted. Unix mode `0600` is the protection. [faq.md](../../user/faq.md) tells the user that the file stores SQL text, literals included.
 
 ## Keyboard
 
@@ -155,7 +166,7 @@ Bindings use a history focus context. The full group is in [README-batch2.md](./
 | Open in a new tab | `Enter` |
 | Insert into the editor | `secondary-enter` |
 | Copy | `secondary-c` on the list |
-| Rerun | `secondary-shift-enter` |
+| Rerun | `secondary-shift-enter`. Confirms first unless the statement passes `is_safe_to_rerun_for_load_more`. |
 | Delete the row | `secondary-backspace` on the list |
 | Close | `Escape` clears a non-empty search first, then closes the panel |
 
@@ -168,15 +179,18 @@ Bindings use a history focus context. The full group is in [README-batch2.md](./
 - `rows_label` is a display string copied from the status formatter so the panel and the status line cannot drift. Do not store a second count and format it again.
 - `record_history` defaults to true for a missing field. SQLite and both network engines honor it. Turning it off is a `store.save` of the connection list only.
 - Open in a new tab uses the existing new-query-tab path and sets the editor text. It does not call the run action.
-- Rerun uses that path and then the normal run action. It does not grow a private execution path.
+- Rerun uses that path and then the normal run action when `is_safe_to_rerun_for_load_more` is true. Otherwise it shows the confirm dialog first. Cancel is the default button. It does not grow a private execution path or a second safety classifier.
 - Virtualize the list. gpui-component `List` is the first choice. A hand-rolled 10,000-row flex is not.
 - Do not log statement text at info. It can contain literals the user would not want in a log file.
 - Panel height and the `History` status button must not change the 28px status bar or the 176px editor. The grid is what shrinks.
 
-## Open questions
+## Decisions
 
-1. Should a connection tagged production (M2-5, not built) default `record_history` to off, with the checkbox still able to turn it on?
-2. Rerun will execute `UPDATE` and `DELETE` with no confirm until M2 safe mode. Is that acceptable for M1-5, or should Rerun stay disabled for `StatementKind::Execute` until safe mode exists?
-3. Is statement text, including literals, acceptable in an unencrypted `history.sqlite` next to `connections.json` (mode `0600`)?
-4. Should the open/closed state and the panel height persist in a small settings file with the theme (see the theme spec), or stay session-only?
-5. A busy connection can push another connection's rows out of the global 10,000 cap. Is a global cap what we want, or a per-connection cap that still sums to about 10,000?
+1. History is recorded by default. A per-connection `Record query history` checkbox is the only off switch. A production tag does not change the default.
+2. Rerun runs directly only when the statement passes `is_safe_to_rerun_for_load_more`. Every other statement gets a confirm dialog that shows the SQL. Cancel is the default button. Rerun stays available.
+3. An unencrypted `history.sqlite` with mode `0600` is acceptable. Clear history is the way to remove it. The user-facing note is in [faq.md](../../user/faq.md).
+4. One global cap of 10,000 rows. The oldest rows in the file are the ones removed.
+
+## Still open
+
+Should the open/closed state and the panel height persist with the theme setting, or stay in memory for the session? The spec keeps them in memory until that is decided. Same question as the sidebar width in the main-window spec.

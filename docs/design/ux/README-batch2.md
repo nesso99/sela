@@ -54,7 +54,7 @@ GPUI key contexts must differ. Do not rely on the action handler to guess. Rows 
 | Open in a new query tab | `Enter` | no |
 | Insert into the editor | `secondary-enter` | no |
 | Copy the SQL | `secondary-c` when the list is focused | no |
-| Rerun | `secondary-shift-enter` | no |
+| Rerun | `secondary-shift-enter`. Read-only statements run immediately. Anything else confirms first; Cancel is the default button. | no |
 | Delete the row | `secondary-backspace` | no |
 
 ### Connection dialog
