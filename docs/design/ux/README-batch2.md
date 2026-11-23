@@ -1,6 +1,6 @@
 # UX specs — batch 2
 
-This file is the index for the second UX batch. It is separate from [README.md](./README.md) on purpose: that index lands in [PR #18](https://github.com/nesso99/sela/pull/18) and is not on `main` yet. When #18 merges, fold this page into `README.md` (the doc table, the shortcut groups, and the focus-context rows below) and delete this file.
+This file is the index for the second UX batch. It is separate from `docs/design/ux/README.md` on purpose: that index lands in PR #18 and is not on `main` yet, so this page does not link to it. When #18 merges, fold this page into that README (the doc table, the shortcut groups, and the focus-context rows below) and delete this file.
 
 Product intent is in [PRD.md](../PRD.md), milestones in [roadmap.md](../roadmap.md), and the APIs in [SPECS.md](../SPECS.md). What the app binds today is [keyboard-shortcuts.md](../../user/keyboard-shortcuts.md).
 
