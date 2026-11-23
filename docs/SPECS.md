@@ -1,4 +1,4 @@
-> Source of truth: this file; canvas is a snapshot.
+> Source of truth: this file.
 
 # Technical specs — Sela
 
@@ -159,7 +159,7 @@ pub enum DbError {
 - UI shows `Display` text; never log passwords or connection strings that embed passwords.
 - Errors must not silently become NULL, empty success, or a wrong success path (see [CONTRIBUTING.md](./CONTRIBUTING.md) checklist).
 
-Future variants considered in the original canvas (Tls, Ssh, Syntax { position }, Constraint, Permission) can be added as needs arise without collapsing classification.
+Future variants considered earlier (Tls, Ssh, Syntax { position }, Constraint, Permission) can be added as needs arise without collapsing classification.
 
 ---
 
@@ -312,7 +312,7 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 - Linux: AppImage and `.deb` (then Flatpak); document Vulkan deps.
 - Windows: MSI/NSIS, code-signed; Credential Manager.
 - `cargo-packager` (or similar) on tag; checksums + changelog.
-- Auto-update after v1 (GitHub Releases, user confirms).
+- Automatic updates after v1 (GitHub Releases, user confirms).
 
 ---
 
@@ -333,6 +333,6 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 
 ---
 
-## Process
+## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md): PM agent review, squash-merge after approval + green CI, ≤3 open PRs, Auto model for cloud agents, self-review checklist on every PR body.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the fork/branch workflow, local checks, and pull request checklist.

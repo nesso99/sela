@@ -1,4 +1,4 @@
-> Source of truth: this file; canvas is a snapshot.
+> Source of truth: this file.
 
 # PRD — Sela
 
@@ -179,7 +179,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 
 ## Milestones M0–M4
 
-Estimates are relative sequencing for engineer/agent PRs — not calendar weeks. Each item is an independent PR with tests. Process: [CONTRIBUTING.md](./CONTRIBUTING.md).
+Estimates are relative sequencing for independent PRs — not calendar weeks. Each item is an independent PR with tests. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ### M0 · Foundation — **done** (PRs #1–#8)
 
