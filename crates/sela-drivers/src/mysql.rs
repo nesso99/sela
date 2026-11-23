@@ -56,8 +56,9 @@ impl DatabaseSession for MysqlSession {
     }
 
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>, DbError> {
+        // MySQL 8.4 exposes information_schema string columns as BINARY; CAST so sqlx can decode.
         let rows = sqlx::query(
-            "SELECT schema_name AS name
+            "SELECT CAST(schema_name AS CHAR) AS name
              FROM information_schema.schemata
              WHERE schema_name NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys')
              ORDER BY schema_name",
@@ -75,8 +76,9 @@ impl DatabaseSession for MysqlSession {
     }
 
     async fn list_tables(&self, schema: &str) -> Result<Vec<TableInfo>, DbError> {
+        // MySQL 8.4 exposes information_schema string columns as BINARY; CAST so sqlx can decode.
         let rows = sqlx::query(
-            "SELECT table_name AS name, table_type AS kind
+            "SELECT CAST(table_name AS CHAR) AS name, CAST(table_type AS CHAR) AS kind
              FROM information_schema.tables
              WHERE table_schema = ?
              ORDER BY table_name",

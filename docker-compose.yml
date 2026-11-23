@@ -30,7 +30,8 @@ services:
       - "3306:3306"
     volumes:
       - ./scripts/seed-mysql.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
-    command: ["--default-authentication-plugin=caching_sha2_password"]
+    # MySQL 8.4 defaults to caching_sha2_password. Do not pass
+    # --default-authentication-plugin (removed in 8.4; the container fails to start).
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-usela", "-psela"]
       interval: 5s
