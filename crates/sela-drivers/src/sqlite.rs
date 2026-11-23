@@ -55,8 +55,8 @@ impl DatabaseSession for SqliteSession {
     }
 
     async fn list_tables(&self, schema: &str) -> Result<Vec<TableInfo>, DbError> {
-        let schema = quote_ident(Dialect::Sqlite, schema)
-            .map_err(|err| DbError::message(err.to_string()))?;
+        let schema =
+            quote_ident(Dialect::Sqlite, schema).map_err(|err| DbError::query(err.to_string()))?;
         let sql = format!(
             "SELECT name, type FROM {schema}.sqlite_schema
              WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'

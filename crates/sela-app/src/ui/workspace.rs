@@ -140,11 +140,11 @@ impl Workspace {
     fn spawn_work<T, Done>(
         &mut self,
         cx: &mut Context<Self>,
-        work: impl std::future::Future<Output = T> + Send + 'static,
+        work: impl std::future::Future<Output = Result<T, DbError>> + Send + 'static,
         done: Done,
     ) where
         T: Send + 'static,
-        Done: FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+        Done: FnOnce(&mut Self, Result<T, DbError>, &mut Context<Self>) + 'static,
     {
         let request = self.bump();
         self.busy = true;
