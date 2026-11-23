@@ -9,17 +9,17 @@ Open-source, native desktop database client (PostgreSQL, MySQL, SQLite) built wi
 **Engines:** PostgreSQL, MySQL, SQLite.  
 **Stack:** Rust 1.85+, gpui-kit 0.10.0 (gpui-pre 0.3.12 + gpui-component), sqlx 0.8, tokio, keyring 3.
 
-See also: [SPECS.md](./SPECS.md), [CONTRIBUTING.md](./CONTRIBUTING.md), [benchmarks/grid.md](./benchmarks/grid.md).
+See also: [SPECS.md](./SPECS.md), [roadmap.md](./roadmap.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), [benchmarks.md](../dev/benchmarks.md).
 
 ---
 
 ## Summary
 
-Sela already ships a working slice: save connections, browse schemas/tables, page or stream results, cancel queries, and a read-only Structure view. The TablePlus differentiators (inline edit with pending changes, safe mode, SSH, rich SQL editor, tabs, filter/sort, export) are the path through M1–M3.
+Sela already ships a working slice: save connections, browse schemas/tables, tabs, page or stream results, cancel queries, and a read-only Structure view. The TablePlus differentiators (inline edit with pending changes, safe mode, SSH, rich SQL editor, filter/sort, export) are the path through the rest of M1–M3.
 
-**Current foundation (M0 done, PRs #1–#8):** Cargo workspace (`sela-core`, `sela-drivers`, `sela-config`, `sela-app` binary `sela`), typed `Value`, classified `DbError`, CI, and a grid decision to **keep** gpui-component `DataTable` ([benchmarks/grid.md](./benchmarks/grid.md)).
+**Current foundation (M0 done, PRs #1–#8):** Cargo workspace (`sela-core`, `sela-drivers`, `sela-config`, `sela-app` binary `sela`), typed `Value`, classified `DbError`, CI, and a grid decision to **keep** gpui-component `DataTable` ([benchmarks.md](../dev/benchmarks.md)).
 
-**M1 in progress:** result model + cancel/streaming done; Structure view done; tabs next (see [Milestones](#milestones-m0m4)).
+**M1 so far:** result model (#9), cancel/streaming (#10), Structure view (#11), and tabs (#12) are done. Remaining M1 items and M2–M4 live in [roadmap.md](./roadmap.md).
 
 ---
 
@@ -51,7 +51,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 - Safe editing: pending changes, SQL preview, safe mode
 - Keyboard first: every primary action has a shortcut and command palette
 - Ship on macOS, Linux, and Windows from one codebase
-- Stay open source (MIT) and contribution-friendly
+- Stay open source (GPL-3.0-or-later) and contribution-friendly
 
 ### Non-goals (v1)
 
@@ -90,7 +90,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | Streaming results + estimated table counts | MVP | Done (M1-2b) |
 | Bounded result window / memory | MVP | Done (M1-2a) |
 | Structure view (columns, indexes, FK, DDL) read-only | v1 | Done (M1-6, PR #11) |
-| Tabs (table and query), light/dark theme | v1 | Tabs: planned M1-1 (PR #12); themes: M1-7 |
+| Tabs (table and query), light/dark theme | v1 | Tabs: Done (M1-1, PR #12); themes: M1-7 |
 | Filter bar, header sort, on-demand exact count | v1 | Planned (M1-3) |
 | Cell edit, insert/delete/duplicate, pending changes, preview SQL, commit/discard | v1 | Planned (M2) |
 | Safe mode per connection, warn UPDATE/DELETE without WHERE, color label | v1 | Planned (M2) |
@@ -113,7 +113,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | --- | --- | --- | --- |
 | US-01 | As a developer, I save a connection and reopen it with one click | Create/edit/delete/duplicate; Test connection; password never in config file; survives app restart | Mostly done |
 | US-02 | I connect through an SSH bastion | Password, private key (+ passphrase), ssh-agent, `~/.ssh/config`; known_hosts checked; SSH errors distinct from DB errors | Not started |
-| US-03 | I open many tables and queries in tabs | Cmd+T new query, Cmd+W close, Cmd+1..9 switch; tab remembers its connection; dirty close prompts when pending edits exist | Not on main (M1-1 / PR #12) |
+| US-03 | I open many tables and queries in tabs | Cmd+T new query, Cmd+W close, Cmd+1..9 switch; tab remembers its connection; dirty close prompts when pending edits exist | Done (M1-1); dirty prompt is M2 |
 | US-04 | I filter and sort without writing SQL | Filter bar: column + op (`=`, `!=`, `LIKE`, `IN`, `IS NULL`, `>`, `<`) + value, AND combine; header click to sort; generated SQL visible | Not started |
 | US-05 | I edit data on the grid | Double-click or Enter to edit; edited cells highlighted; insert/delete/duplicate rows; Cmd+S commits in one transaction; Esc / Cmd+Shift+Z discard; no PK → read-only with reason | Not started |
 | US-06 | I preview SQL before commit | Preview lists exact statements with bound values; commit failure rolls back and keeps pending changes | Not started |
@@ -140,7 +140,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 
 ### Run a query and cancel (current + target)
 
-1. **Cmd+T** opens a query tab bound to the selected connection (tabs: M1-1).
+1. **Cmd+T** opens a query tab bound to the selected connection.
 2. **Cmd+Enter** runs the statement at the cursor; status shows Running and a timer.
 3. **Cmd+.** / Stop cancels: `CancellationToken` + server cancel; grid keeps rows already received and records cancellation.
 4. **Results** stream into `ResultWindow` in batches; status shows row count kind, elapsed time; errors include position when the engine provides it.
@@ -153,7 +153,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | --- | --- | --- |
 | Cold start to usable window | ≤ 500 ms on Apple Silicon Mac; ≤ 1 s on mid-range Linux/Windows | Automated open → first frame with sidebar |
 | First data page paint | ≤ 50 ms from data ready to grid painted (~1 000 rows) | In-app timer, debug log |
-| Grid scroll | 60 fps (120 on ProMotion) with 100 000 loaded rows × 50 cols | GPUI frame timing in profile builds; see [benchmarks/grid.md](./benchmarks/grid.md) |
+| Grid scroll | 60 fps (120 on ProMotion) with 100 000 loaded rows × 50 cols | GPUI frame timing in profile builds; see [benchmarks.md](../dev/benchmarks.md) |
 | Memory | ≤ 150 MB idle with 3 connections; in-RAM results bounded (default window 16×100 pages; SQL cap 1 000 + load-more) | RSS on 3 OS |
 | UI never blocks | No DB work on UI thread; any task > 100 ms has indicator and is cancellable | Code review + tests |
 | Credential security | DB/SSH passwords and key passphrases only in OS keychain; never logged; delete connection deletes secret | Tests + log grep |
@@ -179,82 +179,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 
 ## Milestones M0–M4
 
-Estimates are relative sequencing for independent PRs — not calendar weeks. Each item is an independent PR with tests. See [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-### M0 · Foundation — **done** (PRs #1–#8)
-
-| ID | Work | Done when | Status |
-| --- | --- | --- | --- |
-| M0-1 | Split Cargo workspace: core, drivers, config, app | `cargo test -p sela-core` without GPUI | Done (#2) |
-| M0-2 | GitHub Actions: fmt, clippy, test macOS/Linux/(Windows); PG+MySQL service jobs | Red PR on failure; PG/MySQL tests not skipped when URLs set | Done (#4, #6) |
-| M0-3 | Typed `Value` + decode NUMERIC, UUID, JSON, timestamptz, time | Round-trip tests on 3 engines | Done (#5) |
-| M0-4 | No panic in `drive()`; classified `DbError` | Panicked task surfaces error; app keeps running | Done (#3) |
-| M0-5 | Split `workspace.rs` into sidebar / tab / status modules | No UI file over ~400 lines | Done (#7) |
-| M0-6 | Grid bench 100 000 × 50 with DataTable | fps + memory numbers; keep vs rewrite decision | Done (#8) — **keep DataTable**; see [benchmarks/grid.md](./benchmarks/grid.md) |
-
-Also: rename Birch → Sela (#1).
-
-### M1 · Daily read-only use — **approved order**
-
-| Order | ID | Work | Done when | Status |
-| --- | --- | --- | --- |
-| 1 | M1-2a | Result model and memory (`ResultWindow`) | Bounded pages, lazy Json, truncated display cache; decode errors never NULL | Done (#9) |
-| 2 | M1-2b | Cancel and streaming | US-09; batches into `ResultWindow`; estimate counts; SQL stream cap + load-more | Done (#10) |
-| 3 | M1-1 | Tabs | US-03 | Next (PR #12 open) |
-| 4 | M1-6 | Structure view | US-11 on 3 engines | Done (#11) |
-| 5 | M1-3 | Filter and sort | US-04 | Backlog |
-| 6 | M1-4 | Editor (highlight, statement-at-cursor, multi-statement) | US-08 minus autocomplete | Backlog |
-| 7 | M1-5 | History | US-10 | Backlog |
-| 8 | M1-7 | Selection, copy, themes | US-14 + light/dark | Backlog |
-| 9 | M1-8 | TLS + config v2 | TLS modes; `schema_version` → 2 with **no migration code** (no users yet) | Backlog |
-| 10 | M1-9 | Postgres text-cast fallback | Own dedicated PR | Backlog |
-
-**M1-2a details:** `ResultWindow` keeps at most 16 pages of 100 rows (raise the cap for a fully materialized result); Json stored raw and parsed lazily; cell display truncated to ~200 characters and cached; a decode error is never NULL. 100k×50 RSS delta went from +625 MiB / +11.6 GiB to about +30–76 MiB.
-
-**M1-2b details:**
-
-- Cancel: `CancellationToken` with Stop and Cmd+.. Postgres `pg_cancel_backend` and MySQL `KILL QUERY` from a second connection; connection closed after cancel. SQLite only drops the stream (documented limitation).
-- Results stream in batches into `ResultWindow`.
-- Table counts are estimates, with an exact-count button.
-- Arbitrary SQL is not wrapped; streams up to a 1 000-row cap with load-more. Load-more re-runs only read-only SQL (`SHOW`, `EXPLAIN` without `ANALYZE`, `SELECT`/`VALUES`/`WITH` without DML); otherwise shows “Result capped at N rows”.
-- Known limitation: `SELECT my_func()` with side effects is still treated as safe.
-- Warm time to first frame ≈ 40–43 ms; cold start to re-check on a real GPU.
-
-**M1 backlog (follow-ups):**
-
-- Idle timeout for SQL streams paused at the cap
-- Bound or LRU on the structure cache
-- Re-measure on a real GPU
-
-### M2 · Safe editing
-
-| ID | Work | Done when |
-| --- | --- | --- |
-| M2-1 | `ChangeSet` + grid overlay (edit, insert, delete, duplicate) | US-05 on tables with PK |
-| M2-2 | `ChangePlan` → dialect SQL + golden tests | Snapshots for 3 engines |
-| M2-3 | Preview SQL, one-transaction commit, discard, rollback keeps changes | US-06 |
-| M2-4 | Safe mode 3 levels, no-WHERE warnings (`sqlparser`) | US-07 |
-| M2-5 | Connection color/label, groups, duplicate, import URL | US-01 complete |
-
-### M3 · Connectivity and data
-
-| ID | Work | Done when |
-| --- | --- | --- |
-| M3-1 | SSH tunnel (russh): password, key + passphrase, agent, `~/.ssh/config`, known_hosts | US-02; openssh container test |
-| M3-2 | Schema + alias autocomplete | US-08 complete |
-| M3-3 | Export CSV/JSON/SQL with background progress; CSV import | US-12 |
-| M3-4 | Command palette + quick open table | Every primary action reachable from palette |
-
-### M4 · Ship v1.0
-
-| ID | Work | Done when |
-| --- | --- | --- |
-| M4-1 | Signed packages for 3 OS in CI | Installable from GitHub Releases |
-| M4-2 | Hit NFRs: start, fps, memory; publish benchmark report | Numbers in release notes |
-| M4-3 | Naming polish (bundle id, docs); keychain already `app.sela.database` | Branding consistent; no Birch leftovers |
-| M4-4 | User docs, shortcuts page, CONTRIBUTING | New contributor builds in ~15 minutes |
-
-After v1: structure editing (DDL with preview), MariaDB (near MySQL driver), DuckDB, SQL Server, ClickHouse, Redis, ER diagram, AI/MCP.
+Milestone tables, M1 details, and post-v1 ideas live in **[roadmap.md](./roadmap.md)**. M0 is done; M1-1 (tabs), M1-2a/b, and M1-6 are done on `main`.
 
 ---
 

@@ -2,6 +2,8 @@
 
 Decision record for the results grid and the result **model** behind it.
 
+Related: [ADR 0001](../adr/0001-keep-datatable.md) (keep DataTable), [ADR 0002](../adr/0002-bounded-result-window.md) (bounded window), [building-and-testing.md](./building-and-testing.md).
+
 ## Recommendation
 
 **Keep DataTable; fix the result model (M1-2a).**

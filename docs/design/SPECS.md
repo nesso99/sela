@@ -2,7 +2,7 @@
 
 # Technical specs — Sela
 
-Architecture, APIs, data model, execution, config, testing, and per-feature specs. Product intent and milestones live in [PRD.md](./PRD.md). Contribution process: [CONTRIBUTING.md](./CONTRIBUTING.md).
+Architecture, APIs, data model, execution, config, testing, and per-feature specs. Product intent lives in [PRD.md](./PRD.md); milestones in [roadmap.md](./roadmap.md). Contribution process: [CONTRIBUTING.md](../../CONTRIBUTING.md). Condensed overview: [architecture.md](../dev/architecture.md).
 
 **License:** GPL-3.0-or-later (see root `LICENSE`).  
 **Name:** Sela (Birch retired). Crates: `sela-core`, `sela-drivers`, `sela-config`, `sela-app` (binary `sela`). Keychain service `app.sela.database`. Config under `~/.config/sela/` (macOS Application Support / Windows `%APPDATA%\Sela\`), override `SELA_CONFIG_DIR`.
@@ -90,7 +90,7 @@ Helpers: `run_user_sql`, `preview_table`, `exact_table_rows`, `is_safe_to_rerun_
 - UI uses `cx.spawn`; inside, `drive(work)` runs on Tokio and awaits a `JoinHandle`, then `this.update` if the request id still matches.
 - Each task gets a `CancellationToken`; Stop / Cmd+. / closing a tab cancels the token and triggers server-side cancel when supported.
 - Panics in DB tasks map to `DbError::Internal` (app must not crash).
-- Request ids are scoped per tab once tabs land (M1-1).
+- Request ids are scoped per tab.
 
 ### Connection manager (target)
 
@@ -136,7 +136,7 @@ Rules:
 - Pages load on demand as the viewport moves; streaming inserts via `insert_page`.
 - Wide Json RSS is bounded by the window, not by retaining 100k owned trees.
 
-See [benchmarks/grid.md](./benchmarks/grid.md).
+See [benchmarks.md](../dev/benchmarks.md).
 
 ---
 
@@ -157,7 +157,7 @@ pub enum DbError {
 
 - Drivers map vendor / sqlx failures and preserve SQLSTATE / MySQL errno when available.
 - UI shows `Display` text; never log passwords or connection strings that embed passwords.
-- Errors must not silently become NULL, empty success, or a wrong success path (see [CONTRIBUTING.md](./CONTRIBUTING.md) checklist).
+- Errors must not silently become NULL, empty success, or a wrong success path (see [CONTRIBUTING.md](../../CONTRIBUTING.md) checklist).
 
 Future variants considered earlier (Tls, Ssh, Syntax { position }, Constraint, Permission) can be added as needs arise without collapsing classification.
 
@@ -197,7 +197,7 @@ Keychain: service `app.sela.database` via `keyring`. Fallback: keep password in 
 
 ### Config schema v2 (M1-8)
 
-Bump `schema_version` to **2**. **No migration code** — there are no users yet; old shapes can be dropped.
+Bump `schema_version` to **2**. **No migration code** — there are no users yet; old shapes can be dropped. See [ADR 0006](../adr/0006-no-migrations-before-release.md).
 
 Target shape (illustrative):
 
@@ -254,7 +254,7 @@ Rule: tests assert **observable behavior**; every bugfix gets a regression test.
 
 ## Grid
 
-- **Decision:** keep gpui-component `DataTable` (row + column virtualization). Do not rewrite for virtualization; memory was the risk ([benchmarks/grid.md](./benchmarks/grid.md)).
+- **Decision:** keep gpui-component `DataTable` (row + column virtualization). Do not rewrite for virtualization; memory was the risk ([benchmarks.md](../dev/benchmarks.md), [ADR 0001](../adr/0001-keep-datatable.md)).
 - Selection / copy / themes: M1-7.
 - Pending-change overlay: M2.
 - Column width: auto-fit from first ~100 rows; remember per table (planned).
@@ -322,7 +322,7 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 | --- | --- | --- |
 | M1-2a Result model | `ResultWindow`, lazy Json, display cache | Done (#9) |
 | M1-2b Cancel / stream / estimates / SQL cap | This file § Execution | Done (#10) |
-| M1-1 Tabs | Per-tab state, cancel-on-close, `tabs.json` | PR #12 |
+| M1-1 Tabs | Per-tab state, cancel-on-close, `tabs.json` | Done (#12) |
 | M1-6 Structure view | `describe_table` / `TableStructure` | Done (#11) |
 | M1-3 Filter / sort | Generated SQL + bind params | Backlog |
 | M1-4 Editor | Highlight, multi-statement | Backlog |
@@ -335,4 +335,4 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the fork/branch workflow, local checks, and pull request checklist.
+See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the fork/branch workflow, local checks, and pull request checklist.
