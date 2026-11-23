@@ -125,7 +125,9 @@ mod tests {
         let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
         let session = PostgresSession::connect_url(&url)
             .await
-            .expect("postgres connect");
+            .unwrap_or_else(|err| {
+                panic!("SELA_POSTGRES_URL is set but Postgres is unreachable: {err}")
+            });
         session
             .execute("DROP TABLE IF EXISTS sela_probe")
             .await
