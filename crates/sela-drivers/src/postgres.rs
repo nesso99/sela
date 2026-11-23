@@ -707,6 +707,8 @@ mod tests {
 
     /// M1-9: arrays, enums, inet family, money, bit, point, ranges, tsvector, and
     /// domains must show psql-like text for both table preview and raw SELECT.
+    /// Unsupported binary types (polygon, tstzrange, composites, tsquery) must fail
+    /// safe as `<TYPE>` — never control-character junk.
     #[tokio::test]
     async fn postgres_text_fallback_types_when_configured() {
         let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
@@ -727,11 +729,19 @@ mod tests {
             .await
             .unwrap();
         session
+            .execute("DROP TYPE IF EXISTS sela_pair")
+            .await
+            .unwrap();
+        session
             .execute("DROP DOMAIN IF EXISTS sela_inet_dom")
             .await
             .unwrap();
         session
             .execute("CREATE TYPE sela_mood AS ENUM ('sad', 'ok', 'happy')")
+            .await
+            .unwrap();
+        session
+            .execute("CREATE TYPE sela_pair AS (a int, b text)")
             .await
             .unwrap();
         session
@@ -753,7 +763,11 @@ mod tests {
                     pt point,
                     span int4range,
                     search tsvector,
-                    wrapped sela_inet_dom
+                    wrapped sela_inet_dom,
+                    poly polygon,
+                    window_tz tstzrange,
+                    pair sela_pair,
+                    query tsquery
                 )",
             )
             .await
@@ -773,17 +787,23 @@ mod tests {
                     point(1.5, 2.5),
                     int4range(1, 10),
                     to_tsvector('english', 'fat cats ate rats'),
-                    '10.0.0.1'::sela_inet_dom
+                    '10.0.0.1'::sela_inet_dom,
+                    '((0,0),(1,0),(0,1))'::polygon,
+                    tstzrange('2024-01-01 00:00:00+00', '2024-01-02 00:00:00+00'),
+                    ROW(1, 'x')::sela_pair,
+                    to_tsquery('english', 'fat & cat')
                 ), (
                     2,
                     NULL, NULL, NULL, NULL, NULL, NULL,
-                    NULL, NULL, NULL, NULL, NULL, NULL
+                    NULL, NULL, NULL, NULL, NULL, NULL,
+                    NULL, NULL, NULL, NULL
                 )",
             )
             .await
             .unwrap();
 
-        let expected = [
+        // Decoded types: exact psql-like text. Unsupported binary types: `<TYPE>` only.
+        let expected_exact = [
             ("ints", "{1,2,NULL,3}"),
             ("texts", r#"{a,NULL,"b,c","\"x\""}"#),
             ("mood", "happy"),
@@ -797,16 +817,27 @@ mod tests {
             ("search", "'ate':3 'cat':2 'fat':1 'rat':4"),
             ("wrapped", "10.0.0.1/32"),
         ];
+        let expected_placeholder = ["poly", "window_tz", "pair", "query"];
+
+        let assert_no_control_chars = |label: &str, name: &str, text: &str| {
+            assert!(
+                !text.chars().any(char::is_control),
+                "{label}: {name} display must not contain control characters, got {text:?}"
+            );
+        };
 
         let assert_payload = |label: &str, row: &[Value], null_row: bool| {
             // Skip the leading `id` column when present (preview SELECT *).
-            let offset = if row.len() == expected.len() + 1 {
-                1
-            } else {
-                0
-            };
-            assert_eq!(row.len() - offset, expected.len(), "{label}: column count");
-            for (i, (name, want)) in expected.iter().enumerate() {
+            let payload_len = expected_exact.len() + expected_placeholder.len();
+            let offset = if row.len() == payload_len + 1 { 1 } else { 0 };
+            assert_eq!(row.len() - offset, payload_len, "{label}: column count");
+
+            for (i, cell) in row.iter().enumerate().skip(offset) {
+                let got = cell.display().into_owned();
+                assert_no_control_chars(label, &format!("col{i}"), &got);
+            }
+
+            for (i, (name, want)) in expected_exact.iter().enumerate() {
                 let cell = &row[offset + i];
                 if null_row {
                     assert!(
@@ -824,6 +855,24 @@ mod tests {
                     !(got.starts_with('<') && got.ends_with('>')),
                     "{label}: {name} must not be a <TYPE> placeholder"
                 );
+            }
+
+            let placeholder_base = offset + expected_exact.len();
+            for (i, name) in expected_placeholder.iter().enumerate() {
+                let cell = &row[placeholder_base + i];
+                if null_row {
+                    assert!(
+                        cell.is_null(),
+                        "{label}: {name} should be NULL, got {cell:?}"
+                    );
+                    continue;
+                }
+                let got = cell.display().into_owned();
+                assert!(
+                    got.starts_with('<') && got.ends_with('>') && got.len() > 2,
+                    "{label}: {name} must fail safe as <TYPE>, got {got:?} ({cell:?})"
+                );
+                assert_no_control_chars(label, name, &got);
             }
         };
 
@@ -851,7 +900,8 @@ mod tests {
 
         let queried = run_user_sql(
             &session,
-            "SELECT ints, texts, mood, addr, net, mac, cash, flags, pt, span, search, wrapped
+            "SELECT ints, texts, mood, addr, net, mac, cash, flags, pt, span, search, wrapped,
+                    poly, window_tz, pair, query
              FROM sela_text_fallback
              ORDER BY id",
             10,
@@ -872,6 +922,10 @@ mod tests {
             .unwrap();
         session
             .execute("DROP TYPE IF EXISTS sela_mood")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TYPE IF EXISTS sela_pair")
             .await
             .unwrap();
         session

@@ -54,12 +54,19 @@ pub(crate) enum PgDecodeStrategy {
 pub(crate) fn strategy_for_type_info(type_info: &PgTypeInfo) -> PgDecodeStrategy {
     match type_info.kind() {
         sqlx::postgres::PgTypeKind::Domain(base) => return strategy_for_type_info(base),
+        // Enum binary wire format is the label as text — the only unknown Simple-like
+        // case where binary == text is guaranteed.
         sqlx::postgres::PgTypeKind::Enum(_) => return PgDecodeStrategy::TextBytes,
         sqlx::postgres::PgTypeKind::Array(elem) => {
             return array_strategy_for_elem(elem.name());
         }
         sqlx::postgres::PgTypeKind::Range(elem) => {
             return range_strategy_for_elem(elem.name());
+        }
+        // Composites / records and pseudo-types have structured binary layouts.
+        // Never attempt UTF-8 text interpretation.
+        sqlx::postgres::PgTypeKind::Composite(_) | sqlx::postgres::PgTypeKind::Pseudo => {
+            return PgDecodeStrategy::Fallback;
         }
         _ => {}
     }
@@ -112,22 +119,18 @@ fn strategy_for_type_name(name: &str) -> PgDecodeStrategy {
         "INT8RANGE" => PgDecodeStrategy::Int8Range,
         "NUMRANGE" => PgDecodeStrategy::NumRange,
         "DATERANGE" => PgDecodeStrategy::DateRange,
-        "TSVECTOR" | "TSQUERY" => PgDecodeStrategy::TsVector,
+        "TSVECTOR" => PgDecodeStrategy::TsVector,
+        // tsquery binary layout differs from tsvector; fail safe until a dedicated decoder exists.
+        "TSQUERY" => PgDecodeStrategy::Fallback,
         // Built-ins already handled as Native by the caller when matched first.
         "BOOL" | "INT2" | "INT4" | "INT8" | "OID" | "FLOAT4" | "FLOAT8" | "NUMERIC" | "TEXT"
         | "VARCHAR" | "NAME" | "XML" | "CITEXT" | "CHAR" | "BPCHAR" | "\"CHAR\"" | "BYTEA"
         | "UUID" | "JSON" | "JSONB" | "DATE" | "TIME" | "TIMESTAMP" | "TIMESTAMPTZ"
         | "INTERVAL" => PgDecodeStrategy::Native,
-        _ => {
-            if upper.ends_with("[]") {
-                // Unknown array element — try text array then fallback.
-                PgDecodeStrategy::Fallback
-            } else {
-                // Custom enums that did not advertise Enum kind still often send
-                // text-identical binary; try that before the placeholder.
-                PgDecodeStrategy::TextBytes
-            }
-        }
+        // Unknown non-array types (polygon, box, PostGIS, extension types, …) must
+        // NOT use TextBytes: sqlx fetches BINARY, and many binary payloads are still
+        // valid UTF-8 with control junk. Enums are handled via PgTypeKind::Enum above.
+        _ => PgDecodeStrategy::Fallback,
     }
 }
 
@@ -297,7 +300,7 @@ fn text_bytes_or_other(type_name: &str, row: &PgRow, index: usize) -> Value {
 }
 
 /// Read Postgres raw value bytes as UTF-8 when the payload is text-identical
-/// (enums, many domains, tsvector text format, etc.).
+/// (enums; text-format cells). Rejects binary junk that happens to be valid UTF-8.
 fn raw_text_bytes(row: &PgRow, index: usize) -> Option<String> {
     let raw = row.try_get_raw(index).ok()?;
     if ValueRef::is_null(&raw) {
@@ -305,20 +308,24 @@ fn raw_text_bytes(row: &PgRow, index: usize) -> Option<String> {
     }
     let bytes = raw.as_bytes().ok()?;
     match raw.format() {
-        PgValueFormat::Text => String::from_utf8(bytes.to_vec()).ok(),
-        PgValueFormat::Binary => {
-            // Enum labels and several other types use text-identical binary.
-            // Reject empty only when that would be ambiguous; empty enum is invalid.
-            if bytes.is_empty() {
-                return Some(String::new());
-            }
-            // Require valid UTF-8 without NUL (binary structs often contain NULs).
-            if bytes.contains(&0) {
-                return None;
-            }
-            String::from_utf8(bytes.to_vec()).ok()
-        }
+        PgValueFormat::Text => decode_safe_utf8_text(bytes),
+        PgValueFormat::Binary => decode_safe_utf8_text(bytes),
     }
+}
+
+/// True when every byte is printable UTF-8 text (allows tab/newline/carriage return).
+/// Rejects NUL and other control bytes so binary layouts are not shown as garbage.
+pub(crate) fn bytes_are_safe_text(bytes: &[u8]) -> bool {
+    !bytes
+        .iter()
+        .any(|&b| b < 0x20 && !matches!(b, b'\t' | b'\n' | b'\r'))
+}
+
+fn decode_safe_utf8_text(bytes: &[u8]) -> Option<String> {
+    if !bytes_are_safe_text(bytes) {
+        return None;
+    }
+    String::from_utf8(bytes.to_vec()).ok()
 }
 
 fn format_array<I, S>(items: I) -> String
@@ -593,8 +600,34 @@ mod tests {
             PgDecodeStrategy::TsVector
         );
         assert_eq!(
-            strategy_for_type_name("sela_mood"),
-            PgDecodeStrategy::TextBytes
+            strategy_for_type_name("TSQUERY"),
+            PgDecodeStrategy::Fallback
         );
+        // Name alone is not enough for TextBytes — Enum kind is required.
+        assert_eq!(
+            strategy_for_type_name("sela_mood"),
+            PgDecodeStrategy::Fallback
+        );
+        assert_eq!(
+            strategy_for_type_name("POLYGON"),
+            PgDecodeStrategy::Fallback
+        );
+        assert_eq!(
+            strategy_for_type_name("TSTZRANGE"),
+            PgDecodeStrategy::Fallback
+        );
+    }
+
+    #[test]
+    fn safe_text_bytes_rejects_nul_and_other_controls() {
+        assert!(bytes_are_safe_text(b"happy"));
+        assert!(bytes_are_safe_text(b"a\tb\nc\r"));
+        assert!(bytes_are_safe_text(b""));
+        assert!(!bytes_are_safe_text(b"a\x00b"));
+        assert!(!bytes_are_safe_text(b"a\x01b"));
+        assert!(!bytes_are_safe_text(&[0x1f]));
+        assert!(decode_safe_utf8_text(b"happy").as_deref() == Some("happy"));
+        assert!(decode_safe_utf8_text(b"a\x00b").is_none());
+        assert!(decode_safe_utf8_text(b"a\x01b").is_none());
     }
 }
