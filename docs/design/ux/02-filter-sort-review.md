@@ -30,7 +30,7 @@ US-04’s operator list is one list for every column: `=`, `!=`, `LIKE`, `IN`, `
 
 `sortable(true)` would sort the rows inside the `DataTable`. A table page is 100 rows, and a SQL stream is at most the rows in the `ResultWindow`. Sorting that window is the wrong order.
 
-Leave `sortable(false)`. Header clicks rebuild `ORDER BY` and call `load_source_for` for page 0. Details are under [Sort](#sort).
+Leave `sortable(false)`. Header clicks rebuild `ORDER BY` and call `load_source_for` for page 0. Details are under [Sort indicator and multi-sort](#9-sort-indicator-and-multi-sort).
 
 ### 2. A filter makes the count unknown
 
