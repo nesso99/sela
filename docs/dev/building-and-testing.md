@@ -44,6 +44,34 @@ Optional schema overrides: `SELA_POSTGRES_SCHEMA` (default `public`) and `SELA_M
 
 CI job `db-integration` sets the same URLs against service containers.
 
+### Postgres TLS (CI acceptance for M1-8)
+
+Tests skip unless both env vars are set. They use the real `sela_drivers::connect` path:
+
+| Env | Example |
+| --- | --- |
+| `SELA_PG_TLS_URL` | `postgres://sela:sela@127.0.0.1:5433/sample` |
+| `SELA_PG_TLS_CA` | `/tmp/…/ca.crt` |
+
+Locally (Docker required):
+
+```bash
+# Generates throwaway CA + server cert (SAN=localhost only) and starts postgres:16 with ssl=on.
+eval "$(./scripts/run-pg-tls.sh 5433)"
+cargo test -p sela-drivers postgres_tls -- --nocapture
+docker rm -f sela-pg-tls
+```
+
+Or generate certs only into a directory you mount yourself:
+
+```bash
+CERT_DIR=$(mktemp -d)
+./scripts/gen-pg-tls-certs.sh "$CERT_DIR"
+# then start Postgres with ssl_cert_file / ssl_key_file / hba_file pointing at $CERT_DIR
+```
+
+Never commit key or cert material. CI job `db-tls-postgres` generates certs in the job and runs the same suite (`require`, `verify-ca` with hostname mismatch OK, `verify-full` mismatch → `DbError::Tls`, hostssl-only `disable`). MySQL live TLS is a follow-up.
+
 ## cargo-deny
 
 [`deny.toml`](../../deny.toml) at the repo root. CI runs `cargo deny check licenses bans sources`. See [ADR 0005](../adr/0005-gpl-and-cargo-deny.md).

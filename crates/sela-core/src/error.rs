@@ -6,9 +6,19 @@
 /// A database or driver failure, classified for the UI and call sites.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DbError {
-    /// Could not open or keep a connection (network, TLS, pool closed, …).
+    /// Could not open or keep a connection (network, pool closed, …).
     #[error("{message}")]
     Connection {
+        message: String,
+        sqlstate: Option<String>,
+        vendor_code: Option<String>,
+    },
+    /// TLS handshake or certificate verification failed.
+    ///
+    /// Distinct from [`Auth`] so the UI can show a TLS-specific hint without
+    /// confusing it with a wrong password.
+    #[error("{message}")]
+    Tls {
         message: String,
         sqlstate: Option<String>,
         vendor_code: Option<String>,
@@ -67,6 +77,14 @@ pub enum DbError {
 impl DbError {
     pub fn connection(message: impl Into<String>) -> Self {
         Self::Connection {
+            message: message.into(),
+            sqlstate: None,
+            vendor_code: None,
+        }
+    }
+
+    pub fn tls(message: impl Into<String>) -> Self {
+        Self::Tls {
             message: message.into(),
             sqlstate: None,
             vendor_code: None,
@@ -133,6 +151,7 @@ impl DbError {
     pub fn message_text(&self) -> &str {
         match self {
             Self::Connection { message, .. }
+            | Self::Tls { message, .. }
             | Self::Auth { message, .. }
             | Self::Query { message, .. }
             | Self::Timeout { message, .. }
@@ -146,6 +165,7 @@ impl DbError {
     pub fn sqlstate(&self) -> Option<&str> {
         match self {
             Self::Connection { sqlstate, .. }
+            | Self::Tls { sqlstate, .. }
             | Self::Auth { sqlstate, .. }
             | Self::Query { sqlstate, .. }
             | Self::Timeout { sqlstate, .. }
@@ -159,6 +179,7 @@ impl DbError {
     pub fn vendor_code(&self) -> Option<&str> {
         match self {
             Self::Connection { vendor_code, .. }
+            | Self::Tls { vendor_code, .. }
             | Self::Auth { vendor_code, .. }
             | Self::Query { vendor_code, .. }
             | Self::Timeout { vendor_code, .. }

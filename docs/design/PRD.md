@@ -9,7 +9,7 @@ Open-source, native desktop database client (PostgreSQL, MySQL, SQLite) built wi
 **Engines:** PostgreSQL, MySQL, SQLite.  
 **Stack:** Rust 1.85+, gpui-kit 0.10.0 (gpui-pre 0.3.12 + gpui-component), sqlx 0.8, tokio, keyring 3.
 
-See also: [SPECS.md](./SPECS.md), [roadmap.md](./roadmap.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), [benchmarks.md](../dev/benchmarks.md).
+See also: [SPECS.md](./SPECS.md), [roadmap.md](./roadmap.md), [UX specs](./ux/README.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), [benchmarks.md](../dev/benchmarks.md).
 
 ---
 
@@ -94,10 +94,10 @@ Developers work with databases every day and need a tool that opens instantly, s
 | Filter bar, header sort, on-demand exact count | v1 | Planned (M1-3) |
 | Cell edit, insert/delete/duplicate, pending changes, preview SQL, commit/discard | v1 | Planned (M2) |
 | Safe mode per connection, warn UPDATE/DELETE without WHERE, color label | v1 | Planned (M2) |
-| SQL editor: highlight, autocomplete, statement-at-cursor, multi-statement, format | v1 | Planned (M1-4 / M3) |
+| SQL editor: highlight, autocomplete, statement-at-cursor, multi-statement. Format (`sqlformat`) is backlog, not M1-4 | v1 | Highlight and multi-statement: M1-4. Autocomplete: M3-2. Format: backlog |
 | Query history with search, saved queries | v1 | Planned (M1-5) |
 | Selection + copy TSV/CSV/JSON/INSERT; themes | v1 | Planned (M1-7) |
-| TLS modes + CA cert; config schema_version 2 | v1 | Planned (M1-8) |
+| TLS modes + CA cert; config schema_version 2 | v1 | Done (M1-8) |
 | Postgres text-cast fallback | v1 | Planned (M1-9, own PR) |
 | SSH tunnel (password, key, agent, `~/.ssh/config`), SSL certs, connection groups | v1 | Planned (M3) |
 | Export CSV/JSON/SQL INSERT, import CSV | v1 | Planned (M3) |
@@ -179,7 +179,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 
 ## Milestones M0–M4
 
-Milestone tables, M1 details, and post-v1 ideas live in **[roadmap.md](./roadmap.md)**. M0 is done; M1-1 (tabs), M1-2a/b, and M1-6 are done on `main`.
+Milestone tables, M1 details, and post-v1 ideas live in **[roadmap.md](./roadmap.md)**. M0 is done; M1-1 (tabs), M1-2a/b, M1-6, and M1-8 (TLS + config v2, PR #15) are done or in review on `main`.
 
 ---
 

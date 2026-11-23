@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::PgPool;
 
 use tokio_util::sync::CancellationToken;
@@ -25,12 +25,8 @@ impl PostgresSession {
             .port(connection.port)
             .username(connection.username.trim())
             .password(password)
-            .database(connection.database.trim())
-            .ssl_mode(if connection.ssl {
-                PgSslMode::Require
-            } else {
-                PgSslMode::Disable
-            });
+            .database(connection.database.trim());
+        let options = crate::tls::apply_postgres_tls(options, &connection.tls)?;
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
