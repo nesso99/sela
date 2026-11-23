@@ -1,4 +1,4 @@
-//! Birch is a native desktop database client.
+//! Sela is a native desktop database client.
 //!
 //! Database work lives in [`db`] and does not touch the UI. Saved connections
 //! live in [`config`]. The GPUI window is [`ui`].

@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 pub use crate::db::Engine;
 
-/// A connection Birch can reopen. The password is not part of this value.
+/// A connection Sela can reopen. The password is not part of this value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedConnection {
     pub id: String,

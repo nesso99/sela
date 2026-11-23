@@ -115,21 +115,21 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_round_trip_when_configured() {
-        let Ok(url) = std::env::var("BIRCH_POSTGRES_URL") else {
-            eprintln!("skip postgres: set BIRCH_POSTGRES_URL to run this test");
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres: set SELA_POSTGRES_URL to run this test");
             return;
         };
-        let schema = std::env::var("BIRCH_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
         let session = PostgresSession::connect_url(&url)
             .await
             .expect("postgres connect");
         session
-            .execute("DROP TABLE IF EXISTS birch_probe")
+            .execute("DROP TABLE IF EXISTS sela_probe")
             .await
             .unwrap();
         session
             .execute(
-                "CREATE TABLE birch_probe (
+                "CREATE TABLE sela_probe (
                     id integer PRIMARY KEY,
                     name text,
                     in_print boolean,
@@ -140,7 +140,7 @@ mod tests {
             .unwrap();
         session
             .execute(
-                "INSERT INTO birch_probe (id, name, in_print, published)
+                "INSERT INTO sela_probe (id, name, in_print, published)
                  VALUES (1, 'Ada', true, DATE '1815-12-10'), (2, NULL, false, NULL)",
             )
             .await
@@ -149,9 +149,9 @@ mod tests {
         let schemas = session.list_schemas().await.unwrap();
         assert!(schemas.iter().any(|item| item.name == schema));
         let tables = session.list_tables(&schema).await.unwrap();
-        assert!(tables.iter().any(|item| item.name == "birch_probe"));
+        assert!(tables.iter().any(|item| item.name == "sela_probe"));
 
-        let outcome = preview_table(&session, &schema, "birch_probe", PAGE_SIZE, 0)
+        let outcome = preview_table(&session, &schema, "sela_probe", PAGE_SIZE, 0)
             .await
             .unwrap();
         let StatementOutcome::Rows(rows) = outcome else {
@@ -161,7 +161,7 @@ mod tests {
         assert!(rows.page.columns.iter().any(|column| column.name == "name"));
         assert_eq!(rows.total_rows, Some(2));
 
-        let queried = run_user_sql(&session, "SELECT name FROM birch_probe WHERE id = 2", 10, 0)
+        let queried = run_user_sql(&session, "SELECT name FROM sela_probe WHERE id = 2", 10, 0)
             .await
             .unwrap();
         let StatementOutcome::Rows(rows) = queried else {
@@ -169,6 +169,6 @@ mod tests {
         };
         assert!(rows.page.rows[0][0].is_null());
 
-        session.execute("DROP TABLE birch_probe").await.unwrap();
+        session.execute("DROP TABLE sela_probe").await.unwrap();
     }
 }

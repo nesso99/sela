@@ -69,10 +69,12 @@ enum NodeId {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let store = ConfigStore::with_path(ConfigStore::default_path());
-        let (connections, error) = match store.load() {
-            Ok(connections) => (connections, None),
-            Err(err) => (Vec::new(), Some(err.to_string())),
+        let (store, migration_error) = ConfigStore::open_default();
+        let (connections, error) = match (store.load(), migration_error) {
+            (Ok(connections), None) => (connections, None),
+            (Ok(connections), Some(err)) => (connections, Some(err.to_string())),
+            (Err(err), None) => (Vec::new(), Some(err.to_string())),
+            (Err(err), Some(migration)) => (Vec::new(), Some(format!("{migration} ({err})"))),
         };
         let tree = cx.new(|cx| TreeState::new(cx));
         let grid = cx.new(|cx| {
@@ -635,7 +637,7 @@ impl Render for Workspace {
             .unwrap_or_else(|| "Choose a connection to browse its tables.".into());
 
         div()
-            .id("birch-root")
+            .id("sela-root")
             .size_full()
             .flex()
             .flex_row()
@@ -741,7 +743,7 @@ impl Workspace {
             .bg(cx.theme().muted)
             .child(
                 v_flex().px_3().pt_3().pb_2().gap_1().child(
-                    div().text_lg().child("Birch"),
+                    div().text_lg().child("Sela"),
                 ).child(
                     div()
                         .text_xs()

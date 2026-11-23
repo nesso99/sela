@@ -12,7 +12,7 @@ use gpui_kit::{
 
 pub use workspace::Workspace;
 
-actions!(birch, [RunQuery, Quit]);
+actions!(sela, [RunQuery, Quit]);
 
 pub fn run() {
     gpui_kit::application()
@@ -32,7 +32,7 @@ pub fn run() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Birch".into()),
+                        title: Some("Sela".into()),
                         ..Default::default()
                     }),
                     window_min_size: Some(size(px(880.), px(560.))),
@@ -41,6 +41,6 @@ pub fn run() {
                 cx,
                 |window, cx| cx.new(|cx| Workspace::new(window, cx)),
             )
-            .expect("failed to open the Birch window");
+            .expect("failed to open the Sela window");
         });
 }

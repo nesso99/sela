@@ -113,21 +113,21 @@ mod tests {
 
     #[tokio::test]
     async fn mysql_round_trip_when_configured() {
-        let Ok(url) = std::env::var("BIRCH_MYSQL_URL") else {
-            eprintln!("skip mysql: set BIRCH_MYSQL_URL to run this test");
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql: set SELA_MYSQL_URL to run this test");
             return;
         };
-        let schema = std::env::var("BIRCH_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
+        let schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
         let session = MysqlSession::connect_url(&url)
             .await
             .expect("mysql connect");
         session
-            .execute("DROP TABLE IF EXISTS birch_probe")
+            .execute("DROP TABLE IF EXISTS sela_probe")
             .await
             .unwrap();
         session
             .execute(
-                "CREATE TABLE birch_probe (
+                "CREATE TABLE sela_probe (
                     id INT PRIMARY KEY,
                     name VARCHAR(64) NULL,
                     rating DOUBLE NULL
@@ -136,15 +136,17 @@ mod tests {
             .await
             .unwrap();
         session
-            .execute("INSERT INTO birch_probe (id, name, rating) VALUES (1, 'Ada', 1.5), (2, NULL, NULL)")
+            .execute(
+                "INSERT INTO sela_probe (id, name, rating) VALUES (1, 'Ada', 1.5), (2, NULL, NULL)",
+            )
             .await
             .unwrap();
 
         let tables = session.list_tables(&schema).await.unwrap();
-        assert!(tables.iter().any(|item| item.name == "birch_probe"));
+        assert!(tables.iter().any(|item| item.name == "sela_probe"));
         let outcome = run_user_sql(
             &session,
-            "SELECT name, rating FROM birch_probe ORDER BY id",
+            "SELECT name, rating FROM sela_probe ORDER BY id",
             10,
             0,
         )
@@ -156,6 +158,6 @@ mod tests {
         assert_eq!(rows.page.rows.len(), 2);
         assert!(rows.page.rows[1][0].is_null());
         assert_eq!(rows.total_rows, Some(2));
-        session.execute("DROP TABLE birch_probe").await.unwrap();
+        session.execute("DROP TABLE sela_probe").await.unwrap();
     }
 }
