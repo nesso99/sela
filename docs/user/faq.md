@@ -1,5 +1,9 @@
 # FAQ
 
+## Does query history store my SQL?
+
+Yes. Statements you run are stored in `history.sqlite` next to the connections file, including literals inside the SQL. The file is not encrypted. On Unix its mode is `0600`. Connection passwords are not in that file. They stay in the OS keychain. Clear history in the history panel removes the stored statements for the current scope, or all of them when the scope is All.
+
 ## Where are my passwords stored?
 
 In the OS keychain when available — never in `connections.json`. See [Connecting](./connecting.md).

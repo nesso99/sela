@@ -22,6 +22,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 - Tabs for tables and queries: open/close/switch (Cmd/Ctrl+T/W/1..9), per-tab cancel-on-close, restore from `tabs.json` without auto-running SQL (#12).
 - GPL-3.0-or-later license, `deny.toml`, and CI `cargo-deny` checks (#14).
 - GitHub Actions CI: fmt, clippy, tests (Linux/macOS; Windows on main), and Postgres/MySQL integration (#4, #6).
+- UX specs for query history, the connection dialog (including TLS), and light/dark theme tokens (`docs/design/ux/04`–`06`, indexed in `docs/design/ux/README.md`).
 
 ### Changed
 

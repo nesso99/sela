@@ -57,6 +57,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 - Bound or LRU on the structure cache
 - Re-measure on a real GPU
 - Dedicated DB connection per query tab (shared pool today)
+- TLS client-key passphrase. rustls needs an unencrypted PEM today. A passphrase, if added later, goes to the OS keychain and never into `connections.json`.
 
 ---
 

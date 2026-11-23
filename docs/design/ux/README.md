@@ -2,15 +2,18 @@
 
 Design specs for the desktop window. Product intent is in [PRD.md](../PRD.md), milestones in [roadmap.md](../roadmap.md), and the APIs in [SPECS.md](../SPECS.md). What is bound in the app today is listed in [keyboard-shortcuts.md](../../user/keyboard-shortcuts.md).
 
-These files specify M1-3 (filter and sort) and M1-4 / M3-2 (SQL editor). They describe the window that already ships and the changes those milestones should make. They are not a new visual system.
+These files specify M1-3 (filter and sort), M1-4 / M3-2 (SQL editor), M1-5 (query history), the connection dialog including TLS, and M1-7 theme tokens. They describe the window that already ships and the changes those milestones should make. They are not a new visual system.
 
 | Doc | Covers |
 | --- | --- |
 | [01-main-window.md](./01-main-window.md) | Sidebar, tabs, grid, editor, status bar. Empty, running, 1,000-row cap, cancelled, query error, decode-error cells. |
 | [02-filter-sort-review.md](./02-filter-sort-review.md) | Review of the planned filter bar and header sort against the current grid, status bar, and count button. Fixes, not a redesign. |
 | [03-sql-editor.md](./03-sql-editor.md) | Editor/result split, run and cancel, autocomplete, error placement, multiple result sets. |
+| [04-query-history.md](./04-query-history.md) | Bottom history panel. Row contents, search, per-connection scope, actions, empty and error states, retention, shortcuts. |
+| [05-connection-dialog.md](./05-connection-dialog.md) | Postgres, MySQL, and SQLite fields, password display, Test connection, save and connect, TLS modes and certificate files. |
+| [06-theme-tokens.md](./06-theme-tokens.md) | Light and dark tokens, contrast, type, spacing, chrome sizes, gpui-kit field mapping. |
 
-Wireframes are low-fidelity grayscale PNGs in [images/](./images/). The matching `.html` files are the source. Numbers in the specs are the ones to implement; the drawings are schematic.
+Wireframes are low-fidelity grayscale PNGs in [images/](./images/). The matching `.html` files are the source. Numbers in the specs are the ones to implement; the drawings are schematic. The theme swatch ([images/theme-swatches.png](./images/theme-swatches.png)) is the exception: it is in color, because it is the palette in [06-theme-tokens.md](./06-theme-tokens.md).
 
 ## Visual direction
 
@@ -19,7 +22,7 @@ Native, dense, keyboard-first. The reference is TablePlus and Zed, not a web das
 - Compact rows, 1px dividers, monospace grid and editor.
 - No cards, no large padding, no rounded hero panels, no centered spinner over the grid.
 - Chrome heights stay in the 22–44px range. Do not grow the toolbar, tab bar, or status bar.
-- Color comes from the GPUI theme already in use (`background`, `foreground`, `muted`, `muted_foreground`, `border`, `danger`). Wireframes are grayscale so they do not invent a palette.
+- Color comes from the GPUI theme. The light and dark values are in [06-theme-tokens.md](./06-theme-tokens.md). Wireframes stay grayscale.
 - One primary button per local group (Run, Apply, New). Everything else is a plain or ghost button at the existing `xsmall` / `small` sizes.
 
 ## Modifier notation
@@ -48,6 +51,7 @@ The user-facing shortcut page should keep saying “⌘ on macOS, Ctrl on Linux 
 | `secondary-q` | Quit, already bound (`cmd-q` today) |
 | `secondary-w` | Close tab, already bound. It does not close the window. |
 | `secondary-h`, `secondary-m` | Hide and minimize on macOS |
+| `secondary-y` | Redo in text fields on Windows and Linux |
 | `secondary-c` / `v` / `x` / `a` / `z` | Clipboard and undo inside text fields |
 | Option/Alt + letter | Option types characters on macOS. Do not bind those as global actions. |
 | `secondary-p` | Reserved for M3 quick open (PRD) |
@@ -63,13 +67,14 @@ The user-facing shortcut page should keep saying “⌘ on macOS, Ctrl on Linux 
 
 GPUI key contexts must differ. Do not rely on the action handler to guess.
 
-| Chord | Editor focused | Filter bar focused | Grid, tabs, or sidebar focused |
-| --- | --- | --- | --- |
-| `secondary-enter` | Run statement at caret, or the selection | Do not run. Apply the filter. | Do not run. |
-| `secondary-shift-enter` | Run every statement in the buffer | Add a filter row | No action |
-| `secondary-f` | Find in the editor | Focus the first column field | Toggle the filter bar |
-| `Enter` | New line in the editor. Accepts autocomplete when the popup is open. | Apply the filter | Open cell inspect until M2, then edit (see the main-window spec) |
-| `Escape` | Close find, then close autocomplete | Close the open menu, then leave the bar | Close inspect |
+| Chord | Editor focused | Filter bar focused | History list or its search field | Connection dialog | Grid, tabs, or sidebar focused |
+| --- | --- | --- | --- | --- | --- |
+| `secondary-enter` | Run statement at caret, or the selection | Do not run. Apply the filter. | Insert the selected SQL. Do not run it. | Save and connect | Do not run. |
+| `secondary-shift-enter` | Run every statement in the buffer | Add a filter row | Rerun. Read-only statements run immediately. Anything else confirms first. Cancel is the default button. | No action | No action |
+| `secondary-shift-h` | Toggle the history panel | Toggle the history panel | Close the panel | No action. The dialog eats the key. | Toggle the history panel |
+| `secondary-f` | Find in the editor | Focus the first column field | Focus the history search | No action | Toggle the filter bar |
+| `Enter` | New line in the editor. Accepts autocomplete when the popup is open. | Apply the filter | Open the selected row in a new query tab. Do not run it. | Activate the focused button. A text field does not insert a newline. | Open cell inspect until M2, then edit (see the main-window spec) |
+| `Escape` | Close find, then close autocomplete | Close the open menu, then leave the bar | Clear the search text if it is non-empty, otherwise close the panel | Cancel the dialog | Close inspect |
 
 ## Shortcuts by screen
 
@@ -121,6 +126,30 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 | Move the focused cell | Arrow keys, once a cell is focused | M1-7 owns selection |
 | Inspect the focused cell | `Space`. `Enter` does the same until cell editing exists. | M2 reassigns `Enter` to edit. `Space` stays inspect. |
 | Copy | `secondary-c` | M1-7. Today `cell_text` already returns the full value. |
+
+### Query history
+
+| Action | Shortcut | Bound today |
+| --- | --- | --- |
+| Toggle history | `secondary-shift-h` | no |
+| Focus history search | `secondary-f` while the panel is focused | no |
+| Move the selection | `Up` / `Down`, including while the search field is focused | no |
+| Open in a new query tab | `Enter` | no |
+| Insert into the editor | `secondary-enter` | no |
+| Copy the SQL | `secondary-c` when the list is focused | no |
+| Rerun | `secondary-shift-enter`. Read-only statements run immediately. Anything else confirms first; Cancel is the default button. | no |
+| Delete the row | `secondary-backspace` | no |
+| Clear history | The header button. No shortcut. | no |
+
+### Connection dialog
+
+| Action | Shortcut | Bound today |
+| --- | --- | --- |
+| Save and connect | `secondary-enter` | no |
+| Cancel | `Escape` | dialog dismiss already closes it |
+| Move between fields | `Tab` / `Shift-Tab` | yes, as focus order |
+
+Test connection has no shortcut. It is a plain button on the focus path. Theme choice (Light, Dark, System) is the status menu in [06-theme-tokens.md](./06-theme-tokens.md). It has no shortcut. `secondary-,` stays reserved for a future settings window.
 
 ## Implementation notes for engineering
 

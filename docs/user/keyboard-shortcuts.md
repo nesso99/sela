@@ -16,3 +16,5 @@ The design target for shortcuts that are not built yet (filter, editor split, fi
 | Quit | Cmd+Q |
 
 Run applies to the active query tab. Cancel stops the running query for that tab (server-side cancel on Postgres/MySQL; SQLite drops the stream). Closing a tab cancels its in-flight work.
+
+The chords above are the ones registered in `ui/mod.rs`. Query history, the connection dialog, and the theme menu are specified and not bound yet. They are in the same design index: [docs/design/ux/README.md](../design/ux/README.md). `secondary` in that folder means ⌘ on macOS and Ctrl on Linux and Windows.
