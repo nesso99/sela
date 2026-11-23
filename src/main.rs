@@ -1,3 +1,3 @@
 fn main() {
-    birch::ui::run();
+    sela::ui::run();
 }

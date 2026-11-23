@@ -1,9 +1,9 @@
 [package]
-name = "birch"
+name = "sela"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-description = "Birch is a native desktop database client for PostgreSQL, MySQL, and SQLite."
+description = "Sela is a native desktop database client for PostgreSQL, MySQL, and SQLite."
 license = "MIT"
 publish = false
 

@@ -1,6 +1,6 @@
 //! Identifier quoting, statement splitting, and paging SQL.
 //!
-//! Birch generates these strings. User SQL is passed through after it has been
+//! Sela generates these strings. User SQL is passed through after it has been
 //! checked for a single statement.
 
 use super::types::Dialect;
@@ -51,12 +51,12 @@ pub fn select_all(dialect: Dialect, schema: &str, table: &str) -> Result<String,
 /// cannot swallow the closing parenthesis.
 pub fn wrap_page(dialect: Dialect, sql: &str, limit: u32, offset: u64) -> String {
     let _ = dialect;
-    format!("SELECT * FROM (\n{sql}\n) AS birch_page LIMIT {limit} OFFSET {offset}")
+    format!("SELECT * FROM (\n{sql}\n) AS sela_page LIMIT {limit} OFFSET {offset}")
 }
 
 pub fn wrap_count(dialect: Dialect, sql: &str) -> String {
     let _ = dialect;
-    format!("SELECT COUNT(*) AS birch_count FROM (\n{sql}\n) AS birch_page")
+    format!("SELECT COUNT(*) AS sela_count FROM (\n{sql}\n) AS sela_page")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,7 +292,7 @@ mod tests {
         );
         let wrapped = wrap_page(Dialect::Postgres, "select 1 -- tail", 100, 20);
         assert!(wrapped.contains("LIMIT 100 OFFSET 20"));
-        assert!(wrapped.contains("\n) AS birch_page"));
+        assert!(wrapped.contains("\n) AS sela_page"));
         let count = wrap_count(Dialect::Mysql, "select 1");
         assert!(count.starts_with("SELECT COUNT(*)"));
     }

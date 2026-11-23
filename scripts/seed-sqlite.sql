@@ -1,4 +1,4 @@
--- Birch sample library. Loaded by the app and by the SQLite tests.
+-- Sela sample library. Loaded by the app and by the SQLite tests.
 
 CREATE TABLE authors (
     id INTEGER PRIMARY KEY,

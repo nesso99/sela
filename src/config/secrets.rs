@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-const SERVICE: &str = "app.birch.database";
+const SERVICE: &str = "app.sela.database";
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {

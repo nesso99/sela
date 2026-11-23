@@ -635,7 +635,7 @@ impl Render for Workspace {
             .unwrap_or_else(|| "Choose a connection to browse its tables.".into());
 
         div()
-            .id("birch-root")
+            .id("sela-root")
             .size_full()
             .flex()
             .flex_row()
@@ -741,7 +741,7 @@ impl Workspace {
             .bg(cx.theme().muted)
             .child(
                 v_flex().px_3().pt_3().pb_2().gap_1().child(
-                    div().text_lg().child("Birch"),
+                    div().text_lg().child("Sela"),
                 ).child(
                     div()
                         .text_xs()

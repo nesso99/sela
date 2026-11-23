@@ -1,19 +1,19 @@
-# Birch
+# Sela
 
-Birch is a native desktop database client for PostgreSQL, MySQL, and SQLite. It is an early slice of a TablePlus-style app: save a connection, browse schemas and tables, page through rows, and run SQL.
+Sela is a native desktop database client for PostgreSQL, MySQL, and SQLite. It is an early slice of a TablePlus-style app: save a connection, browse schemas and tables, page through rows, and run SQL.
 
 The window is [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), pinned through [GPUI Kit](https://github.com/longbridge/gpui-kit) **0.10.0**. That release depends on `gpui-pre` **0.3.12** (the published GPUI snapshot GPUI Kit was built against). Tables, inputs, and the sidebar tree come from `gpui-component` in the same release.
 
 The first window, with no connections yet, and the sample library opened to `main.bookmarks`:
 
-![Empty Birch window](docs/empty.png)
+![Empty Sela window](docs/empty.png)
 
 ![Sample library, bookmarks table](docs/sample-library.png)
 
 ## What you can do
 
 - Create, edit, and delete saved connections for PostgreSQL, MySQL, and SQLite.
-- Connections are stored in a local JSON file. Passwords are not in that file. Birch writes them to the OS keychain with the [`keyring`](https://crates.io/crates/keyring) crate when a secret service is available.
+- Connections are stored in a local JSON file. Passwords are not in that file. Sela writes them to the OS keychain with the [`keyring`](https://crates.io/crates/keyring) crate when a secret service is available.
 - Browse schemas (or databases) and tables for the active connection, including views.
 - Open a table in a virtualized grid, 100 rows per page, with the column type in the header.
 - Write one SQL statement and run it with Ctrl+Enter or Cmd+Enter. Results use the same grid. Errors, row counts, and timing show in the status bar.
@@ -52,7 +52,7 @@ sudo apt install mesa-vulkan-drivers
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 ```
 
-Passwords use the Secret Service API (gnome-keyring or KWallet) over D-Bus. If no secret service is running, Birch still saves the connection and keeps the password in memory until you quit. It does not write the password into the JSON file. The status bar says when that fallback is in use.
+Passwords use the Secret Service API (gnome-keyring or KWallet) over D-Bus. If no secret service is running, Sela still saves the connection and keeps the password in memory until you quit. It does not write the password into the JSON file. The status bar says when that fallback is in use.
 
 ### Windows
 
@@ -69,15 +69,15 @@ The connections file is:
 
 | OS | Path |
 | --- | --- |
-| Linux | `$XDG_CONFIG_HOME/birch/connections.json`, or `~/.config/birch/connections.json` |
-| macOS | `~/Library/Application Support/Birch/connections.json` |
-| Windows | `%APPDATA%\Birch\connections.json` |
+| Linux | `$XDG_CONFIG_HOME/sela/connections.json`, or `~/.config/sela/connections.json` |
+| macOS | `~/Library/Application Support/Sela/connections.json` |
+| Windows | `%APPDATA%\Sela\connections.json` |
 
-Set `BIRCH_CONFIG_DIR` to point the file somewhere else. The file mode is `0600` on Unix.
+Set `SELA_CONFIG_DIR` to point the file somewhere else. The file mode is `0600` on Unix.
 
 ### Sample SQLite library
 
-Click **Sample library** in the sidebar. Birch creates `sample.sqlite` next to the connections file and opens it. The database has `authors`, `books`, `bookmarks`, and a `books_in_print` view.
+Click **Sample library** in the sidebar. Sela creates `sample.sqlite` next to the connections file and opens it. The database has `authors`, `books`, `bookmarks`, and a `books_in_print` view.
 
 You can also build that file yourself:
 
@@ -90,7 +90,7 @@ Then add a SQLite connection whose file path is `examples/library.sqlite`.
 
 ### PostgreSQL and MySQL
 
-`docker-compose.yml` starts Postgres 16 and MySQL 8.4 with the same library data. Postgres also creates an `archive` schema. MySQL also creates an `archive` database and grants it to `birch`.
+`docker-compose.yml` starts Postgres 16 and MySQL 8.4 with the same library data. Postgres also creates an `archive` schema. MySQL also creates an `archive` database and grants it to `sela`.
 
 ```bash
 docker compose up -d
@@ -98,8 +98,8 @@ docker compose up -d
 
 | Engine | Host | Port | User | Password | Database |
 | --- | --- | --- | --- | --- | --- |
-| PostgreSQL | `127.0.0.1` | `5432` | `birch` | `birch` | `sample` |
-| MySQL | `127.0.0.1` | `3306` | `birch` | `birch` | `sample` |
+| PostgreSQL | `127.0.0.1` | `5432` | `sela` | `sela` | `sample` |
+| MySQL | `127.0.0.1` | `3306` | `sela` | `sela` | `sample` |
 
 Leave **Require SSL** off for these containers. They do not serve TLS.
 
@@ -116,12 +116,12 @@ SQLite tests use a temporary file and do not need a server. They cover the catal
 PostgreSQL and MySQL tests run only when their URL is set. Otherwise they print a skip line and pass.
 
 ```bash
-export BIRCH_POSTGRES_URL='postgres://birch:birch@127.0.0.1:5432/sample?sslmode=disable'
-export BIRCH_MYSQL_URL='mysql://birch:birch@127.0.0.1:3306/sample?ssl-mode=disabled'
+export SELA_POSTGRES_URL='postgres://sela:sela@127.0.0.1:5432/sample?sslmode=disable'
+export SELA_MYSQL_URL='mysql://sela:sela@127.0.0.1:3306/sample?ssl-mode=disabled'
 cargo test
 ```
 
-Optional schema overrides: `BIRCH_POSTGRES_SCHEMA` (default `public`) and `BIRCH_MYSQL_SCHEMA` (default `sample`).
+Optional schema overrides: `SELA_POSTGRES_SCHEMA` (default `public`) and `SELA_MYSQL_SCHEMA` (default `sample`).
 
 ## Layout
 
@@ -151,4 +151,4 @@ The pieces below are intentionally not in this version. The module split is ther
 
 ## Keychain limitation
 
-Birch never writes a password into `connections.json`. On Linux that depends on a running Secret Service. A headless session, or a session with no unlocked keyring, cannot persist the password. Birch keeps it in process memory, tells you in the status bar, and asks again the next time you launch the app.
+Sela never writes a password into `connections.json`. On Linux that depends on a running Secret Service. A headless session, or a session with no unlocked keyring, cannot persist the password. Sela keeps it in process memory, tells you in the status bar, and asks again the next time you launch the app.

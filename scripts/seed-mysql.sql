@@ -55,7 +55,7 @@ JOIN authors ON authors.id = books.author_id
 WHERE books.in_print = 1;
 
 CREATE DATABASE IF NOT EXISTS archive;
-GRANT ALL PRIVILEGES ON archive.* TO 'birch'@'%';
+GRANT ALL PRIVILEGES ON archive.* TO 'sela'@'%';
 
 CREATE TABLE archive.retired_books (
     id INT PRIMARY KEY,

@@ -104,27 +104,27 @@ fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
 }
 
 pub fn config_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("BIRCH_CONFIG_DIR") {
+    if let Some(dir) = std::env::var_os("SELA_CONFIG_DIR") {
         return PathBuf::from(dir);
     }
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         #[cfg(target_os = "macos")]
         {
-            return home.join("Library/Application Support/Birch");
+            return home.join("Library/Application Support/Sela");
         }
         #[cfg(not(target_os = "macos"))]
         {
             if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-                return PathBuf::from(xdg).join("birch");
+                return PathBuf::from(xdg).join("sela");
             }
-            return home.join(".config").join("birch");
+            return home.join(".config").join("sela");
         }
     }
     if let Some(appdata) = std::env::var_os("APPDATA") {
-        return PathBuf::from(appdata).join("Birch");
+        return PathBuf::from(appdata).join("Sela");
     }
-    PathBuf::from(".birch")
+    PathBuf::from(".sela")
 }
 
 #[cfg(test)]
@@ -144,7 +144,7 @@ mod tests {
                 "engine": "postgres",
                 "host": "127.0.0.1",
                 "port": 5432,
-                "username": "birch",
+                "username": "sela",
                 "database": "sample",
                 "password": "should-not-survive",
                 "ssl": false
@@ -203,7 +203,7 @@ mod tests {
 
         let mut pg = SavedConnection::new(Engine::Postgres);
         pg.name = "Warehouse".into();
-        pg.username = "birch".into();
+        pg.username = "sela".into();
         pg.database = "sample".into();
         assert!(pg.validate().is_ok());
         pg.port = 0;

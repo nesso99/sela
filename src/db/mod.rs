@@ -1,7 +1,7 @@
 //! Database drivers.
 //!
 //! [`driver::DatabaseSession`] is the seam the UI talks to. PostgreSQL, MySQL,
-//! and SQLite each implement it. SQL that Birch generates (identifiers, paging)
+//! and SQLite each implement it. SQL that Sela generates (identifiers, paging)
 //! is built in [`sql`] and covered by unit tests that do not need a server.
 
 mod decode;
