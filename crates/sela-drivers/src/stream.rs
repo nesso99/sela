@@ -1,5 +1,10 @@
 //! Batched `sqlx` streaming with cooperative + server-side cancel.
 //!
+//! Columns come from the **first row** (or from `describe` only when the result is
+//! empty). Calling `describe` on the same connection *before* `fetch` makes
+//! Postgres buffer the whole result before the first streamed row — which breaks
+//! “first batch before the query finishes”.
+//!
 //! ## SQLite cancel limitation
 //!
 //! `sqlx`'s SQLite driver exposes no interrupt / progress-handler API. On cancel we
@@ -50,21 +55,39 @@ pub(crate) async fn stream_postgres(
             .await;
     });
 
-    let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
-    let mut columns: Vec<ColumnMeta> = described.columns().iter().map(column_meta).collect();
-    let mut stream = sqlx::query(sql).fetch(&mut *conn);
-    let result = drain_stream::<sqlx::Postgres, _, _>(
-        &mut stream,
-        &mut columns,
-        batch_size,
-        row_cap,
-        finish_at_cap,
-        cancel,
-        sink,
-        started,
-        read_postgres_cell,
-    )
-    .await;
+    let sink_meta = sink.clone();
+    let mut columns = Vec::new();
+    let result = {
+        let mut stream = sqlx::query(sql).fetch(&mut *conn);
+        drain_stream::<sqlx::Postgres, _, _>(
+            &mut stream,
+            &mut columns,
+            batch_size,
+            row_cap,
+            finish_at_cap,
+            cancel,
+            sink,
+            started,
+            read_postgres_cell,
+        )
+        .await
+    };
+    let result = match result {
+        Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
+            let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
+            outcome.columns = described.columns().iter().map(column_meta).collect();
+            let _ = sink_meta
+                .send(StreamBatch {
+                    columns: Some(outcome.columns.clone()),
+                    rows: Vec::new(),
+                    start_index: 0,
+                    paused_at_cap: false,
+                })
+                .await;
+            Ok(outcome)
+        }
+        other => other,
+    };
 
     cancel_task.abort();
     result
@@ -98,21 +121,39 @@ pub(crate) async fn stream_mysql(
         let _ = sqlx::query(&kill).execute(&pool_cancel).await;
     });
 
-    let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
-    let mut columns: Vec<ColumnMeta> = described.columns().iter().map(column_meta).collect();
-    let mut stream = sqlx::query(sql).fetch(&mut *conn);
-    let result = drain_stream::<sqlx::MySql, _, _>(
-        &mut stream,
-        &mut columns,
-        batch_size,
-        row_cap,
-        finish_at_cap,
-        cancel,
-        sink,
-        started,
-        read_mysql_cell,
-    )
-    .await;
+    let sink_meta = sink.clone();
+    let mut columns = Vec::new();
+    let result = {
+        let mut stream = sqlx::query(sql).fetch(&mut *conn);
+        drain_stream::<sqlx::MySql, _, _>(
+            &mut stream,
+            &mut columns,
+            batch_size,
+            row_cap,
+            finish_at_cap,
+            cancel,
+            sink,
+            started,
+            read_mysql_cell,
+        )
+        .await
+    };
+    let result = match result {
+        Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
+            let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
+            outcome.columns = described.columns().iter().map(column_meta).collect();
+            let _ = sink_meta
+                .send(StreamBatch {
+                    columns: Some(outcome.columns.clone()),
+                    rows: Vec::new(),
+                    start_index: 0,
+                    paused_at_cap: false,
+                })
+                .await;
+            Ok(outcome)
+        }
+        other => other,
+    };
 
     cancel_task.abort();
     result
@@ -133,21 +174,39 @@ pub(crate) async fn stream_sqlite(
     }
 
     let mut conn = pool.acquire().await.map_err(crate::sqlx_err)?;
-    let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
-    let mut columns: Vec<ColumnMeta> = described.columns().iter().map(column_meta).collect();
-    let mut stream = sqlx::query(sql).fetch(&mut *conn);
-    drain_stream::<sqlx::Sqlite, _, _>(
-        &mut stream,
-        &mut columns,
-        batch_size,
-        row_cap,
-        finish_at_cap,
-        cancel,
-        sink,
-        started,
-        read_sqlite_cell,
-    )
-    .await
+    let sink_meta = sink.clone();
+    let mut columns = Vec::new();
+    let result = {
+        let mut stream = sqlx::query(sql).fetch(&mut *conn);
+        drain_stream::<sqlx::Sqlite, _, _>(
+            &mut stream,
+            &mut columns,
+            batch_size,
+            row_cap,
+            finish_at_cap,
+            cancel,
+            sink,
+            started,
+            read_sqlite_cell,
+        )
+        .await
+    };
+    match result {
+        Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
+            let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
+            outcome.columns = described.columns().iter().map(column_meta).collect();
+            let _ = sink_meta
+                .send(StreamBatch {
+                    columns: Some(outcome.columns.clone()),
+                    rows: Vec::new(),
+                    start_index: 0,
+                    paused_at_cap: false,
+                })
+                .await;
+            Ok(outcome)
+        }
+        other => other,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -359,7 +418,8 @@ where
     )
     .await;
 
-    if !sent_columns {
+    // Zero-row results leave `columns` empty; the caller describes after drop(stream).
+    if !sent_columns && !columns.is_empty() {
         let _ = sink
             .send(StreamBatch {
                 columns: Some(columns.clone()),

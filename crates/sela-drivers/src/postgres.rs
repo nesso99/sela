@@ -417,44 +417,39 @@ mod tests {
         let session = PostgresSession::connect_url(&url)
             .await
             .expect("postgres connect");
-        session
-            .execute("DROP TABLE IF EXISTS sela_stream")
-            .await
-            .unwrap();
-        session
-            .execute("CREATE TABLE sela_stream (id int primary key)")
-            .await
-            .unwrap();
-        for i in 0..250 {
-            session
-                .execute(&format!("INSERT INTO sela_stream VALUES ({i})"))
-                .await
-                .unwrap();
-        }
+        // Stream thousands of rows, then block in pg_sleep on a UNION ALL arm.
+        // Postgres buffers a small first arm until the query ends (~500 rows is not
+        // enough); 5000+ flushes to the client before the sleep arm runs.
+        // Also: do not describe() before fetch (see stream.rs) — that similarly
+        // prevents row streaming on this connection.
+        let sql = "(SELECT generate_series(1, 5000)::int AS id) \
+                   UNION ALL \
+                   (SELECT -1 FROM (SELECT pg_sleep(60)) s)";
         let (tx, rx) = async_channel::bounded(4);
         let cancel = CancellationToken::new();
-        let produce = session.stream_query(
-            "SELECT id FROM sela_stream ORDER BY id",
-            50,
-            Some(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
-                1000,
-            ))),
-            true,
-            cancel,
-            tx,
-        );
-        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("first batch timed out")
-            .expect("channel closed");
+        let cancel_after_first = cancel.clone();
+        let produce = session.stream_query(sql, 50, None, true, cancel, tx);
+        tokio::pin!(produce);
+        let first = tokio::select! {
+            biased;
+            batch = rx.recv() => batch.expect("channel closed before first batch"),
+            res = &mut produce => panic!("stream finished before first batch: {res:?}"),
+        };
         assert!(
-            !first.rows.is_empty() || first.columns.is_some(),
-            "first batch should arrive before the query finishes"
+            !first.rows.is_empty(),
+            "expected streamed rows before pg_sleep, got {first:?}"
         );
-        let outcome = produce.await.expect("stream ok");
-        assert!(outcome.rows_delivered >= first.rows.len());
-        // Drain remaining.
-        while rx.recv().await.is_ok() {}
-        session.execute("DROP TABLE sela_stream").await.unwrap();
+        assert!(first.rows.len() <= 50);
+        // Unblock a producer stuck on a full channel, then cancel the sleep arm.
+        cancel_after_first.cancel();
+        while rx.try_recv().is_ok() {}
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(3), &mut produce)
+            .await
+            .expect("cancel should end the stream well before pg_sleep(60) finishes");
+        match finished {
+            Ok(summary) => assert!(summary.rows_delivered >= first.rows.len()),
+            Err(DbError::Cancelled { .. }) => {}
+            Err(other) => panic!("unexpected stream error: {other:?}"),
+        }
     }
 }

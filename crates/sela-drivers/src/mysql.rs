@@ -379,32 +379,43 @@ mod tests {
             .execute("CREATE TABLE sela_stream (id INT PRIMARY KEY)")
             .await
             .unwrap();
-        for i in 0..250 {
-            session
-                .execute(&format!("INSERT INTO sela_stream VALUES ({i})"))
-                .await
-                .unwrap();
+        // Bulk-load enough rows that the stream cannot finish before batch 1.
+        // (MySQL buffers result sets that embed SLEEP/BENCHMARK, so we cannot use
+        // a yield-then-sleep query here; race the consumer against completion.)
+        let mut values = String::from("INSERT INTO sela_stream (id) VALUES ");
+        for i in 1..=5_000 {
+            if i > 1 {
+                values.push(',');
+            }
+            values.push_str(&format!("({i})"));
         }
+        session.execute(&values).await.unwrap();
+        let sql = "SELECT id FROM sela_stream ORDER BY id";
         let (tx, rx) = async_channel::bounded(4);
         let cancel = CancellationToken::new();
-        let produce = session.stream_query(
-            "SELECT id FROM sela_stream ORDER BY id",
-            50,
-            Some(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
-                1000,
-            ))),
-            true,
-            cancel,
-            tx,
+        let cancel_after_first = cancel.clone();
+        let produce = session.stream_query(sql, 50, None, true, cancel, tx);
+        tokio::pin!(produce);
+        let first = tokio::select! {
+            biased;
+            batch = rx.recv() => batch.expect("channel closed before first batch"),
+            res = &mut produce => panic!("stream finished before first batch: {res:?}"),
+        };
+        assert!(
+            !first.rows.is_empty(),
+            "expected first batch before stream completion, got {first:?}"
         );
-        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        assert!(first.rows.len() <= 50);
+        cancel_after_first.cancel();
+        while rx.try_recv().is_ok() {}
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), &mut produce)
             .await
-            .expect("first batch timed out")
-            .expect("channel closed");
-        assert!(!first.rows.is_empty() || first.columns.is_some());
-        let outcome = produce.await.expect("stream ok");
-        assert!(outcome.rows_delivered >= first.rows.len());
-        while rx.recv().await.is_ok() {}
+            .expect("cancelled stream should finish promptly");
+        match finished {
+            Ok(summary) => assert!(summary.rows_delivered >= first.rows.len()),
+            Err(DbError::Cancelled { .. }) => {}
+            Err(other) => panic!("unexpected stream error: {other:?}"),
+        }
         session.execute("DROP TABLE sela_stream").await.unwrap();
     }
 }
