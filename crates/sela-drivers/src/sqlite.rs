@@ -6,12 +6,11 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 use sqlx::Row;
 
-use super::driver::DatabaseSession;
-use super::error::DbError;
-use super::sql::quote_ident;
-use super::types::{Dialect, QueryPage, RelationKind, SchemaInfo, TableInfo};
+use sela_core::{
+    quote_ident, DatabaseSession, DbError, Dialect, QueryPage, RelationKind, SchemaInfo, TableInfo,
+};
 
-pub const SAMPLE_SQL: &str = include_str!("../../scripts/seed-sqlite.sql");
+pub const SAMPLE_SQL: &str = include_str!("../../../scripts/seed-sqlite.sql");
 
 pub struct SqliteSession {
     pool: SqlitePool,
@@ -27,7 +26,8 @@ impl SqliteSession {
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
             .connect_with(options)
-            .await?;
+            .await
+            .map_err(crate::sqlx_err)?;
         Ok(Self { pool })
     }
 }
@@ -41,10 +41,11 @@ impl DatabaseSession for SqliteSession {
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>, DbError> {
         let rows = sqlx::query("SELECT name FROM pragma_database_list ORDER BY seq")
             .fetch_all(&self.pool)
-            .await?;
+            .await
+            .map_err(crate::sqlx_err)?;
         let mut schemas = Vec::new();
         for row in rows {
-            let name: String = row.try_get("name")?;
+            let name: String = row.try_get("name").map_err(crate::sqlx_err)?;
             if name.eq_ignore_ascii_case("temp") {
                 continue;
             }
@@ -61,12 +62,15 @@ impl DatabaseSession for SqliteSession {
              WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
              ORDER BY name"
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?;
         let mut tables = Vec::with_capacity(rows.len());
         for row in rows {
-            let kind: String = row.try_get("type")?;
+            let kind: String = row.try_get("type").map_err(crate::sqlx_err)?;
             tables.push(TableInfo {
-                name: row.try_get("name")?,
+                name: row.try_get("name").map_err(crate::sqlx_err)?,
                 kind: RelationKind::parse(&kind),
             });
         }
@@ -89,8 +93,9 @@ impl DatabaseSession for SqliteSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::sql::split_statements;
-    use crate::db::{preview_table, run_user_sql, Cell, StatementOutcome, PAGE_SIZE};
+    use sela_core::{
+        preview_table, run_user_sql, split_statements, Cell, StatementOutcome, PAGE_SIZE,
+    };
 
     async fn seeded() -> (tempfile::TempDir, SqliteSession) {
         let dir = tempfile::tempdir().unwrap();

@@ -5,7 +5,7 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, App, IntoElement, SharedString, Window};
 
-use crate::db::{Cell, ColumnMeta, QueryPage};
+use sela_core::{Cell, ColumnMeta, QueryPage};
 
 pub struct GridDelegate {
     pub columns: Vec<ColumnMeta>,

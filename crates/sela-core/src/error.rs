@@ -2,8 +2,6 @@
 pub enum DbError {
     #[error("{0}")]
     Message(String),
-    #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
 }
 
 impl DbError {

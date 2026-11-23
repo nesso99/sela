@@ -60,9 +60,11 @@ GPUI Kit targets Windows (Direct3D through wgpu) and `keyring` uses Credential M
 
 ## Build and run
 
+This repo is a Cargo workspace. The GPUI binary package is `sela-app`; the binary name is still `sela`.
+
 ```bash
-cargo build
-cargo run
+cargo build --workspace
+cargo run -p sela-app
 ```
 
 The connections file is:
@@ -108,7 +110,15 @@ The init scripts run only on a brand-new data directory. If you change a seed fi
 ## Tests
 
 ```bash
-cargo test
+cargo test --workspace
+```
+
+Library crates can be tested without pulling in GPUI:
+
+```bash
+cargo test -p sela-core
+cargo test -p sela-drivers
+cargo test -p sela-config
 ```
 
 SQLite tests use a temporary file and do not need a server. They cover the catalog, NULL versus text, blobs, paging at 100 rows, a trailing line comment, empty result columns, and statement errors.
@@ -118,7 +128,7 @@ PostgreSQL and MySQL tests run only when their URL is set. Otherwise they print 
 ```bash
 export SELA_POSTGRES_URL='postgres://sela:sela@127.0.0.1:5432/sample?sslmode=disable'
 export SELA_MYSQL_URL='mysql://sela:sela@127.0.0.1:3306/sample?ssl-mode=disabled'
-cargo test
+cargo test -p sela-drivers
 ```
 
 Optional schema overrides: `SELA_POSTGRES_SCHEMA` (default `public`) and `SELA_MYSQL_SCHEMA` (default `sample`).
@@ -126,10 +136,11 @@ Optional schema overrides: `SELA_POSTGRES_SCHEMA` (default `public`) and `SELA_M
 ## Layout
 
 ```text
-src/config/     saved connections and the keychain wrapper
-src/db/         DatabaseSession, one driver per engine, SQL quoting and paging
-src/ui/         GPUI window, tree, grid, connection form
-scripts/        seed SQL for SQLite, Postgres, and MySQL
+crates/sela-core/     domain types, SQL helpers, DatabaseSession (no GPUI)
+crates/sela-drivers/ Postgres, MySQL, and SQLite drivers (sqlx + tokio)
+crates/sela-config/  connections.json and OS keychain access
+crates/sela-app/     GPUI window binary (`sela`)
+scripts/             seed SQL for SQLite, Postgres, and MySQL
 ```
 
 `DatabaseSession` is the extension point for another engine. The UI only sees schemas, tables, and `StatementOutcome`.

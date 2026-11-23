@@ -1,32 +1,26 @@
 //! Database drivers.
 //!
-//! [`driver::DatabaseSession`] is the seam the UI talks to. PostgreSQL, MySQL,
+//! [`sela_core::DatabaseSession`] is the seam the UI talks to. PostgreSQL, MySQL,
 //! and SQLite each implement it. SQL that Sela generates (identifiers, paging)
-//! is built in [`sql`] and covered by unit tests that do not need a server.
+//! is built in `sela-core` and covered by unit tests that do not need a server.
 
 mod decode;
-mod driver;
-mod error;
 mod mysql;
 mod postgres;
 mod runtime;
-mod sql;
 mod sqlite;
-mod types;
 
 pub(crate) use decode::{column_meta, read_cell};
-pub use driver::{preview_table, run_user_sql, DatabaseSession};
-pub use error::DbError;
 pub use runtime::drive;
-pub use sql::{normalize_sql, qualify, quote_ident, wrap_page};
-pub use types::{
-    Cell, ColumnMeta, Engine, ExecOutcome, QueryPage, RelationKind, RowSet, SchemaInfo,
-    StatementOutcome, TableInfo, PAGE_SIZE,
+pub use sela_core::{
+    classify, first_keyword, normalize_sql, preview_table, qualify, quote_ident, run_user_sql,
+    select_all, split_statements, strip_comments, wrap_count, wrap_page, Cell, ColumnMeta,
+    DatabaseSession, DbError, Dialect, Engine, ExecOutcome, LoadedSchema, QueryPage, RelationKind,
+    RowSet, SavedConnection, SchemaInfo, SqlError, StatementKind, StatementOutcome, TableInfo,
+    PAGE_SIZE,
 };
 
 use std::time::Duration;
-
-use crate::config::SavedConnection;
 
 use mysql::MysqlSession;
 use postgres::PostgresSession;
@@ -74,7 +68,7 @@ pub async fn create_sample_database(path: &std::path::Path) -> Result<(), DbErro
         })?;
     }
     let session = SqliteSession::open(path, true).await?;
-    for statement in sql::split_statements(sqlite::SAMPLE_SQL)
+    for statement in sela_core::split_statements(sqlite::SAMPLE_SQL)
         .map_err(|err| DbError::message(err.to_string()))?
     {
         session.execute(&statement).await?;
@@ -96,8 +90,6 @@ pub async fn load_catalog(session: &dyn DatabaseSession) -> Result<Vec<LoadedSch
     Ok(loaded)
 }
 
-#[derive(Debug, Clone)]
-pub struct LoadedSchema {
-    pub name: String,
-    pub tables: Vec<TableInfo>,
+pub(crate) fn sqlx_err(err: sqlx::Error) -> DbError {
+    DbError::message(err.to_string())
 }

@@ -1,0 +1,18 @@
+[package]
+name = "sela-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Connection config file and keychain access for Sela."
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+keyring = { workspace = true }
+sela-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
