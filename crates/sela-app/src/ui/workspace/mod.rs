@@ -1,6 +1,7 @@
 //! Main window: saved connections, schema tree, result grid, and the SQL editor.
 
 mod content;
+mod filter_bar;
 mod query;
 mod sidebar;
 mod state;
@@ -23,6 +24,7 @@ use sela_core::{DatabaseSession, LoadedSchema, TabId, TabList};
 
 use super::{
     ActivateTab, CancelQuery, CloseTab, NewQueryTab, RunQuery, ShowTableData, ShowTableStructure,
+    ToggleFilterBar,
 };
 use tab_view::TabView;
 
@@ -217,6 +219,12 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| workspace.show_table_structure(cx));
                 }
             })
+            .on_action({
+                let this = this.clone();
+                move |_: &ToggleFilterBar, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.toggle_filter_bar(window, cx));
+                }
+            })
             .child(self.sidebar(cx))
             .child(
                 v_flex()
@@ -234,6 +242,9 @@ impl Render for Workspace {
                                 can_next,
                                 connected,
                             ))
+                            .when(matches!(table_pane, TablePane::Data), |column| {
+                                column.child(self.filter_bar(cx, connected))
+                            })
                             .when_some(self.banner_error(), |column, error| {
                                 column.child(self.error_banner(cx, error))
                             })

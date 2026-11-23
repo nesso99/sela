@@ -6,11 +6,13 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::DbError;
+use crate::filter::{self, FilterCondition, SortSpec};
 use crate::sql::{self, StatementKind};
 use crate::structure::TableStructure;
 use crate::types::{
     Dialect, ExecOutcome, QueryPage, RowCountKind, RowSet, SchemaInfo, StatementOutcome,
-    StreamBatch, StreamOutcome, TableInfo, DEFAULT_SQL_ROW_CAP, PAGE_SIZE, STREAM_BATCH_SIZE,
+    StreamBatch, StreamOutcome, TableInfo, Value, DEFAULT_SQL_ROW_CAP, PAGE_SIZE,
+    STREAM_BATCH_SIZE,
 };
 
 #[async_trait]
@@ -25,10 +27,12 @@ pub trait DatabaseSession: Send + Sync {
 
     async fn execute(&self, sql: &str) -> Result<u64, DbError>;
 
-    async fn count_query(&self, sql: &str) -> Result<u64, DbError>;
+    /// Run a `COUNT(*)` (or similar) query, binding `params` in order.
+    async fn count_query(&self, sql: &str, params: &[Value]) -> Result<u64, DbError>;
 
     /// Cheap row-count estimate for a table (Postgres `reltuples`, MySQL `table_rows`).
     /// SQLite returns `Ok(None)` — use [`exact_table_rows`] only on demand.
+    /// Estimates are invalid once a filter is applied; callers should use Unknown.
     async fn estimate_table_rows(&self, schema: &str, table: &str) -> Result<Option<u64>, DbError>;
 
     /// Columns, indexes, foreign keys, and DDL for the Structure view.
@@ -38,20 +42,29 @@ pub trait DatabaseSession: Send + Sync {
     async fn table_ddl(&self, schema: &str, table: &str) -> Result<String, DbError>;
 
     /// Stream `sql` in batches into `sink`. Honours `cancel` (and server-side cancel when
-    /// the driver supports it).
+    /// the driver supports it). `params` are bound in order (never interpolated).
     ///
     /// When `row_cap` is set, the stream pauses after that many rows (emits a
     /// `paused_at_cap` batch) until the cap is raised (Load more) or cancel fires.
     /// Pass `finish_at_cap = true` to stop instead of pausing (test / one-shot helpers).
+    #[allow(clippy::too_many_arguments)]
     async fn stream_query(
         &self,
         sql: &str,
+        params: &[Value],
         batch_size: usize,
         row_cap: Option<Arc<AtomicUsize>>,
         finish_at_cap: bool,
         cancel: CancellationToken,
         sink: async_channel::Sender<StreamBatch>,
     ) -> Result<StreamOutcome, DbError>;
+}
+
+/// Options for a filtered / sorted table preview.
+#[derive(Debug, Clone, Default)]
+pub struct TablePreview<'a> {
+    pub filters: &'a [FilterCondition],
+    pub sorts: &'a [SortSpec],
 }
 
 /// Run one user statement. Queries are streamed up to `row_cap` (default
@@ -82,6 +95,7 @@ pub async fn run_user_sql(
             let (tx, rx) = async_channel::bounded(4);
             let stream = session.stream_query(
                 &sql,
+                &[],
                 STREAM_BATCH_SIZE,
                 Some(cap_live),
                 true, // finish at cap for the synchronous helper
@@ -134,8 +148,8 @@ pub async fn run_user_sql(
     }
 }
 
-/// Page through `SELECT *` for one table using `LIMIT`/`OFFSET` and an estimate
-/// instead of `COUNT(*)`. Pass [`PAGE_SIZE`] at the call site for `limit`.
+/// Page through a table using `LIMIT`/`OFFSET`, optional filters/sorts, and an
+/// estimate when unfiltered. Pass [`PAGE_SIZE`] at the call site for `limit`.
 pub async fn preview_table(
     session: &dyn DatabaseSession,
     schema: &str,
@@ -143,17 +157,26 @@ pub async fn preview_table(
     limit: u32,
     offset: u64,
     cancel: CancellationToken,
+    opts: TablePreview<'_>,
 ) -> Result<StatementOutcome, DbError> {
     let started = Instant::now();
     if cancel.is_cancelled() {
         return Err(DbError::cancelled("query cancelled"));
     }
-    let sql = sql::select_all(session.dialect(), schema, table)
-        .map_err(|err| DbError::query(err.to_string()))?;
-    let page_sql = sql::wrap_page(session.dialect(), &sql, limit, offset);
+    let bound = filter::build_table_page(
+        session.dialect(),
+        schema,
+        table,
+        opts.filters,
+        opts.sorts,
+        limit,
+        offset,
+    )
+    .map_err(|err| DbError::query(err.to_string()))?;
     let (tx, rx) = async_channel::bounded(4);
     let stream = session.stream_query(
-        &page_sql,
+        &bound.sql,
+        &bound.params,
         STREAM_BATCH_SIZE,
         Some(Arc::new(AtomicUsize::new(limit as usize))),
         true,
@@ -173,14 +196,25 @@ pub async fn preview_table(
     };
     let (outcome, (columns, rows)) = tokio::join!(stream, collect);
     let outcome = outcome?;
-    let estimate = session
-        .estimate_table_rows(schema, table)
-        .await
-        .ok()
-        .flatten();
-    let (row_count_kind, total_rows) = match estimate {
-        Some(n) => (RowCountKind::Estimated, Some(n)),
-        None => (RowCountKind::Unknown, None),
+    let filtered = !opts.filters.is_empty()
+        && opts.filters.iter().any(|f| {
+            !f.column.trim().is_empty()
+                && (matches!(f.op, filter::FilterOp::IsNull | filter::FilterOp::IsNotNull)
+                    || !f.value.is_empty())
+        });
+    let (row_count_kind, total_rows) = if filtered {
+        // Planner estimates ignore WHERE; show unknown until Exact count.
+        (RowCountKind::Unknown, None)
+    } else {
+        let estimate = session
+            .estimate_table_rows(schema, table)
+            .await
+            .ok()
+            .flatten();
+        match estimate {
+            Some(n) => (RowCountKind::Estimated, Some(n)),
+            None => (RowCountKind::Unknown, None),
+        }
     };
     Ok(StatementOutcome::Rows(RowSet {
         page: QueryPage {
@@ -202,15 +236,16 @@ pub async fn preview_table(
 }
 
 /// Exact `COUNT(*)` for a table (on-demand; not used on every page turn).
+/// When `filters` is non-empty, the same WHERE is applied.
 pub async fn exact_table_rows(
     session: &dyn DatabaseSession,
     schema: &str,
     table: &str,
+    filters: &[FilterCondition],
 ) -> Result<u64, DbError> {
-    let sql = sql::select_all(session.dialect(), schema, table)
+    let bound = filter::build_table_count(session.dialect(), schema, table, filters)
         .map_err(|err| DbError::query(err.to_string()))?;
-    let count_sql = sql::wrap_count(session.dialect(), &sql);
-    session.count_query(&count_sql).await
+    session.count_query(&bound.sql, &bound.params).await
 }
 
 /// Default row cap for the SQL editor.

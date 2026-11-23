@@ -184,8 +184,16 @@ impl Workspace {
         let grid = view.grid.clone();
         self.views.insert(id, view);
         let subscription = cx.observe(&grid, move |this, grid, cx| {
-            if !grid.read(cx).delegate().pending_pages.is_empty() {
+            let pending_pages = !grid.read(cx).delegate().pending_pages.is_empty();
+            let pending_sort = grid.read(cx).delegate().pending_sort;
+            if pending_pages {
                 this.fetch_pending_pages_for(id, cx);
+            }
+            if let Some((col_ix, sort)) = pending_sort {
+                grid.update(cx, |state, _| {
+                    state.delegate_mut().pending_sort = None;
+                });
+                this.apply_column_sort(id, col_ix, sort, cx);
             }
         });
         self._subscriptions.push(subscription);
@@ -241,7 +249,17 @@ impl Workspace {
                 model.kind = TabKind::Query { sql };
             }
         }
-        if let Err(err) = self.tab_store.save(&self.tabs.to_persisted()) {
+        let mut saved = self.tabs.to_persisted();
+        for (ix, tab) in self.tabs.tabs().iter().enumerate() {
+            if let Some(view) = self.views.get(&tab.id) {
+                if let Some(item) = saved.tabs.get_mut(ix) {
+                    item.filters = view.filters.clone();
+                    item.sorts = view.sorts.clone();
+                    item.filter_bar_open = view.filter_bar_open;
+                }
+            }
+        }
+        if let Err(err) = self.tab_store.save(&saved) {
             if let Some(view) = self.active_view_mut() {
                 view.error = Some(err.to_string());
             }
@@ -250,6 +268,11 @@ impl Workspace {
 
     pub(super) fn restore_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let saved = self.tab_store.load().unwrap_or_default();
+        let filter_state: Vec<_> = saved
+            .tabs
+            .iter()
+            .map(|t| (t.filters.clone(), t.sorts.clone(), t.filter_bar_open))
+            .collect();
         self.tabs = TabList::from_persisted(saved);
         self.views = HashMap::new();
         let snapshot: Vec<(TabId, TabKind)> = self
@@ -258,15 +281,38 @@ impl Workspace {
             .iter()
             .map(|tab| (tab.id, tab.kind.clone()))
             .collect();
-        for (id, kind) in snapshot {
+        for (ix, (id, kind)) in snapshot.into_iter().enumerate() {
             let sql = match &kind {
                 TabKind::Query { sql } => sql.as_str(),
                 TabKind::Table { .. } => "",
             };
             self.attach_view(id, sql, window, cx);
+            let (filters, sorts, filter_bar_open) =
+                filter_state.get(ix).cloned().unwrap_or_default();
             if let TabKind::Table { schema, table } = kind {
+                let seeds = if filter_bar_open || !filters.is_empty() {
+                    if filters.is_empty() {
+                        vec![sela_core::FilterCondition::new(
+                            "",
+                            sela_core::FilterOp::Eq,
+                            "",
+                        )]
+                    } else {
+                        filters.clone()
+                    }
+                } else {
+                    Vec::new()
+                };
+                let mut rows = Vec::new();
+                for seed in &seeds {
+                    rows.push(super::filter_bar::FilterRowUi::new(window, cx, seed));
+                }
                 if let Some(view) = self.views.get_mut(&id) {
                     view.source = GridSource::Table { schema, table };
+                    view.filters = filters;
+                    view.sorts = sorts;
+                    view.filter_bar_open = filter_bar_open;
+                    view.filter_rows = rows;
                     view.status = "Reconnect to load this table.".into();
                 }
             }

@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use sela_core::{
     quote_ident, ColumnStructure, DatabaseSession, DbError, Dialect, ForeignKeyInfo, IndexInfo,
     QueryPage, RelationKind, SavedConnection, SchemaInfo, StreamBatch, StreamOutcome, TableInfo,
-    TableStructure,
+    TableStructure, Value,
 };
 
 use sqlx::Row;
@@ -397,8 +397,8 @@ impl DatabaseSession for PostgresSession {
         crate::exec_sql!(&self.pool, sql)
     }
 
-    async fn count_query(&self, sql: &str) -> Result<u64, DbError> {
-        crate::count_sql!(&self.pool, sql)
+    async fn count_query(&self, sql: &str, params: &[Value]) -> Result<u64, DbError> {
+        crate::count_sql!(&self.pool, sql, params)
     }
 
     async fn estimate_table_rows(&self, schema: &str, table: &str) -> Result<Option<u64>, DbError> {
@@ -463,6 +463,7 @@ impl DatabaseSession for PostgresSession {
     async fn stream_query(
         &self,
         sql: &str,
+        params: &[Value],
         batch_size: usize,
         row_cap: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
         finish_at_cap: bool,
@@ -472,6 +473,7 @@ impl DatabaseSession for PostgresSession {
         crate::stream::stream_postgres(
             &self.pool,
             sql,
+            params,
             batch_size,
             row_cap,
             finish_at_cap,
@@ -487,7 +489,9 @@ mod tests {
     use super::*;
     use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
     use rust_decimal::Decimal;
-    use sela_core::{preview_table, run_user_sql, Interval, StatementOutcome, Value, PAGE_SIZE};
+    use sela_core::{
+        preview_table, run_user_sql, Interval, StatementOutcome, TablePreview, Value, PAGE_SIZE,
+    };
     use std::str::FromStr;
     use uuid::Uuid;
 
@@ -538,6 +542,7 @@ mod tests {
             PAGE_SIZE,
             0,
             CancellationToken::new(),
+            TablePreview::default(),
         )
         .await
         .unwrap();
@@ -547,7 +552,7 @@ mod tests {
         assert_eq!(rows.page.rows.len(), 2);
         assert!(rows.page.columns.iter().any(|column| column.name == "name"));
         // Estimate may be stale until ANALYZE; exact count is on demand.
-        let exact = sela_core::exact_table_rows(&session, &schema, "sela_probe")
+        let exact = sela_core::exact_table_rows(&session, &schema, "sela_probe", &[])
             .await
             .unwrap();
         assert_eq!(exact, 2);
@@ -879,6 +884,7 @@ mod tests {
             PAGE_SIZE,
             0,
             CancellationToken::new(),
+            TablePreview::default(),
         )
         .await
         .unwrap();
@@ -1010,7 +1016,7 @@ mod tests {
         let (tx, rx) = async_channel::bounded(4);
         let cancel = CancellationToken::new();
         let cancel_after_first = cancel.clone();
-        let produce = session.stream_query(sql, 50, None, true, cancel, tx);
+        let produce = session.stream_query(sql, &[], 50, None, true, cancel, tx);
         tokio::pin!(produce);
         let first = tokio::select! {
             biased;
@@ -1168,5 +1174,127 @@ mod tests {
             .execute("DROP TABLE sela_struct_parent")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_filter_and_sort_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres filter: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+        session
+            .execute("DROP TABLE IF EXISTS sela_filter")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_filter (
+                    id integer PRIMARY KEY,
+                    name text NOT NULL,
+                    note text
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                r#"INSERT INTO sela_filter (id, name, note) VALUES
+                 (1, 'Ada', 'plain'),
+                 (2, '100%', 'pct'),
+                 (3, 'a_b', 'under'),
+                 (4, E'back\\slash', 'esc'),
+                 (5, 'O''Brien', 'quote'),
+                 (6, 'ユニコード', 'unicode'),
+                 (7, 'drop; --', 'inject')"#,
+            )
+            .await
+            .unwrap();
+
+        use sela_core::{FilterCondition, FilterOp, SortSpec, TablePreview};
+
+        let contains = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "%")],
+                sorts: &[SortSpec::asc("id")],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("100%"));
+        assert_eq!(rows.row_count_kind, sela_core::RowCountKind::Unknown);
+
+        let inject = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new(
+                    "name",
+                    FilterOp::Eq,
+                    "1; DROP TABLE sela_filter;--",
+                )],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = inject else {
+            panic!("rows");
+        };
+        assert!(rows.page.rows.is_empty());
+        assert_eq!(
+            sela_core::exact_table_rows(&session, &schema, "sela_filter", &[])
+                .await
+                .unwrap(),
+            7
+        );
+
+        let sorted =
+            preview_table(
+                &session,
+                &schema,
+                "sela_filter",
+                PAGE_SIZE,
+                0,
+                CancellationToken::new(),
+                TablePreview {
+                    filters: &[
+                        FilterCondition::new("id", FilterOp::In, "2, 6, 7").with_type("integer")
+                    ],
+                    sorts: &[SortSpec::desc("id")],
+                },
+            )
+            .await
+            .unwrap();
+        let StatementOutcome::Rows(rows) = sorted else {
+            panic!("rows");
+        };
+        assert_eq!(
+            rows.page
+                .rows
+                .iter()
+                .map(|r| r[0].clone())
+                .collect::<Vec<_>>(),
+            vec![Value::Int(7), Value::Int(6), Value::Int(2)]
+        );
+
+        session.execute("DROP TABLE sela_filter").await.unwrap();
     }
 }

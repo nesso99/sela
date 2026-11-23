@@ -28,9 +28,11 @@ use crate::pg_decode::{
     read_postgres_cell_with_strategy, strategies_from_columns, PgDecodeStrategy,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_postgres(
     pool: &sqlx::PgPool,
     sql: &str,
+    params: &[Value],
     batch_size: usize,
     row_cap: Option<Arc<AtomicUsize>>,
     finish_at_cap: bool,
@@ -63,7 +65,7 @@ pub(crate) async fn stream_postgres(
     // Cache one decode strategy per column for the lifetime of this result.
     let mut strategies: Option<Vec<PgDecodeStrategy>> = None;
     let result = {
-        let mut stream = sqlx::query(sql).fetch(&mut *conn);
+        let mut stream = crate::bind_params(sqlx::query(sql), params).fetch(&mut *conn);
         drain_stream::<sqlx::Postgres, _, _>(
             &mut stream,
             &mut columns,
@@ -123,9 +125,11 @@ pub(crate) async fn stream_postgres(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_mysql(
     pool: &sqlx::MySqlPool,
     sql: &str,
+    params: &[Value],
     batch_size: usize,
     row_cap: Option<Arc<AtomicUsize>>,
     finish_at_cap: bool,
@@ -154,7 +158,7 @@ pub(crate) async fn stream_mysql(
     let sink_meta = sink.clone();
     let mut columns = Vec::new();
     let result = {
-        let mut stream = sqlx::query(sql).fetch(&mut *conn);
+        let mut stream = crate::bind_params(sqlx::query(sql), params).fetch(&mut *conn);
         drain_stream::<sqlx::MySql, _, _>(
             &mut stream,
             &mut columns,
@@ -204,9 +208,11 @@ pub(crate) async fn stream_mysql(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_sqlite(
     pool: &sqlx::SqlitePool,
     sql: &str,
+    params: &[Value],
     batch_size: usize,
     row_cap: Option<Arc<AtomicUsize>>,
     finish_at_cap: bool,
@@ -222,7 +228,7 @@ pub(crate) async fn stream_sqlite(
     let sink_meta = sink.clone();
     let mut columns = Vec::new();
     let result = {
-        let mut stream = sqlx::query(sql).fetch(&mut *conn);
+        let mut stream = crate::bind_params(sqlx::query(sql), params).fetch(&mut *conn);
         drain_stream::<sqlx::Sqlite, _, _>(
             &mut stream,
             &mut columns,

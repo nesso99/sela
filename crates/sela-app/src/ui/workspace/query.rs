@@ -9,9 +9,10 @@ use gpui_kit::Context;
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    classify, exact_table_rows, is_safe_to_rerun_for_load_more, normalize_sql, preview_table,
-    run_user_sql, select_all, wrap_page, DatabaseSession, DbError, RowCountKind, StatementKind,
-    StatementOutcome, StreamBatch, TabId, DEFAULT_SQL_ROW_CAP, PAGE_SIZE, STREAM_BATCH_SIZE,
+    build_table_page, classify, exact_table_rows, is_safe_to_rerun_for_load_more, normalize_sql,
+    preview_table, run_user_sql, DatabaseSession, DbError, FilterCondition, RowCountKind, SortSpec,
+    StatementKind, StatementOutcome, StreamBatch, TabId, TablePreview, DEFAULT_SQL_ROW_CAP,
+    PAGE_SIZE, STREAM_BATCH_SIZE,
 };
 use sela_drivers::drive;
 
@@ -195,6 +196,7 @@ impl Workspace {
         let GridSource::Table { schema, table } = view.source.clone() else {
             return;
         };
+        let filters = view.filters.clone();
         let Some(session) = self.session.clone() else {
             return;
         };
@@ -204,7 +206,7 @@ impl Workspace {
         self.spawn_work(
             Some(tab_id),
             cx,
-            |_| async move { exact_table_rows(session.as_ref(), &schema, &table).await },
+            |_| async move { exact_table_rows(session.as_ref(), &schema, &table, &filters).await },
             move |this, result, cx| match result {
                 Ok(total) => {
                     if let Some(view) = this.view_mut(tab_id) {
@@ -244,10 +246,18 @@ impl Workspace {
         let source = view.source.clone();
         let offset = view.page_offset;
         let sql_cap = view.sql_row_cap;
+        let filters = view.filters.clone();
+        let sorts = view.sorts.clone();
+        let is_table = matches!(source, GridSource::Table { .. });
         view.error = None;
         view.note = None;
         view.truncated = false;
         view.can_load_more = false;
+        view.grid.update(cx, |state, _| {
+            let d = state.delegate_mut();
+            d.sortable = is_table;
+            d.sorts = sorts.clone();
+        });
         view.live_row_cap = None;
         view.status = "Running…".into();
         view.grid.update(cx, |state, cx| {
@@ -277,7 +287,7 @@ impl Workspace {
                 cx.notify();
                 cx.spawn(async move |this, async_cx| {
                     let result = drive(async move {
-                        run_source(session, source, offset, sql_cap, cancel).await
+                        run_source(session, source, offset, sql_cap, cancel, &filters, &sorts).await
                     })
                     .await;
                     this.update(async_cx, |this, cx| {
@@ -374,7 +384,7 @@ impl Workspace {
                         async move {
                             session
                                 .stream_query(
-                                    &sql,
+                                    &sql, &[],
                                     STREAM_BATCH_SIZE,
                                     Some(cap),
                                     false,
@@ -606,6 +616,8 @@ impl Workspace {
         let GridSource::Table { schema, table } = view.source.clone() else {
             return;
         };
+        let filters = view.filters.clone();
+        let sorts = view.sorts.clone();
         let pending: Vec<usize> = self.views.get_mut(&tab_id).map_or(Vec::new(), |view| {
             view.grid.update(cx, |state, _| {
                 let d = state.delegate_mut();
@@ -630,16 +642,26 @@ impl Workspace {
             let session = session.clone();
             let schema = schema.clone();
             let table = table.clone();
+            let filters = filters.clone();
+            let sorts = sorts.clone();
             let cancel = cancel.clone();
             let offset = (page_index as u64) * (PAGE_SIZE as u64);
             cx.spawn(async move |this, async_cx| {
                 let result = drive(async move {
-                    let sql = select_all(session.dialect(), &schema, &table)
-                        .map_err(|err| DbError::query(err.to_string()))?;
-                    let page_sql = wrap_page(session.dialect(), &sql, PAGE_SIZE, offset);
+                    let bound = build_table_page(
+                        session.dialect(),
+                        &schema,
+                        &table,
+                        &filters,
+                        &sorts,
+                        PAGE_SIZE,
+                        offset,
+                    )
+                    .map_err(|err| DbError::query(err.to_string()))?;
                     let (tx, rx) = async_channel::bounded(2);
                     let stream = session.stream_query(
-                        &page_sql,
+                        &bound.sql,
+                        &bound.params,
                         STREAM_BATCH_SIZE,
                         Some(Arc::new(AtomicUsize::new(PAGE_SIZE as usize))),
                         true,
@@ -892,14 +914,22 @@ pub(super) async fn run_source(
     offset: u64,
     sql_cap: u32,
     cancel: CancellationToken,
+    filters: &[FilterCondition],
+    sorts: &[SortSpec],
 ) -> Result<Option<StatementOutcome>, DbError> {
     match source {
         GridSource::Idle => Ok(None),
-        GridSource::Table { schema, table } => {
-            preview_table(session.as_ref(), &schema, &table, PAGE_SIZE, offset, cancel)
-                .await
-                .map(Some)
-        }
+        GridSource::Table { schema, table } => preview_table(
+            session.as_ref(),
+            &schema,
+            &table,
+            PAGE_SIZE,
+            offset,
+            cancel,
+            TablePreview { filters, sorts },
+        )
+        .await
+        .map(Some),
         GridSource::Sql(sql) => run_user_sql(session.as_ref(), &sql, sql_cap, cancel)
             .await
             .map(Some),

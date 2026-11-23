@@ -21,6 +21,7 @@ actions!(
         CloseTab,
         ShowTableData,
         ShowTableStructure,
+        ToggleFilterBar,
         Quit
     ]
 );
@@ -70,6 +71,17 @@ pub fn run() {
                 KeyBinding::new("cmd-shift-]", ShowTableStructure, None),
                 KeyBinding::new("ctrl-shift-]", ShowTableStructure, None),
             ]);
+            // Platform secondary modifier (⌘ on macOS, Ctrl elsewhere) — M1-3 filter bar.
+            if let Ok(binding) = KeyBinding::load(
+                "secondary-f",
+                Box::new(ToggleFilterBar),
+                None,
+                false,
+                None,
+                cx,
+            ) {
+                cx.bind_keys([binding]);
+            }
             cx.on_action(|_: &Quit, cx| cx.quit());
 
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);

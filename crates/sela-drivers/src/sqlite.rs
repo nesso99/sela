@@ -11,6 +11,7 @@ use sqlx::Row;
 use sela_core::{
     quote_ident, ColumnStructure, DatabaseSession, DbError, Dialect, ForeignKeyInfo, IndexInfo,
     QueryPage, RelationKind, SchemaInfo, StreamBatch, StreamOutcome, TableInfo, TableStructure,
+    Value,
 };
 
 pub const SAMPLE_SQL: &str = include_str!("../../../scripts/seed-sqlite.sql");
@@ -296,8 +297,8 @@ impl DatabaseSession for SqliteSession {
         crate::exec_sql!(&self.pool, sql)
     }
 
-    async fn count_query(&self, sql: &str) -> Result<u64, DbError> {
-        crate::count_sql!(&self.pool, sql)
+    async fn count_query(&self, sql: &str, params: &[Value]) -> Result<u64, DbError> {
+        crate::count_sql!(&self.pool, sql, params)
     }
 
     async fn estimate_table_rows(
@@ -340,6 +341,7 @@ impl DatabaseSession for SqliteSession {
     async fn stream_query(
         &self,
         sql: &str,
+        params: &[Value],
         batch_size: usize,
         row_cap: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
         finish_at_cap: bool,
@@ -349,6 +351,7 @@ impl DatabaseSession for SqliteSession {
         crate::stream::stream_sqlite(
             &self.pool,
             sql,
+            params,
             batch_size,
             row_cap,
             finish_at_cap,
@@ -363,7 +366,8 @@ impl DatabaseSession for SqliteSession {
 mod tests {
     use super::*;
     use sela_core::{
-        preview_table, run_user_sql, split_statements, StatementOutcome, Value, PAGE_SIZE,
+        preview_table, run_user_sql, split_statements, StatementOutcome, TablePreview, Value,
+        PAGE_SIZE,
     };
 
     async fn seeded() -> (tempfile::TempDir, SqliteSession) {
@@ -396,6 +400,7 @@ mod tests {
             PAGE_SIZE,
             0,
             CancellationToken::new(),
+            TablePreview::default(),
         )
         .await
         .unwrap();
@@ -419,7 +424,7 @@ mod tests {
         );
         // SQLite has no planner estimate; exact count is on demand.
         assert!(rows.total_rows.is_none());
-        let exact = sela_core::exact_table_rows(&session, "main", "books")
+        let exact = sela_core::exact_table_rows(&session, "main", "books", &[])
             .await
             .unwrap();
         assert!(exact >= rows.page.rows.len() as u64);
@@ -471,6 +476,7 @@ mod tests {
             PAGE_SIZE,
             0,
             CancellationToken::new(),
+            TablePreview::default(),
         )
         .await
         .unwrap();
@@ -480,7 +486,7 @@ mod tests {
         assert_eq!(first.page.rows.len(), 100);
         assert!(first.total_rows.is_none());
         assert_eq!(
-            sela_core::exact_table_rows(&session, "main", "readings")
+            sela_core::exact_table_rows(&session, "main", "readings", &[])
                 .await
                 .unwrap(),
             120
@@ -500,6 +506,7 @@ mod tests {
             PAGE_SIZE,
             100,
             CancellationToken::new(),
+            TablePreview::default(),
         )
         .await
         .unwrap();
@@ -756,6 +763,7 @@ mod tests {
                 session
                     .stream_query(
                         "SELECT id FROM nums ORDER BY id",
+                        &[],
                         100,
                         Some(cap),
                         false,
@@ -814,7 +822,8 @@ mod tests {
         // Stream INSERT … RETURNING with a low cap (same path load-more would raise).
         let cap = Arc::new(AtomicUsize::new(2));
         let (tx, rx) = async_channel::bounded(4);
-        let produce = session.stream_query(sql, 10, Some(cap), true, CancellationToken::new(), tx);
+        let produce =
+            session.stream_query(sql, &[], 10, Some(cap), true, CancellationToken::new(), tx);
         let collect = async {
             let mut n = 0usize;
             while let Ok(batch) = rx.recv().await {
@@ -831,7 +840,10 @@ mod tests {
         assert_eq!(delivered, 2);
 
         let count = async |session: &SqliteSession| -> u64 {
-            session.count_query("SELECT COUNT(*) FROM t").await.unwrap()
+            session
+                .count_query("SELECT COUNT(*) FROM t", &[])
+                .await
+                .unwrap()
         };
         let after_first = count(&session).await;
         assert_eq!(after_first, 5, "INSERT should have written all five rows");
@@ -841,7 +853,7 @@ mod tests {
             let cap = Arc::new(AtomicUsize::new(10));
             let (tx, rx) = async_channel::bounded(4);
             let produce =
-                session.stream_query(sql, 10, Some(cap), true, CancellationToken::new(), tx);
+                session.stream_query(sql, &[], 10, Some(cap), true, CancellationToken::new(), tx);
             let drain = async { while rx.recv().await.is_ok() {} };
             let _ = tokio::join!(produce, drain);
         }
@@ -952,5 +964,162 @@ mod tests {
 
         let missing = session.describe_table("main", "no_such_table").await;
         assert!(missing.is_err(), "missing table must surface an error");
+    }
+
+    #[tokio::test]
+    async fn filter_and_sort_bound_params_with_special_chars() {
+        use sela_core::{FilterCondition, FilterOp, SortSpec, StatementOutcome, TablePreview};
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = SqliteSession::open(&dir.path().join("filter.sqlite"), true)
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_filter (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    note TEXT
+                )",
+            )
+            .await
+            .unwrap();
+        // Values with ', %, _, \, and unicode — must match as literals, not wildcards.
+        session
+            .execute(
+                "INSERT INTO sela_filter (id, name, note) VALUES
+                 (1, 'Ada', 'plain'),
+                 (2, '100%', 'pct'),
+                 (3, 'a_b', 'under'),
+                 (4, 'back\\slash', 'esc'),
+                 (5, 'O''Brien', 'quote'),
+                 (6, 'ユニコード', 'unicode'),
+                 (7, 'drop; --', 'inject')",
+            )
+            .await
+            .unwrap();
+
+        let contains = preview_table(
+            &session,
+            "main",
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "%")],
+                sorts: &[SortSpec::asc("id")],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("100%"));
+        assert_eq!(rows.row_count_kind, sela_core::RowCountKind::Unknown);
+
+        let underscore = preview_table(
+            &session,
+            "main",
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Eq, "a_b")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = underscore else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+
+        let starts = preview_table(
+            &session,
+            "main",
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::StartsWith, "ユニ")],
+                sorts: &[SortSpec::desc("id")],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = starts else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("ユニコード"));
+
+        // Injection attempt is a literal equality, not executed SQL.
+        let inject = preview_table(
+            &session,
+            "main",
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new(
+                    "name",
+                    FilterOp::Eq,
+                    "1; DROP TABLE sela_filter;--",
+                )],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = inject else {
+            panic!("rows");
+        };
+        assert!(rows.page.rows.is_empty());
+        let still = sela_core::exact_table_rows(&session, "main", "sela_filter", &[])
+            .await
+            .unwrap();
+        assert_eq!(still, 7);
+
+        let sorted =
+            preview_table(
+                &session,
+                "main",
+                "sela_filter",
+                PAGE_SIZE,
+                0,
+                CancellationToken::new(),
+                TablePreview {
+                    filters: &[
+                        FilterCondition::new("id", FilterOp::In, "1, 3, 5").with_type("integer")
+                    ],
+                    sorts: &[SortSpec::desc("id")],
+                },
+            )
+            .await
+            .unwrap();
+        let StatementOutcome::Rows(rows) = sorted else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 3);
+        assert_eq!(rows.page.rows[0][0], Value::Int(5));
+        assert_eq!(rows.page.rows[1][0], Value::Int(3));
+        assert_eq!(rows.page.rows[2][0], Value::Int(1));
+
+        let exact = sela_core::exact_table_rows(
+            &session,
+            "main",
+            "sela_filter",
+            &[FilterCondition::new("note", FilterOp::IsNotNull, "")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(exact, 7);
     }
 }

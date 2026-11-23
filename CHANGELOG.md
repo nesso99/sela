@@ -20,8 +20,11 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 - Query cancel (Stop / Cmd/Ctrl+.) with server-side cancel on Postgres and MySQL; batched streaming and load-more for arbitrary SQL up to a 1 000-row cap (#10).
 - Read-only Structure view: columns, indexes, foreign keys, and DDL for all three engines (#11).
 - Tabs for tables and queries: open/close/switch (Cmd/Ctrl+T/W/1..9), per-tab cancel-on-close, restore from `tabs.json` without auto-running SQL (#12).
+- Filter bar and column-header sort for table Data tabs: AND conditions, bound parameters, LIKE escaping, exact count under filters (M1-3 / US-04).
+- Postgres text fallback for arrays, enums, inet/cidr, macaddr, money, bit, point, int4range, and tsvector; other undecodable binary types show `<TYPE>` (#13).
 - GPL-3.0-or-later license, `deny.toml`, and CI `cargo-deny` checks (#14).
 - GitHub Actions CI: fmt, clippy, tests (Linux/macOS; Windows on main), and Postgres/MySQL integration (#4, #6).
+- Reorganized user / design / ADR docs and offline link checks (#16).
 - UX specs for query history, the connection dialog (including TLS), and light/dark theme tokens (`docs/design/ux/04`–`06`, indexed in `docs/design/ux/README.md`).
 
 ### Changed

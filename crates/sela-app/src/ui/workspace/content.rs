@@ -104,9 +104,30 @@ impl Workspace {
                         )
                     })
                     .when(matches!(table_pane, TablePane::Data), |row| {
+                        let this_filter = this.clone();
                         let this_prev = this.clone();
                         let this_next = this;
-                        row.child(
+                        let filter_open = self
+                            .active_view()
+                            .map(|view| view.filter_bar_open)
+                            .unwrap_or(false);
+                        row.when(self.table_open(), |row| {
+                            row.child(
+                                Button::new("filter-toggle")
+                                    .xsmall()
+                                    .label(if filter_open { "Filter ▾" } else { "Filter" })
+                                    .primary()
+                                    .when(!filter_open, |button| button.ghost())
+                                    .disabled(!connected)
+                                    .tooltip("Toggle filter bar (Ctrl/⌘+F)")
+                                    .on_click(move |_, window, cx| {
+                                        this_filter.update(cx, |workspace, cx| {
+                                            workspace.toggle_filter_bar(window, cx)
+                                        });
+                                    }),
+                            )
+                        })
+                        .child(
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)

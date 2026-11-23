@@ -170,6 +170,7 @@ Future variants considered earlier (Ssh, Syntax { position }, Constraint, Permis
 | Concern | Behavior |
 | --- | --- |
 | Table preview | `LIMIT`/`OFFSET` pages via `pending_pages`; estimate (`pg_class.reltuples` / `information_schema.tables.TABLE_ROWS` / SQLite `None`); Exact count button |
+| Filter / sort (M1-3) | `build_table_page` / `build_table_count` in `sela-core`; identifiers quoted; values bound; filter ⇒ Unknown count until Exact; header sort via `ORDER BY` |
 | Arbitrary SQL | **Not wrapped** in `SELECT * FROM (…) LIMIT`; stream up to `DEFAULT_SQL_ROW_CAP` (1000) with load-more |
 | Load-more | Raises live `AtomicUsize` cap on an open stream; if stream is gone, re-run only when `is_safe_to_rerun_for_load_more` (read-only `SELECT`/`VALUES`, `WITH` without DML, `SHOW`, `EXPLAIN` without `ANALYZE`); else “Result capped at N rows” |
 | Streaming | `sqlx` `fetch()` → batches (`STREAM_BATCH_SIZE`) over `async_channel` → `ResultWindow`; columns from first row (describe when 0 rows) |
@@ -330,12 +331,12 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 | M1-2b Cancel / stream / estimates / SQL cap | This file § Execution | Done (#10) |
 | M1-1 Tabs | Per-tab state, cancel-on-close, `tabs.json` | Done (#12) |
 | M1-6 Structure view | `describe_table` / `TableStructure` | Done (#11) |
-| M1-3 Filter / sort | [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md) | Backlog |
+| M1-3 Filter / sort | [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md); `filter.rs` + bound stream/count | This PR |
 | M1-4 Editor | [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Backlog |
 | M1-5 History | `history.sqlite` FTS | Backlog |
 | M1-7 Selection / copy / themes | Grid selection model | Backlog |
-| M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done |
-| M1-9 PG text-cast fallback | Own PR | Backlog |
+| M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done (#15) |
+| M1-9 PG text-cast fallback | `pg_decode` strategies | Done (#13) |
 
 ---
 

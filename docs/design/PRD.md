@@ -91,7 +91,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | Bounded result window / memory | MVP | Done (M1-2a) |
 | Structure view (columns, indexes, FK, DDL) read-only | v1 | Done (M1-6, PR #11) |
 | Tabs (table and query), light/dark theme | v1 | Tabs: Done (M1-1, PR #12); themes: M1-7 |
-| Filter bar, header sort, on-demand exact count | v1 | Planned (M1-3) |
+| Filter bar, header sort, on-demand exact count | v1 | Done (M1-3) |
 | Cell edit, insert/delete/duplicate, pending changes, preview SQL, commit/discard | v1 | Planned (M2) |
 | Safe mode per connection, warn UPDATE/DELETE without WHERE, color label | v1 | Planned (M2) |
 | SQL editor: highlight, autocomplete, statement-at-cursor, multi-statement. Format (`sqlformat`) is backlog, not M1-4 | v1 | Highlight and multi-statement: M1-4. Autocomplete: M3-2. Format: backlog |
@@ -114,7 +114,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | US-01 | As a developer, I save a connection and reopen it with one click | Create/edit/delete/duplicate; Test connection; password never in config file; survives app restart | Mostly done |
 | US-02 | I connect through an SSH bastion | Password, private key (+ passphrase), ssh-agent, `~/.ssh/config`; known_hosts checked; SSH errors distinct from DB errors | Not started |
 | US-03 | I open many tables and queries in tabs | Cmd+T new query, Cmd+W close, Cmd+1..9 switch; tab remembers its connection; dirty close prompts when pending edits exist | Done (M1-1); dirty prompt is M2 |
-| US-04 | I filter and sort without writing SQL | Filter bar: column + op (`=`, `!=`, `LIKE`, `IN`, `IS NULL`, `>`, `<`) + value, AND combine; header click to sort; generated SQL visible | Not started |
+| US-04 | I filter and sort without writing SQL | Filter bar: column + op (`=`, `!=`, `LIKE`, `IN`, `IS NULL`, `>`, `<`) + value, AND combine; header click to sort; generated SQL visible | Done (M1-3) |
 | US-05 | I edit data on the grid | Double-click or Enter to edit; edited cells highlighted; insert/delete/duplicate rows; Cmd+S commits in one transaction; Esc / Cmd+Shift+Z discard; no PK → read-only with reason | Not started |
 | US-06 | I preview SQL before commit | Preview lists exact statements with bound values; commit failure rolls back and keeps pending changes | Not started |
 | US-07 | As on-call, I do not accidentally break production | Safe mode Off / Confirm writes / Read-only; UPDATE/DELETE without WHERE always warns; connection color + name on toolbar | Not started |

@@ -30,7 +30,8 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Run SQL, cancel, streaming + load-more | Done |
 | Read-only Structure view | Done |
 | Tabs (open / close / switch / restore) | Done |
-| Filter / sort, inline edit, safe mode, SSH, export | Planned — [roadmap](docs/design/roadmap.md) |
+| Filter bar + column sort (table tabs) | Done |
+| Inline edit, safe mode, SSH, export | Planned — [roadmap](docs/design/roadmap.md) |
 
 ## Documentation
 
@@ -39,6 +40,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Install | [docs/user/installation.md](docs/user/installation.md) |
 | Connecting | [docs/user/connecting.md](docs/user/connecting.md) |
 | Keyboard shortcuts | [docs/user/keyboard-shortcuts.md](docs/user/keyboard-shortcuts.md) |
+| Filtering & sorting | [docs/user/filtering.md](docs/user/filtering.md) |
 | FAQ | [docs/user/faq.md](docs/user/faq.md) |
 | Architecture | [docs/dev/architecture.md](docs/dev/architecture.md) |
 | Building & testing | [docs/dev/building-and-testing.md](docs/dev/building-and-testing.md) |

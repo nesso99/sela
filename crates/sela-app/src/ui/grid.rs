@@ -4,17 +4,23 @@
 //! paints a placeholder while the page is loading. Display strings are truncated
 //! and cached inside the window; copy uses the full [`Value::display`].
 
-use gpui_kit::component::table::{Column, TableDelegate, TableState};
+use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, App, IntoElement, SharedString, Window};
 
-use sela_core::{CellView, QueryPage, ResultWindow, RowState};
+use sela_core::{CellView, QueryPage, ResultWindow, RowState, SortDirection, SortSpec};
 
 pub struct GridDelegate {
     pub result: ResultWindow,
     /// Page indices requested by the last viewport touch (M1-2b will fetch these).
     pub pending_pages: Vec<usize>,
+    /// Column header sort requested by the user (table tabs only).
+    pub pending_sort: Option<(usize, ColumnSort)>,
+    /// When true, column headers are sortable (table Data view).
+    pub sortable: bool,
+    /// Current sort specs (drives header sort icons).
+    pub sorts: Vec<SortSpec>,
     pub loading: bool,
     pub empty_message: SharedString,
 }
@@ -24,6 +30,9 @@ impl GridDelegate {
         Self {
             result: ResultWindow::empty(),
             pending_pages: Vec::new(),
+            pending_sort: None,
+            sortable: false,
+            sorts: Vec::new(),
             loading: false,
             empty_message: "Open a table, or run a query.".into(),
         }
@@ -44,6 +53,20 @@ impl GridDelegate {
         self.loading = false;
         self.empty_message = message.into();
     }
+
+    fn sort_for_column(&self, name: &str) -> ColumnSort {
+        match self.sorts.iter().find(|s| s.column == name) {
+            Some(SortSpec {
+                direction: SortDirection::Asc,
+                ..
+            }) => ColumnSort::Ascending,
+            Some(SortSpec {
+                direction: SortDirection::Desc,
+                ..
+            }) => ColumnSort::Descending,
+            None => ColumnSort::Default,
+        }
+    }
 }
 
 impl TableDelegate for GridDelegate {
@@ -59,10 +82,28 @@ impl TableDelegate for GridDelegate {
         let meta = &self.result.columns()[col_ix];
         let header = format!("{}   {}", meta.name, meta.type_name);
         let width = (header.chars().count() as f32 * 7.5).clamp(140.0, 340.0);
-        Column::new(format!("{col_ix}:{}", meta.name), header)
+        let mut col = Column::new(format!("{col_ix}:{}", meta.name), header)
             .width(px(width))
             .resizable(true)
-            .movable(false)
+            .movable(false);
+        if self.sortable {
+            col = col.sort(self.sort_for_column(&meta.name));
+        }
+        col
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _: &mut Window,
+        cx: &mut gpui_kit::Context<TableState<Self>>,
+    ) {
+        if !self.sortable {
+            return;
+        }
+        self.pending_sort = Some((col_ix, sort));
+        cx.notify();
     }
 
     fn render_td(

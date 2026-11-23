@@ -31,12 +31,12 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | 2 | M1-2b | Cancel and streaming | US-09; batches into `ResultWindow`; estimate counts; SQL stream cap + load-more | Done (#10) |
 | 3 | M1-1 | Tabs | US-03 | Done (#12) |
 | 4 | M1-6 | Structure view | US-11 on 3 engines | Done (#11) |
-| 5 | M1-3 | Filter and sort | US-04. UX review: [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md) | Backlog |
+| 5 | M1-3 | Filter and sort | US-04. UX review: [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md) | This PR |
 | 6 | M1-4 | Editor (highlight, statement-at-cursor, multi-statement) | US-08 minus autocomplete. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Backlog |
 | 7 | M1-5 | History | US-10 | Backlog |
 | 8 | M1-7 | Selection, copy, themes | US-14 + light/dark | Backlog |
-| 9 | M1-8 | TLS + config v2 | TLS modes; `schema_version` → 2 with **no migration code**; Postgres TLS CI | In review (PR #15) |
-| 10 | M1-9 | Postgres text-cast fallback | Own dedicated PR | Backlog |
+| 9 | M1-8 | TLS + config v2 | TLS modes; `schema_version` → 2 with **no migration code**; Postgres TLS CI | Done (#15) |
+| 10 | M1-9 | Postgres text-cast fallback | Own dedicated PR | Done (#13) |
 
 ### M1-2a details
 
@@ -51,12 +51,23 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 - Known limitation: `SELECT my_func()` with side effects is still treated as safe.
 - Warm time to first frame ≈ 40–43 ms; cold start to re-check on a real GPU.
 
+### M1-3 details
+
+- Filter bar on table tabs only: column + operator + value, AND-combined; generated SQL with bound parameters; LIKE wildcards escaped; PG uses `ILIKE` for contains/starts/ends.
+- Header click cycles desc / asc / none via server-side `ORDER BY` on quoted identifiers.
+- Applying filter or sort re-queries from page 0 with a new request id (cancels in-flight work). Under a filter, row count is Unknown until Exact count runs `COUNT(*)` with the same WHERE.
+- Filters/sorts persist on table tabs in `tabs.json` (serde defaults); restore never auto-runs beyond the normal table preview after reconnect.
+- Shortcut: Cmd/Ctrl+F (`secondary-f`) toggles the filter bar.
+- User docs: [filtering.md](../user/filtering.md).
+
 ### M1 backlog (follow-ups)
 
 - Idle timeout for SQL streams paused at the cap
 - Bound or LRU on the structure cache
 - Re-measure on a real GPU
 - Dedicated DB connection per query tab (shared pool today)
+- Optional OR combine / raw-WHERE mode for filters
+- Remaining Postgres `<TYPE>` placeholders (tsquery, polygon, composites, …)
 - TLS client-key passphrase. rustls needs an unencrypted PEM today. A passphrase, if added later, goes to the OS keychain and never into `connections.json`.
 
 ---
