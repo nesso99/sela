@@ -151,7 +151,11 @@ impl BenchDelegate {
     }
 
     fn fill_missing(&mut self, pages: &[usize]) {
-        for &page in pages {
+        // Cap synchronous fills per callback. DataTable can report a huge
+        // visible_rows range on first layout; generating every page here was the
+        // narrow first-frame regression (263 ms) in M1-2a.
+        const MAX_PAGES_PER_TICK: usize = 2;
+        for &page in pages.iter().take(MAX_PAGES_PER_TICK) {
             if self.result.loaded_page_indices().contains(&page) {
                 continue;
             }
@@ -191,13 +195,13 @@ impl TableDelegate for BenchDelegate {
         self.counters.render_td.fetch_add(1, Ordering::Relaxed);
         let view = self.result.cell(row_ix, col_ix);
         let (null, loading, text) = match view {
-            CellView::Loading => (false, true, "…".to_string()),
+            CellView::Loading => (false, true, SharedString::from("…")),
             CellView::Ready { null, display } => {
                 self.counters.display_calls.fetch_add(1, Ordering::Relaxed);
                 self.counters
                     .display_bytes
                     .fetch_add(display.len() as u64, Ordering::Relaxed);
-                (null, false, display.to_string())
+                (null, false, SharedString::from(display))
             }
         };
         let color = if null || loading {

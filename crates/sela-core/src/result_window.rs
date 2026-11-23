@@ -4,7 +4,7 @@
 //! absolute index; unloaded rows report [`RowState::Loading`]. Call [`ResultWindow::touch`]
 //! when the viewport moves to learn which pages to fetch and to evict distant pages.
 //!
-//! M1-2b will drive real cancel + batched streaming off this API (dropping per-page COUNT).
+//! Cancel + batched streaming (M1-2b) drive this API; table preview no longer runs per-page COUNT.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -53,9 +53,9 @@ impl CachedRow {
     fn cell_display(&mut self, col: usize) -> Option<(bool, Arc<str>)> {
         let cell = self.cells.get(col)?;
         if self.displays[col].is_none() {
-            let full = cell.display().into_owned();
-            let text = truncate_one_line(&full, CELL_DISPLAY_MAX_CHARS);
-            self.displays[col] = Some(Arc::from(text.into_owned()));
+            let borrowed = cell.display();
+            let text = truncate_one_line(borrowed.as_ref(), CELL_DISPLAY_MAX_CHARS);
+            self.displays[col] = Some(Arc::from(text.as_ref()));
         }
         let display = self.displays[col].clone()?;
         Some((cell.is_null(), display))
@@ -151,6 +151,8 @@ impl ResultWindow {
     /// Chunks `page.rows` into `page_size` pages so [`Self::row`] / [`Self::cell`] address every
     /// index. If the chunk count exceeds the base cap, **raises** [`Self::max_pages`] so the
     /// already-fetched result is not silently truncated or left as permanent `…` placeholders.
+    ///
+    /// Rows are **moved** into pages (no per-chunk `to_vec()` clone).
     pub fn replace_with_page(&mut self, page: QueryPage) {
         let total = page.rows.len();
         let page_size = self.page_size;
@@ -163,8 +165,13 @@ impl ResultWindow {
         if chunks > self.max_pages {
             self.max_pages = chunks;
         }
-        for (page_index, chunk) in page.rows.chunks(page_size).enumerate() {
-            self.insert_page(page_index, chunk.to_vec());
+        let mut rows = page.rows;
+        let mut page_index = 0usize;
+        while !rows.is_empty() {
+            let take = rows.len().min(page_size);
+            let chunk: Vec<Vec<Value>> = rows.drain(..take).collect();
+            self.insert_page(page_index, chunk);
+            page_index += 1;
         }
     }
 
@@ -173,6 +180,23 @@ impl ResultWindow {
         let cached = rows.into_iter().map(CachedRow::new).collect();
         self.pages.insert(page_index, Page { rows: cached });
         self.evict_far_from_viewport();
+    }
+
+    /// Update the logical row count (e.g. as a stream delivers more rows or an estimate arrives).
+    pub fn set_total_rows(&mut self, total_rows: usize) {
+        self.total_rows = total_rows;
+    }
+
+    /// Grow the logical row count when a stream delivers rows past the current total.
+    pub fn ensure_total_rows(&mut self, at_least: usize) {
+        if self.total_rows < at_least {
+            self.total_rows = at_least;
+        }
+    }
+
+    /// Replace column metadata without clearing loaded pages (first stream batch).
+    pub fn set_columns(&mut self, columns: Vec<ColumnMeta>) {
+        self.columns = columns;
     }
 
     pub fn page_index_for_row(&self, row: usize) -> usize {
@@ -431,5 +455,38 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn replace_with_page_moves_rows_without_clone() {
+        let rows: Vec<Vec<Value>> = (0..25)
+            .map(|i| vec![Value::Text(format!("owned-{i}").into())])
+            .collect();
+        let mut window = ResultWindow::with_capacity(4, 10);
+        window.replace_with_page(QueryPage {
+            columns: cols(),
+            rows,
+            duration: std::time::Duration::ZERO,
+        });
+        assert_eq!(window.total_rows(), 25);
+        assert_eq!(window.loaded_page_count(), 3);
+        match window.row(24) {
+            RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "owned-24"),
+            RowState::Loading => panic!("expected moved row"),
+        }
+    }
+
+    #[test]
+    fn ensure_total_rows_grows_for_streaming() {
+        let mut window = ResultWindow::with_capacity(4, 10);
+        window.reset(cols(), 0);
+        window.ensure_total_rows(100);
+        assert_eq!(window.total_rows(), 100);
+        window.ensure_total_rows(50);
+        assert_eq!(window.total_rows(), 100);
+        window.set_total_rows(250);
+        assert_eq!(window.total_rows(), 250);
+        let needed = window.touch(100..120);
+        assert_eq!(needed, vec![10, 11]);
     }
 }

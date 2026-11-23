@@ -78,6 +78,125 @@ pub fn classify(sql: &str) -> StatementKind {
     }
 }
 
+/// Whether "Load more" may re-execute `sql` with a higher row cap.
+///
+/// Re-running is only safe for read-only statements. Anything that might write,
+/// take locks, advance sequences, or whose shape we cannot prove is read-only
+/// returns `false` (conservative). Live-stream load-more (raising a shared cap on
+/// an already-open cursor) does not use this gate.
+pub fn is_safe_to_rerun_for_load_more(sql: &str) -> bool {
+    let stripped = strip_comments(sql);
+    let words = sql_keywords(&stripped);
+    let Some(first) = words.first().copied() else {
+        return false;
+    };
+    if keyword_eq(first, "show") {
+        return true;
+    }
+    if keyword_eq(first, "explain") {
+        // EXPLAIN ANALYZE actually runs the plan (including DML). Refuse it.
+        return !words.get(1).is_some_and(|w| keyword_eq(w, "analyze"));
+    }
+    if keyword_eq(first, "select") || keyword_eq(first, "values") {
+        return !select_or_values_has_side_effects(&words);
+    }
+    if keyword_eq(first, "with") {
+        return !with_has_dml_or_side_effects(&words);
+    }
+    // DESCRIBE / PRAGMA / TABLE / CALL / DML / unknown — do not re-run.
+    false
+}
+
+fn sql_keywords(sql: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, ch) in sql.char_indices() {
+        if ch.is_ascii_alphabetic() || ch == '_' {
+            if start.is_none() {
+                start = Some(i);
+            }
+        } else if let Some(s) = start.take() {
+            words.push(&sql[s..i]);
+        }
+    }
+    if let Some(s) = start {
+        words.push(&sql[s..]);
+    }
+    words
+}
+
+fn keyword_eq(word: &str, expected_lower: &str) -> bool {
+    word.eq_ignore_ascii_case(expected_lower)
+}
+
+fn select_or_values_has_side_effects(words: &[&str]) -> bool {
+    has_locking_clause(words)
+        || has_mutating_keyword(words)
+        || has_sequence_call(words)
+        || has_select_into(words)
+}
+
+fn with_has_dml_or_side_effects(words: &[&str]) -> bool {
+    // Any DML / DDL / CALL inside a CTE makes re-run unsafe.
+    has_mutating_keyword(words)
+        || has_locking_clause(words)
+        || has_sequence_call(words)
+        || has_select_into(words)
+}
+
+fn has_mutating_keyword(words: &[&str]) -> bool {
+    const MUTATING: &[&str] = &[
+        "insert", "update", "delete", "merge", "call", "do", "copy", "truncate", "alter", "create",
+        "drop", "grant", "revoke", "refresh", "execute", "perform", "replace", "upsert", "vacuum",
+        "reindex", "cluster", "listen", "notify", "security", "load",
+    ];
+    words
+        .iter()
+        .any(|w| MUTATING.iter().any(|m| keyword_eq(w, m)))
+}
+
+fn has_sequence_call(words: &[&str]) -> bool {
+    words
+        .iter()
+        .any(|w| keyword_eq(w, "nextval") || keyword_eq(w, "setval") || keyword_eq(w, "currval"))
+}
+
+fn has_select_into(words: &[&str]) -> bool {
+    // SELECT … INTO … (Postgres) materializes a table; reject when `into` appears
+    // after an initial `select` and before `from` / end — also reject any `into`
+    // in a select-list statement as conservative.
+    let Some(select_at) = words.iter().position(|w| keyword_eq(w, "select")) else {
+        return false;
+    };
+    words[select_at + 1..].iter().any(|w| keyword_eq(w, "into"))
+}
+
+fn has_locking_clause(words: &[&str]) -> bool {
+    for i in 0..words.len() {
+        if !keyword_eq(words[i], "for") {
+            continue;
+        }
+        let rest = &words[i + 1..];
+        if rest
+            .first()
+            .is_some_and(|w| keyword_eq(w, "update") || keyword_eq(w, "share"))
+        {
+            return true;
+        }
+        if rest.len() >= 3
+            && keyword_eq(rest[0], "no")
+            && keyword_eq(rest[1], "key")
+            && keyword_eq(rest[2], "update")
+        {
+            return true;
+        }
+        if rest.len() >= 2 && keyword_eq(rest[0], "key") && keyword_eq(rest[1], "share") {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn first_keyword(sql: &str) -> Option<String> {
     let stripped = strip_comments(sql);
     let token = stripped.split_whitespace().next()?;
@@ -295,6 +414,52 @@ mod tests {
         assert!(wrapped.contains("\n) AS sela_page"));
         let count = wrap_count(Dialect::Mysql, "select 1");
         assert!(count.starts_with("SELECT COUNT(*)"));
+    }
+
+    #[test]
+    fn load_more_rerun_allows_only_safe_reads() {
+        assert!(is_safe_to_rerun_for_load_more(
+            "SELECT id FROM nums ORDER BY id"
+        ));
+        assert!(is_safe_to_rerun_for_load_more(
+            "WITH t AS (SELECT 1 AS id) SELECT * FROM t"
+        ));
+        assert!(is_safe_to_rerun_for_load_more("VALUES (1), (2), (3)"));
+        assert!(is_safe_to_rerun_for_load_more("SHOW search_path"));
+        assert!(is_safe_to_rerun_for_load_more("EXPLAIN SELECT 1"));
+        assert!(is_safe_to_rerun_for_load_more(
+            "EXPLAIN (FORMAT JSON) SELECT 1"
+        ));
+
+        assert!(!is_safe_to_rerun_for_load_more(
+            "INSERT INTO t (id) VALUES (1) RETURNING id"
+        ));
+        assert!(!is_safe_to_rerun_for_load_more(
+            "WITH x AS (INSERT INTO t VALUES (1) RETURNING id) SELECT * FROM x"
+        ));
+        assert!(!is_safe_to_rerun_for_load_more(
+            "UPDATE t SET a = 1 RETURNING *"
+        ));
+        assert!(!is_safe_to_rerun_for_load_more(
+            "DELETE FROM t RETURNING id"
+        ));
+        assert!(!is_safe_to_rerun_for_load_more(
+            "SELECT * FROM t FOR UPDATE"
+        ));
+        assert!(!is_safe_to_rerun_for_load_more("SELECT * FROM t FOR SHARE"));
+        assert!(!is_safe_to_rerun_for_load_more(
+            "SELECT * FROM t FOR NO KEY UPDATE"
+        ));
+        assert!(!is_safe_to_rerun_for_load_more(
+            "SELECT nextval('sela_seq')"
+        ));
+        assert!(!is_safe_to_rerun_for_load_more("EXPLAIN ANALYZE SELECT 1"));
+        assert!(!is_safe_to_rerun_for_load_more(
+            "EXPLAIN ANALYZE INSERT INTO t VALUES (1)"
+        ));
+        assert!(!is_safe_to_rerun_for_load_more("CALL some_proc()"));
+        assert!(!is_safe_to_rerun_for_load_more("PRAGMA table_info(books)"));
+        assert!(!is_safe_to_rerun_for_load_more("SELECT a INTO b FROM t"));
     }
 
     #[test]

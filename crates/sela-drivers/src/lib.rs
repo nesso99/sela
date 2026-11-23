@@ -13,10 +13,12 @@ mod mysql;
 mod postgres;
 mod runtime;
 mod sqlite;
+mod stream;
 
 pub(crate) use decode::{column_meta, read_mysql_cell, read_postgres_cell, read_sqlite_cell};
 pub(crate) use error_map::sqlx_err;
 pub use runtime::drive;
+pub use tokio_util::sync::CancellationToken;
 
 use std::time::Duration;
 

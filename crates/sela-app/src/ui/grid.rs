@@ -74,8 +74,9 @@ impl TableDelegate for GridDelegate {
     ) -> impl IntoElement {
         let view = self.result.cell(row_ix, col_ix);
         let (null, loading, text) = match view {
-            CellView::Loading => (false, true, "…".to_string()),
-            CellView::Ready { null, display } => (null, false, display.to_string()),
+            CellView::Loading => (false, true, SharedString::from("…")),
+            // Prefer Arc→SharedString when available; fall back to borrowed str.
+            CellView::Ready { null, display } => (null, false, SharedString::from(display)),
         };
         let color = if null || loading {
             cx.theme().muted_foreground
@@ -99,9 +100,12 @@ impl TableDelegate for GridDelegate {
         &mut self,
         visible_range: std::ops::Range<usize>,
         _: &mut Window,
-        _: &mut gpui_kit::Context<TableState<Self>>,
+        cx: &mut gpui_kit::Context<TableState<Self>>,
     ) {
         self.pending_pages = self.result.touch(visible_range);
+        if !self.pending_pages.is_empty() {
+            cx.notify();
+        }
     }
 
     fn loading(&self, _: &App) -> bool {

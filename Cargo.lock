@@ -5890,13 +5890,16 @@ dependencies = [
 name = "sela-app"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "chrono",
+ "futures-util",
  "gpui-kit",
  "rust_decimal",
  "sela-config",
  "sela-core",
  "sela-drivers",
  "serde_json",
+ "tokio-util",
  "uuid",
 ]
 
@@ -5916,12 +5919,15 @@ dependencies = [
 name = "sela-core"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "async-trait",
  "chrono",
  "rust_decimal",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -5929,14 +5935,17 @@ dependencies = [
 name = "sela-drivers"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "async-trait",
  "chrono",
+ "futures-util",
  "rust_decimal",
  "sela-core",
  "serde_json",
  "sqlx",
  "tempfile",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -6997,6 +7006,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

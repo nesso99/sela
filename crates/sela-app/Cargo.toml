@@ -12,10 +12,13 @@ name = "sela"
 path = "src/main.rs"
 
 [dependencies]
+async-channel = { workspace = true }
+futures-util = { workspace = true }
 gpui-kit = { workspace = true }
 sela-config = { workspace = true }
 sela-core = { workspace = true }
 sela-drivers = { workspace = true }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }

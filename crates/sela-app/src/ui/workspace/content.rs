@@ -104,18 +104,70 @@ impl Workspace {
                             .text_color(cx.theme().muted_foreground)
                             .child("SQL"),
                     )
-                    .child({
-                        let this = this.clone();
-                        Button::new("run-query")
-                            .small()
-                            .primary()
-                            .label(if self.busy { "Running…" } else { "Run" })
-                            .disabled(self.busy || !connected)
-                            .tooltip("Run the statement (Ctrl+Enter)")
-                            .on_click(move |_, _, cx| {
-                                this.update(cx, |workspace, cx| workspace.run_editor(cx));
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child({
+                                let this = this.clone();
+                                Button::new("run-query")
+                                    .small()
+                                    .primary()
+                                    .label(if self.busy { "Running…" } else { "Run" })
+                                    .disabled(self.busy || !connected)
+                                    .tooltip("Run the statement (Ctrl+Enter / ⌘+Enter)")
+                                    .on_click(move |_, _, cx| {
+                                        this.update(cx, |workspace, cx| workspace.run_editor(cx));
+                                    })
                             })
-                    }),
+                            .child({
+                                let this = this.clone();
+                                Button::new("stop-query")
+                                    .small()
+                                    .label("Stop")
+                                    .disabled(!self.busy || !connected)
+                                    .tooltip("Cancel the running query (Ctrl+. / ⌘+.)")
+                                    .on_click(move |_, _, cx| {
+                                        this.update(cx, |workspace, cx| workspace.stop_query(cx));
+                                    })
+                            })
+                            .when(self.truncated && self.can_load_more && !self.busy, |row| {
+                                let this = this.clone();
+                                row.child(
+                                    Button::new("load-more")
+                                        .small()
+                                        .label("Load more")
+                                        .disabled(!connected)
+                                        .on_click(move |_, _, cx| {
+                                            this.update(cx, |workspace, cx| {
+                                                workspace.load_more(cx)
+                                            });
+                                        }),
+                                )
+                            })
+                            .when(
+                                matches!(self.source, super::GridSource::Table { .. })
+                                    && matches!(
+                                        self.row_count_kind,
+                                        sela_core::RowCountKind::Estimated
+                                            | sela_core::RowCountKind::Unknown
+                                    )
+                                    && !self.busy,
+                                |row| {
+                                    let this = this;
+                                    row.child(
+                                        Button::new("exact-count")
+                                            .small()
+                                            .label("Exact count")
+                                            .disabled(!connected)
+                                            .on_click(move |_, _, cx| {
+                                                this.update(cx, |workspace, cx| {
+                                                    workspace.request_exact_count(cx)
+                                                });
+                                            }),
+                                    )
+                                },
+                            ),
+                    ),
             )
             .child(
                 div().flex_1().px_2().pb_2().child(

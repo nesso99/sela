@@ -13,13 +13,17 @@ mod types;
 pub use connection::SavedConnection;
 pub use error::DbError;
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
-pub use session::{preview_table, run_user_sql, DatabaseSession, LoadedSchema};
+pub use session::{
+    default_page_size, default_sql_row_cap, exact_table_rows, preview_table, run_user_sql,
+    DatabaseSession, LoadedSchema,
+};
 pub use sql::{
-    classify, first_keyword, normalize_sql, qualify, quote_ident, select_all, split_statements,
-    strip_comments, wrap_count, wrap_page, SqlError, StatementKind,
+    classify, first_keyword, is_safe_to_rerun_for_load_more, normalize_sql, qualify, quote_ident,
+    select_all, split_statements, strip_comments, wrap_count, wrap_page, SqlError, StatementKind,
 };
 pub use types::{
     truncate_one_line, ColumnMeta, Dialect, Engine, ExecOutcome, Interval, QueryPage, RelationKind,
-    RowSet, SchemaInfo, StatementOutcome, TableInfo, Value, CELL_DISPLAY_MAX_CHARS,
-    CELL_NEWLINE_GLYPH, PAGE_SIZE,
+    RowCountKind, RowSet, SchemaInfo, StatementOutcome, StreamBatch, StreamOutcome, TableInfo,
+    Value, CELL_DISPLAY_MAX_CHARS, CELL_NEWLINE_GLYPH, DEFAULT_SQL_ROW_CAP, PAGE_SIZE,
+    STREAM_BATCH_SIZE,
 };
