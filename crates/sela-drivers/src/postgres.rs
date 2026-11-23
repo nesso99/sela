@@ -205,7 +205,7 @@ impl PostgresSession {
     ) -> Result<Vec<(char, String, String)>, DbError> {
         let rows = sqlx::query(
             "SELECT con.conname AS name,
-                    con.contype AS kind,
+                    con.contype::text AS kind,
                     pg_get_constraintdef(con.oid) AS definition
              FROM pg_catalog.pg_constraint con
              JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
@@ -230,9 +230,10 @@ impl PostgresSession {
         .map_err(crate::sqlx_err)?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            let kind: i8 = row.try_get("kind").map_err(crate::sqlx_err)?;
+            let kind: String = row.try_get("kind").map_err(crate::sqlx_err)?;
+            let kind = kind.chars().next().unwrap_or('?');
             out.push((
-                kind as u8 as char,
+                kind,
                 row.try_get("name").map_err(crate::sqlx_err)?,
                 row.try_get("definition").map_err(crate::sqlx_err)?,
             ));
@@ -323,6 +324,24 @@ impl PostgresSession {
         }
         Ok(ddl)
     }
+
+    async fn relation_exists(&self, schema: &str, table: &str) -> Result<bool, DbError> {
+        let row = sqlx::query(
+            "SELECT 1 AS ok
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1
+               AND c.relname = $2
+               AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+             LIMIT 1",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        Ok(row.is_some())
+    }
 }
 
 #[async_trait]
@@ -412,12 +431,12 @@ impl DatabaseSession for PostgresSession {
     }
 
     async fn describe_table(&self, schema: &str, table: &str) -> Result<TableStructure, DbError> {
-        let columns = self.load_columns(schema, table).await?;
-        if columns.is_empty() {
+        if !self.relation_exists(schema, table).await? {
             return Err(DbError::query(format!(
                 "table `{schema}.{table}` not found"
             )));
         }
+        let columns = self.load_columns(schema, table).await?;
         let indexes = self.load_indexes(schema, table).await?;
         let foreign_keys = self.load_foreign_keys(schema, table).await?;
         let constraints = self.load_constraint_defs(schema, table).await?;
@@ -434,12 +453,12 @@ impl DatabaseSession for PostgresSession {
     }
 
     async fn table_ddl(&self, schema: &str, table: &str) -> Result<String, DbError> {
-        let columns = self.load_columns(schema, table).await?;
-        if columns.is_empty() {
+        if !self.relation_exists(schema, table).await? {
             return Err(DbError::query(format!(
                 "table `{schema}.{table}` not found"
             )));
         }
+        let columns = self.load_columns(schema, table).await?;
         let constraints = self.load_constraint_defs(schema, table).await?;
         let index_defs = self.load_standalone_index_defs(schema, table).await?;
         Self::build_ddl(schema, table, &columns, &constraints, &index_defs)
@@ -815,7 +834,9 @@ mod tests {
             .execute(
                 "CREATE TABLE sela_struct_parent (
                     id integer PRIMARY KEY,
-                    label text NOT NULL
+                    label text NOT NULL,
+                    region text NOT NULL,
+                    UNIQUE (label, region)
                 )",
             )
             .await
@@ -825,9 +846,13 @@ mod tests {
                 "CREATE TABLE sela_struct_child (
                     id integer PRIMARY KEY,
                     parent_id integer NOT NULL REFERENCES sela_struct_parent(id),
+                    parent_label text NOT NULL,
+                    parent_region text NOT NULL,
                     code text NOT NULL,
                     note text DEFAULT 'n/a',
-                    score integer
+                    score integer,
+                    FOREIGN KEY (parent_label, parent_region)
+                      REFERENCES sela_struct_parent(label, region)
                 )",
             )
             .await
@@ -845,6 +870,10 @@ mod tests {
                 "CREATE INDEX sela_struct_child_parent_score_idx
                  ON sela_struct_child(parent_id, score)",
             )
+            .await
+            .unwrap();
+        session
+            .execute(r#"CREATE TABLE "Weird Name" ("Col Id" integer PRIMARY KEY)"#)
             .await
             .unwrap();
 
@@ -877,11 +906,16 @@ mod tests {
                 && index.columns == vec!["parent_id".to_string(), "score".to_string()]
         }));
 
-        assert_eq!(structure.foreign_keys.len(), 1);
-        let fk = &structure.foreign_keys[0];
-        assert_eq!(fk.columns, vec!["parent_id".to_string()]);
-        assert_eq!(fk.ref_table, "sela_struct_parent");
-        assert_eq!(fk.ref_columns, vec!["id".to_string()]);
+        assert_eq!(structure.foreign_keys.len(), 2);
+        assert!(structure.foreign_keys.iter().any(|fk| {
+            fk.columns == vec!["parent_id".to_string()]
+                && fk.ref_table == "sela_struct_parent"
+                && fk.ref_columns == vec!["id".to_string()]
+        }));
+        assert!(structure.foreign_keys.iter().any(|fk| {
+            fk.columns == vec!["parent_label".to_string(), "parent_region".to_string()]
+                && fk.ref_columns == vec!["label".to_string(), "region".to_string()]
+        }));
 
         let ddl = session
             .table_ddl(&schema, "sela_struct_child")
@@ -894,6 +928,13 @@ mod tests {
         assert!(ddl.contains("optional note"));
         assert_eq!(structure.ddl, ddl);
 
+        let quoted = session.describe_table(&schema, "Weird Name").await.unwrap();
+        assert_eq!(quoted.columns[0].name, "Col Id");
+
+        let missing = session.describe_table(&schema, "no_such_table").await;
+        assert!(missing.is_err());
+
+        session.execute(r#"DROP TABLE "Weird Name""#).await.unwrap();
         session
             .execute("DROP TABLE sela_struct_child")
             .await

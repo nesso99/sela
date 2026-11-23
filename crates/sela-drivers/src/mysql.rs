@@ -206,6 +206,21 @@ impl MysqlSession {
             .map_err(crate::sqlx_err)?;
         Ok(ddl)
     }
+
+    async fn relation_exists(&self, schema: &str, table: &str) -> Result<bool, DbError> {
+        let row = sqlx::query(
+            "SELECT 1 AS ok
+             FROM information_schema.tables
+             WHERE table_schema = ? AND table_name = ?
+             LIMIT 1",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        Ok(row.is_some())
+    }
 }
 
 #[async_trait]
@@ -289,12 +304,12 @@ impl DatabaseSession for MysqlSession {
     }
 
     async fn describe_table(&self, schema: &str, table: &str) -> Result<TableStructure, DbError> {
-        let columns = self.load_columns(schema, table).await?;
-        if columns.is_empty() {
+        if !self.relation_exists(schema, table).await? {
             return Err(DbError::query(format!(
                 "table `{schema}.{table}` not found"
             )));
         }
+        let columns = self.load_columns(schema, table).await?;
         let indexes = self.load_indexes(schema, table).await?;
         let foreign_keys = self.load_foreign_keys(schema, table).await?;
         let ddl = self.load_ddl(schema, table).await?;
@@ -643,7 +658,9 @@ mod tests {
             .execute(
                 "CREATE TABLE sela_struct_parent (
                     id INT PRIMARY KEY,
-                    label VARCHAR(64) NOT NULL
+                    label VARCHAR(64) NOT NULL,
+                    region VARCHAR(64) NOT NULL,
+                    UNIQUE KEY sela_struct_parent_label_region (label, region)
                 ) ENGINE=InnoDB",
             )
             .await
@@ -653,11 +670,16 @@ mod tests {
                 "CREATE TABLE sela_struct_child (
                     id INT PRIMARY KEY,
                     parent_id INT NOT NULL,
+                    parent_label VARCHAR(64) NOT NULL,
+                    parent_region VARCHAR(64) NOT NULL,
                     code VARCHAR(64) NOT NULL,
                     note VARCHAR(64) NULL DEFAULT 'n/a' COMMENT 'optional note',
                     score INT NULL,
                     CONSTRAINT sela_struct_child_parent_fk
                       FOREIGN KEY (parent_id) REFERENCES sela_struct_parent(id),
+                    CONSTRAINT sela_struct_child_label_fk
+                      FOREIGN KEY (parent_label, parent_region)
+                      REFERENCES sela_struct_parent(label, region),
                     UNIQUE KEY sela_struct_child_code_uidx (code),
                     KEY sela_struct_child_parent_score_idx (parent_id, score)
                 ) ENGINE=InnoDB",
@@ -690,12 +712,18 @@ mod tests {
                 && index.columns == vec!["parent_id".to_string(), "score".to_string()]
         }));
 
-        assert_eq!(structure.foreign_keys.len(), 1);
-        let fk = &structure.foreign_keys[0];
-        assert_eq!(fk.name, "sela_struct_child_parent_fk");
-        assert_eq!(fk.columns, vec!["parent_id".to_string()]);
-        assert_eq!(fk.ref_table, "sela_struct_parent");
-        assert_eq!(fk.ref_columns, vec!["id".to_string()]);
+        assert_eq!(structure.foreign_keys.len(), 2);
+        assert!(structure.foreign_keys.iter().any(|fk| {
+            fk.name == "sela_struct_child_parent_fk"
+                && fk.columns == vec!["parent_id".to_string()]
+                && fk.ref_table == "sela_struct_parent"
+                && fk.ref_columns == vec!["id".to_string()]
+        }));
+        assert!(structure.foreign_keys.iter().any(|fk| {
+            fk.name == "sela_struct_child_label_fk"
+                && fk.columns == vec!["parent_label".to_string(), "parent_region".to_string()]
+                && fk.ref_columns == vec!["label".to_string(), "region".to_string()]
+        }));
 
         let ddl = session
             .table_ddl(&schema, "sela_struct_child")
@@ -706,6 +734,9 @@ mod tests {
         assert!(ddl.contains("sela_struct_child_code_uidx"));
         assert!(ddl.contains("optional note"));
         assert_eq!(structure.ddl, ddl);
+
+        let missing = session.describe_table(&schema, "no_such_table").await;
+        assert!(missing.is_err());
 
         session
             .execute("DROP TABLE sela_struct_child")

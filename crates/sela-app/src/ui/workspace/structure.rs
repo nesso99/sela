@@ -76,21 +76,35 @@ impl Workspace {
         }
         self.structure_error = None;
         self.status = format!("Loading structure · {schema}.{table}…");
+        let expected_schema = schema.clone();
+        let expected_table = table.clone();
         self.spawn_work(
             cx,
             async move { session.describe_table(&schema, &table).await },
-            move |this, result, cx| match result {
-                Ok(structure) => {
-                    let key = structure_key(&structure.schema, &structure.table);
-                    this.status = format!("Structure · {}.{}", structure.schema, structure.table);
-                    this.structure_error = None;
-                    this.structure_cache.insert(key, structure);
-                    cx.notify();
-                }
-                Err(err) => {
-                    this.structure_error = Some(err.to_string());
-                    this.status = "Structure failed".into();
-                    cx.notify();
+            move |this, result, cx| {
+                // Never paint table A's result into table B's Structure pane.
+                let still_current = matches!(
+                    &this.source,
+                    GridSource::Table { schema, table }
+                        if schema == &expected_schema && table == &expected_table
+                );
+                match result {
+                    Ok(structure) => {
+                        let key = structure_key(&structure.schema, &structure.table);
+                        this.structure_cache.insert(key, structure);
+                        if still_current {
+                            this.status = format!("Structure · {expected_schema}.{expected_table}");
+                            this.structure_error = None;
+                            cx.notify();
+                        }
+                    }
+                    Err(err) => {
+                        if still_current {
+                            this.structure_error = Some(err.to_string());
+                            this.status = "Structure failed".into();
+                            cx.notify();
+                        }
+                    }
                 }
             },
         );
