@@ -21,7 +21,9 @@ use gpui_kit::{div, px, Context, Entity, IntoElement, Render, Subscription, Wind
 use sela_config::{CachingSecrets, ConfigStore, KeyringStore, SavedConnection, TabStore};
 use sela_core::{DatabaseSession, LoadedSchema, TabId, TabList};
 
-use super::{ActivateTab, CancelQuery, CloseTab, NewQueryTab, RunQuery, ShowTableData, ShowTableStructure};
+use super::{
+    ActivateTab, CancelQuery, CloseTab, NewQueryTab, RunQuery, ShowTableData, ShowTableStructure,
+};
 use tab_view::TabView;
 
 pub struct Workspace {

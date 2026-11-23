@@ -393,7 +393,7 @@ mod tests {
 
         let token_a = CancellationToken::new();
         let watch_a = token_a.clone();
-        let request_a = tabs.get_mut(a).unwrap().bump_request();
+        tabs.get_mut(a).unwrap().bump_request();
         tabs.get_mut(a).unwrap().set_cancel(token_a);
 
         let token_b = CancellationToken::new();
@@ -408,7 +408,7 @@ mod tests {
         // Tab B's pending load is untouched and still addressable by id.
         assert!(!watch_b.is_cancelled());
         assert_eq!(tabs.get(b).map(|t| t.request), Some(request_b));
-        assert_ne!(request_a, request_b);
+        assert!(tabs.get(b).unwrap().cancel_token().is_some());
     }
 
     #[test]
