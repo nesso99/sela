@@ -9,9 +9,9 @@ use gpui_kit::Context;
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    classify, exact_table_rows, normalize_sql, preview_table, run_user_sql, select_all, wrap_page,
-    DatabaseSession, DbError, RowCountKind, StatementKind, StatementOutcome, StreamBatch,
-    DEFAULT_SQL_ROW_CAP, PAGE_SIZE, STREAM_BATCH_SIZE,
+    classify, exact_table_rows, is_safe_to_rerun_for_load_more, normalize_sql, preview_table,
+    run_user_sql, select_all, wrap_page, DatabaseSession, DbError, RowCountKind, StatementKind,
+    StatementOutcome, StreamBatch, DEFAULT_SQL_ROW_CAP, PAGE_SIZE, STREAM_BATCH_SIZE,
 };
 use sela_drivers::drive;
 
@@ -93,7 +93,7 @@ impl Workspace {
     }
 
     pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
-        if !self.truncated {
+        if !self.truncated || !self.can_load_more {
             return;
         }
         if let Some(cap) = &self.live_row_cap {
@@ -108,10 +108,39 @@ impl Workspace {
             cx.notify();
             return;
         }
-        // No live stream — re-run with a higher cap.
+        // No live stream — re-run only when the statement is a proven read-only shape.
+        let sql = match &self.source {
+            GridSource::Sql(sql) => sql.as_str(),
+            _ => {
+                self.refuse_unsafe_load_more(cx);
+                return;
+            }
+        };
+        if !is_safe_to_rerun_for_load_more(sql) {
+            self.refuse_unsafe_load_more(cx);
+            return;
+        }
         self.sql_row_cap = self.sql_row_cap.saturating_add(DEFAULT_SQL_ROW_CAP);
         self.truncated = false;
         self.load_source(cx);
+    }
+
+    fn refuse_unsafe_load_more(&mut self, cx: &mut Context<Self>) {
+        let n = self.sql_row_cap;
+        self.can_load_more = false;
+        self.status = format!("Result capped at {n} rows. Re-run manually to see more.");
+        self.note = Some(
+            "Load more is disabled: re-running this statement could repeat side effects.".into(),
+        );
+        cx.notify();
+    }
+
+    fn sql_allows_load_more_rerun(&self) -> bool {
+        match &self.source {
+            GridSource::Sql(sql) => is_safe_to_rerun_for_load_more(sql),
+            // Table preview uses LIMIT/OFFSET paging, not SQL re-run load-more.
+            GridSource::Table { .. } | GridSource::Idle => false,
+        }
     }
 
     pub(super) fn request_exact_count(&mut self, cx: &mut Context<Self>) {
@@ -158,6 +187,7 @@ impl Workspace {
         self.error = None;
         self.note = None;
         self.truncated = false;
+        self.can_load_more = false;
         self.live_row_cap = None;
         self.status = "Running…".into();
         self.grid.update(cx, |state, cx| {
@@ -292,12 +322,21 @@ impl Workspace {
                                     match outcome {
                                         Ok(summary) => {
                                             this.truncated = summary.truncated;
+                                            this.can_load_more = summary.truncated
+                                                && this.sql_allows_load_more_rerun();
                                             if summary.truncated {
                                                 this.row_count_kind = RowCountKind::AtLeast;
-                                                this.note = Some(format!(
-                                                    "Showing the first {} rows. Use Load more to continue.",
-                                                    summary.rows_delivered
-                                                ));
+                                                if this.can_load_more {
+                                                    this.note = Some(format!(
+                                                        "Showing the first {} rows. Use Load more to continue.",
+                                                        summary.rows_delivered
+                                                    ));
+                                                } else {
+                                                    this.note = Some(format!(
+                                                        "Showing the first {} rows. Re-run manually to see more.",
+                                                        summary.rows_delivered
+                                                    ));
+                                                }
                                             } else {
                                                 this.row_count_kind = RowCountKind::Exact;
                                             }
@@ -351,6 +390,8 @@ impl Workspace {
                                     match outcome {
                                         Ok(summary) => {
                                             this.truncated = summary.truncated;
+                                            this.can_load_more = summary.truncated
+                                                && this.sql_allows_load_more_rerun();
                                             this.total_rows = Some(summary.rows_delivered as u64);
                                             this.page_len = summary.rows_delivered;
                                             this.refresh_status_from_state();
@@ -387,6 +428,8 @@ impl Workspace {
     fn apply_stream_batch(&mut self, batch: StreamBatch, cx: &mut Context<Self>) {
         if batch.paused_at_cap {
             self.truncated = true;
+            // Same live stream — raising the shared cap is always safe.
+            self.can_load_more = self.live_row_cap.is_some();
             self.busy = false;
             self.refresh_status_from_state();
             self.grid.update(cx, |state, cx| {
@@ -565,7 +608,15 @@ impl Workspace {
                 self.row_count_kind = rows.row_count_kind;
                 self.paged = rows.paged;
                 self.truncated = rows.truncated;
-                self.note = rows.note.clone();
+                self.can_load_more = rows.truncated && self.sql_allows_load_more_rerun();
+                self.note = if rows.truncated && !self.can_load_more {
+                    Some(format!(
+                        "Showing the first {} rows. Re-run manually to see more.",
+                        rows.page.rows.len()
+                    ))
+                } else {
+                    rows.note.clone()
+                };
                 self.refresh_status_from_state();
                 if let Some(total) = rows.total_rows {
                     // Prefer estimate for window size when table-paged.
@@ -616,6 +667,7 @@ impl Workspace {
                 self.total_rows = None;
                 self.paged = false;
                 self.truncated = false;
+                self.can_load_more = false;
                 self.note = None;
                 let message = format!(
                     "{} rows affected · {} ms",

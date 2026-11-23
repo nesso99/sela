@@ -18,8 +18,8 @@ pub use session::{
     DatabaseSession, LoadedSchema,
 };
 pub use sql::{
-    classify, first_keyword, normalize_sql, qualify, quote_ident, select_all, split_statements,
-    strip_comments, wrap_count, wrap_page, SqlError, StatementKind,
+    classify, first_keyword, is_safe_to_rerun_for_load_more, normalize_sql, qualify, quote_ident,
+    select_all, split_statements, strip_comments, wrap_count, wrap_page, SqlError, StatementKind,
 };
 pub use types::{
     truncate_one_line, ColumnMeta, Dialect, Engine, ExecOutcome, Interval, QueryPage, RelationKind,

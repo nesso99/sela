@@ -15,7 +15,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use sqlx::Executor;
@@ -65,31 +65,49 @@ pub(crate) async fn stream_postgres(
             batch_size,
             row_cap,
             finish_at_cap,
-            cancel,
+            cancel.clone(),
             sink,
             started,
             read_postgres_cell,
         )
         .await
     };
-    let result = match result {
-        Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
-            let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
-            outcome.columns = described.columns().iter().map(column_meta).collect();
-            let _ = sink_meta
-                .send(StreamBatch {
-                    columns: Some(outcome.columns.clone()),
-                    rows: Vec::new(),
-                    start_index: 0,
-                    paused_at_cap: false,
-                })
-                .await;
-            Ok(outcome)
+    let cancelled = cancel.is_cancelled() || matches!(&result, Err(DbError::Cancelled { .. }));
+    let result = if cancelled {
+        result
+    } else {
+        match result {
+            Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
+                let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
+                outcome.columns = described.columns().iter().map(column_meta).collect();
+                let _ = sink_meta
+                    .send(StreamBatch {
+                        columns: Some(outcome.columns.clone()),
+                        rows: Vec::new(),
+                        start_index: 0,
+                        paused_at_cap: false,
+                    })
+                    .await;
+                Ok(outcome)
+            }
+            other => other,
         }
-        other => other,
     };
 
-    cancel_task.abort();
+    // If cancel fired, an in-flight pg_cancel_backend may still be racing. Closing
+    // this connection prevents that cancel from hitting the next pooled checkout.
+    if cancelled || cancel.is_cancelled() {
+        let _ = tokio::time::timeout(Duration::from_secs(1), cancel_task).await;
+        let _ = conn.close().await;
+    } else {
+        cancel_task.abort();
+        // Cancel may have raced in after the check above; never return a poisoned conn.
+        if cancel.is_cancelled() {
+            let _ = conn.close().await;
+        } else {
+            drop(conn);
+        }
+    }
     result
 }
 
@@ -131,31 +149,46 @@ pub(crate) async fn stream_mysql(
             batch_size,
             row_cap,
             finish_at_cap,
-            cancel,
+            cancel.clone(),
             sink,
             started,
             read_mysql_cell,
         )
         .await
     };
-    let result = match result {
-        Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
-            let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
-            outcome.columns = described.columns().iter().map(column_meta).collect();
-            let _ = sink_meta
-                .send(StreamBatch {
-                    columns: Some(outcome.columns.clone()),
-                    rows: Vec::new(),
-                    start_index: 0,
-                    paused_at_cap: false,
-                })
-                .await;
-            Ok(outcome)
+    let cancelled = cancel.is_cancelled() || matches!(&result, Err(DbError::Cancelled { .. }));
+    let result = if cancelled {
+        result
+    } else {
+        match result {
+            Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
+                let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
+                outcome.columns = described.columns().iter().map(column_meta).collect();
+                let _ = sink_meta
+                    .send(StreamBatch {
+                        columns: Some(outcome.columns.clone()),
+                        rows: Vec::new(),
+                        start_index: 0,
+                        paused_at_cap: false,
+                    })
+                    .await;
+                Ok(outcome)
+            }
+            other => other,
         }
-        other => other,
     };
 
-    cancel_task.abort();
+    if cancelled || cancel.is_cancelled() {
+        let _ = tokio::time::timeout(Duration::from_secs(1), cancel_task).await;
+        let _ = conn.close().await;
+    } else {
+        cancel_task.abort();
+        if cancel.is_cancelled() {
+            let _ = conn.close().await;
+        } else {
+            drop(conn);
+        }
+    }
     result
 }
 

@@ -548,4 +548,71 @@ mod tests {
         assert_eq!(outcome.rows_delivered, 1500);
         assert_eq!(collected, 1500);
     }
+
+    #[tokio::test]
+    async fn sqlite_dml_returning_must_not_rerun_on_load_more() {
+        use sela_core::is_safe_to_rerun_for_load_more;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = SqliteSession::open(&dir.path().join("returning.sqlite"), true)
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE t (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    v TEXT NOT NULL
+                )",
+            )
+            .await
+            .unwrap();
+
+        let sql = "INSERT INTO t (v) VALUES ('a'), ('b'), ('c'), ('d'), ('e') RETURNING id, v";
+        assert!(
+            !is_safe_to_rerun_for_load_more(sql),
+            "INSERT … RETURNING must not be eligible for load-more re-run"
+        );
+
+        // Stream INSERT … RETURNING with a low cap (same path load-more would raise).
+        let cap = Arc::new(AtomicUsize::new(2));
+        let (tx, rx) = async_channel::bounded(4);
+        let produce = session.stream_query(sql, 10, Some(cap), true, CancellationToken::new(), tx);
+        let collect = async {
+            let mut n = 0usize;
+            while let Ok(batch) = rx.recv().await {
+                n += batch.rows.len();
+            }
+            n
+        };
+        let (outcome, delivered) = tokio::join!(produce, collect);
+        let outcome = outcome.expect("INSERT … RETURNING stream");
+        assert!(
+            outcome.truncated,
+            "expected truncation at cap=2, delivered={delivered}"
+        );
+        assert_eq!(delivered, 2);
+
+        let count = async |session: &SqliteSession| -> u64 {
+            session.count_query("SELECT COUNT(*) FROM t").await.unwrap()
+        };
+        let after_first = count(&session).await;
+        assert_eq!(after_first, 5, "INSERT should have written all five rows");
+
+        // Simulate the load-more fallback: re-run only when the classifier allows it.
+        if is_safe_to_rerun_for_load_more(sql) {
+            let cap = Arc::new(AtomicUsize::new(10));
+            let (tx, rx) = async_channel::bounded(4);
+            let produce =
+                session.stream_query(sql, 10, Some(cap), true, CancellationToken::new(), tx);
+            let drain = async { while rx.recv().await.is_ok() {} };
+            let _ = tokio::join!(produce, drain);
+        }
+        let after_load_more = count(&session).await;
+        assert_eq!(
+            after_load_more, after_first,
+            "load-more must not re-run INSERT … RETURNING (row count changed)"
+        );
+    }
 }

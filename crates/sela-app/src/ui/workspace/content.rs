@@ -130,7 +130,7 @@ impl Workspace {
                                         this.update(cx, |workspace, cx| workspace.stop_query(cx));
                                     })
                             })
-                            .when(self.truncated && !self.busy, |row| {
+                            .when(self.truncated && self.can_load_more && !self.busy, |row| {
                                 let this = this.clone();
                                 row.child(
                                     Button::new("load-more")

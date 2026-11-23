@@ -363,6 +363,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mysql_cancel_does_not_poison_next_query() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql cancel reuse: set SELA_MYSQL_URL");
+            return;
+        };
+        let session = MysqlSession::connect_url(&url)
+            .await
+            .expect("mysql connect");
+        let cancel = CancellationToken::new();
+        let cancel_later = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            cancel_later.cancel();
+        });
+        let err = run_user_sql(&session, "SELECT SLEEP(10)", 10, cancel)
+            .await
+            .expect_err("expected cancel");
+        assert!(matches!(err, DbError::Cancelled { .. }), "{err:?}");
+
+        let ok = run_user_sql(&session, "SELECT 1 AS n", 10, CancellationToken::new())
+            .await
+            .expect("next query after cancel");
+        let StatementOutcome::Rows(rows) = ok else {
+            panic!("expected rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+    }
+
+    #[tokio::test]
     async fn mysql_stream_first_batch_before_finish() {
         let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
             eprintln!("skip mysql stream: set SELA_MYSQL_URL");

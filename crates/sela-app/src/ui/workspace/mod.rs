@@ -44,6 +44,9 @@ pub struct Workspace {
     row_count_kind: RowCountKind,
     paged: bool,
     truncated: bool,
+    /// When true, the Load more button may raise a live stream cap or re-run a
+    /// read-only statement. Cleared for DML / locking SQL that must not re-run.
+    can_load_more: bool,
     sql_row_cap: u32,
     live_row_cap: Option<Arc<AtomicUsize>>,
     status: String,
@@ -123,6 +126,7 @@ impl Workspace {
             row_count_kind: RowCountKind::Unknown,
             paged: false,
             truncated: false,
+            can_load_more: false,
             sql_row_cap: DEFAULT_SQL_ROW_CAP,
             live_row_cap: None,
             status: "No database connected".into(),

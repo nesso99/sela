@@ -409,6 +409,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn postgres_cancel_does_not_poison_next_query() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres cancel reuse: set SELA_POSTGRES_URL");
+            return;
+        };
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+        let cancel = CancellationToken::new();
+        let cancel_later = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            cancel_later.cancel();
+        });
+        let err = run_user_sql(&session, "SELECT pg_sleep(10)", 10, cancel)
+            .await
+            .expect_err("expected cancel");
+        assert!(matches!(err, DbError::Cancelled { .. }), "{err:?}");
+
+        // Same pool must serve a fresh query that is not cancelled by a stale kill.
+        let ok = run_user_sql(&session, "SELECT 1 AS n", 10, CancellationToken::new())
+            .await
+            .expect("next query after cancel");
+        let StatementOutcome::Rows(rows) = ok else {
+            panic!("expected rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+    }
+
+    #[tokio::test]
     async fn postgres_stream_first_batch_before_finish() {
         let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
             eprintln!("skip postgres stream: set SELA_POSTGRES_URL");
