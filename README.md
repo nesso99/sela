@@ -18,6 +18,7 @@ The first window, with no connections yet, and the sample library opened to `mai
 - Connections are stored in a local JSON file. Passwords are not in that file. Sela writes them to the OS keychain with the [`keyring`](https://crates.io/crates/keyring) crate when a secret service is available.
 - Browse schemas (or databases) and tables for the active connection, including views.
 - Open a table in a virtualized grid, 100 rows per page, with the column type in the header.
+- Switch between **Data** and **Structure** for the open table (`Ctrl/⌘+Shift+[` for Data, `Ctrl/⌘+Shift+]` for Structure). Structure is read-only: columns, indexes, foreign keys, and DDL, loaded lazily and cached until you refresh.
 - Write one SQL statement and run it with Ctrl+Enter or Cmd+Enter. Results use the same grid. Errors, row counts, and timing show in the status bar.
 - Database I/O runs on a dedicated Tokio runtime. The GPUI thread only awaits the result.
 
@@ -156,7 +157,7 @@ The pieces below are intentionally not in this version. The module split is ther
 - Multiple result tabs, and a tab per open table.
 - Inline cell editing and inserting or deleting rows.
 - Filters, sorts, and a where-bar that composes SQL instead of replacing it.
-- Structure view: columns, indexes, foreign keys, and DDL.
+- Inline structure editing (create/alter/drop from the Structure view).
 - SQL syntax highlighting, history, and multiple statements.
 - Export to CSV or JSON, and import.
 - SSH tunnels, SSL certificates, and connection groups.

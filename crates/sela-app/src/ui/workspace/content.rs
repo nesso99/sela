@@ -39,31 +39,88 @@ impl Workspace {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(page_label.to_string()),
-                    )
-                    .child({
-                        let this = this.clone();
-                        Button::new("page-prev")
-                            .xsmall()
-                            .label("Previous")
-                            .disabled(!can_prev || self.busy || !connected)
-                            .on_click(move |_, _, cx| {
-                                this.update(cx, |workspace, cx| workspace.step_page(-1, cx));
-                            })
+                    .when(self.table_open(), |row| {
+                        let this_data = this.clone();
+                        let this_structure = this.clone();
+                        let this_refresh = this.clone();
+                        let on_data = matches!(self.table_pane, super::TablePane::Data);
+                        let on_structure = matches!(self.table_pane, super::TablePane::Structure);
+                        row.child(
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Button::new("pane-data")
+                                        .xsmall()
+                                        .label("Data")
+                                        .primary()
+                                        .when(!on_data, |button| button.ghost())
+                                        .disabled(!connected)
+                                        .tooltip("Show table rows (Ctrl/⌘+Shift+[)")
+                                        .on_click(move |_, _, cx| {
+                                            this_data.update(cx, |workspace, cx| {
+                                                workspace.show_table_data(cx)
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("pane-structure")
+                                        .xsmall()
+                                        .label("Structure")
+                                        .primary()
+                                        .when(!on_structure, |button| button.ghost())
+                                        .disabled(!connected)
+                                        .tooltip("Show columns, indexes, FKs, DDL (Ctrl/⌘+Shift+])")
+                                        .on_click(move |_, _, cx| {
+                                            this_structure.update(cx, |workspace, cx| {
+                                                workspace.show_table_structure(cx)
+                                            });
+                                        }),
+                                )
+                                .when(on_structure, |row| {
+                                    row.child(
+                                        Button::new("pane-structure-refresh")
+                                            .xsmall()
+                                            .label("Refresh")
+                                            .disabled(!connected || self.busy)
+                                            .tooltip("Reload structure for this table")
+                                            .on_click(move |_, _, cx| {
+                                                this_refresh.update(cx, |workspace, cx| {
+                                                    workspace.refresh_structure(cx)
+                                                });
+                                            }),
+                                    )
+                                }),
+                        )
                     })
-                    .child({
-                        let this = this;
-                        Button::new("page-next")
-                            .xsmall()
-                            .label("Next")
-                            .disabled(!can_next || self.busy || !connected)
-                            .on_click(move |_, _, cx| {
-                                this.update(cx, |workspace, cx| workspace.step_page(1, cx));
-                            })
+                    .when(matches!(self.table_pane, super::TablePane::Data), |row| {
+                        let this_prev = this.clone();
+                        let this_next = this;
+                        row.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(page_label.to_string()),
+                        )
+                        .child(
+                            Button::new("page-prev")
+                                .xsmall()
+                                .label("Previous")
+                                .disabled(!can_prev || self.busy || !connected)
+                                .on_click(move |_, _, cx| {
+                                    this_prev
+                                        .update(cx, |workspace, cx| workspace.step_page(-1, cx));
+                                }),
+                        )
+                        .child(
+                            Button::new("page-next")
+                                .xsmall()
+                                .label("Next")
+                                .disabled(!can_next || self.busy || !connected)
+                                .on_click(move |_, _, cx| {
+                                    this_next
+                                        .update(cx, |workspace, cx| workspace.step_page(1, cx));
+                                }),
+                        )
                     }),
             )
     }

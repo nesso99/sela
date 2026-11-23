@@ -71,6 +71,8 @@ impl Workspace {
 
     pub(super) fn open_table(&mut self, schema: String, table: String, cx: &mut Context<Self>) {
         self.source = GridSource::Table { schema, table };
+        self.table_pane = super::TablePane::Data;
+        self.structure_error = None;
         self.page_offset = 0;
         self.sql_row_cap = DEFAULT_SQL_ROW_CAP;
         self.truncated = false;
@@ -86,6 +88,7 @@ impl Workspace {
             return;
         }
         self.source = GridSource::Sql(sql);
+        self.table_pane = super::TablePane::Data;
         self.page_offset = 0;
         self.sql_row_cap = DEFAULT_SQL_ROW_CAP;
         self.truncated = false;

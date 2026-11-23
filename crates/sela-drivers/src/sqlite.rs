@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use sqlx::Row;
 
 use sela_core::{
-    quote_ident, DatabaseSession, DbError, Dialect, QueryPage, RelationKind, SchemaInfo,
-    StreamBatch, StreamOutcome, TableInfo,
+    quote_ident, ColumnStructure, DatabaseSession, DbError, Dialect, ForeignKeyInfo, IndexInfo,
+    QueryPage, RelationKind, SchemaInfo, StreamBatch, StreamOutcome, TableInfo, TableStructure,
 };
 
 pub const SAMPLE_SQL: &str = include_str!("../../../scripts/seed-sqlite.sql");
@@ -32,6 +32,214 @@ impl SqliteSession {
             .await
             .map_err(crate::sqlx_err)?;
         Ok(Self { pool })
+    }
+
+    async fn load_columns(
+        &self,
+        schema_q: &str,
+        table: &str,
+    ) -> Result<Vec<ColumnStructure>, DbError> {
+        let sql = format!(
+            "SELECT name, type, \"notnull\", dflt_value, pk
+             FROM {schema_q}.pragma_table_info(?)
+             ORDER BY cid"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?;
+        let mut columns = Vec::with_capacity(rows.len());
+        for row in rows {
+            let notnull: i64 = row.try_get("notnull").map_err(crate::sqlx_err)?;
+            let default: Option<String> = row.try_get("dflt_value").map_err(crate::sqlx_err)?;
+            columns.push(ColumnStructure {
+                name: row.try_get("name").map_err(crate::sqlx_err)?,
+                type_name: row.try_get("type").map_err(crate::sqlx_err)?,
+                nullable: notnull == 0,
+                default,
+                comment: None,
+            });
+        }
+        Ok(columns)
+    }
+
+    async fn load_indexes(&self, schema_q: &str, table: &str) -> Result<Vec<IndexInfo>, DbError> {
+        let list_sql = format!(
+            "SELECT name, \"unique\", origin
+             FROM {schema_q}.pragma_index_list(?)
+             ORDER BY seq"
+        );
+        let rows = sqlx::query(&list_sql)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?;
+
+        // Primary-key columns from table_info (autoindexes may omit a usable name).
+        let pk_sql =
+            format!("SELECT name FROM {schema_q}.pragma_table_info(?) WHERE pk > 0 ORDER BY pk");
+        let pk_rows = sqlx::query(&pk_sql)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?;
+        let pk_columns: Vec<String> = pk_rows
+            .into_iter()
+            .map(|row| row.try_get("name").map_err(crate::sqlx_err))
+            .collect::<Result<_, _>>()?;
+
+        let mut indexes = Vec::new();
+        if !pk_columns.is_empty() {
+            indexes.push(IndexInfo {
+                name: format!("sqlite_autoindex_{table}_pk"),
+                columns: pk_columns,
+                unique: true,
+                primary: true,
+                definition: None,
+            });
+        }
+
+        for row in rows {
+            let name: String = row.try_get("name").map_err(crate::sqlx_err)?;
+            let unique: i64 = row.try_get("unique").map_err(crate::sqlx_err)?;
+            let origin: String = row.try_get("origin").map_err(crate::sqlx_err)?;
+            // Skip the autoindex that backs the PRIMARY KEY; we already added it above.
+            if origin == "pk" {
+                continue;
+            }
+            let info_sql =
+                format!("SELECT name FROM {schema_q}.pragma_index_info(?) ORDER BY seqno");
+            let col_rows = sqlx::query(&info_sql)
+                .bind(&name)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(crate::sqlx_err)?;
+            let columns = col_rows
+                .into_iter()
+                .map(|col| col.try_get::<String, _>("name").map_err(crate::sqlx_err))
+                .collect::<Result<Vec<_>, _>>()?;
+            let def_sql = format!(
+                "SELECT sql FROM {schema_q}.sqlite_schema WHERE type = 'index' AND name = ?"
+            );
+            let definition = match sqlx::query(&def_sql)
+                .bind(&name)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(crate::sqlx_err)?
+            {
+                Some(row) => row.try_get("sql").map_err(crate::sqlx_err)?,
+                None => None,
+            };
+            indexes.push(IndexInfo {
+                name,
+                columns,
+                unique: unique != 0,
+                primary: false,
+                definition,
+            });
+        }
+        Ok(indexes)
+    }
+
+    async fn load_foreign_keys(
+        &self,
+        schema_q: &str,
+        table: &str,
+    ) -> Result<Vec<ForeignKeyInfo>, DbError> {
+        let sql = format!(
+            "SELECT id, seq, \"table\" AS ref_table, \"from\" AS from_col, \"to\" AS to_col,
+                    on_update, on_delete
+             FROM {schema_q}.pragma_foreign_key_list(?)
+             ORDER BY id, seq"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?;
+
+        let mut by_id: Vec<(i64, ForeignKeyInfo)> = Vec::new();
+        for row in rows {
+            let id: i64 = row.try_get("id").map_err(crate::sqlx_err)?;
+            let from_col: String = row.try_get("from_col").map_err(crate::sqlx_err)?;
+            let to_col: Option<String> = row.try_get("to_col").map_err(crate::sqlx_err)?;
+            if let Some((_, existing)) =
+                by_id.iter_mut().find(|(existing_id, _)| *existing_id == id)
+            {
+                existing.columns.push(from_col);
+                if let Some(to_col) = to_col {
+                    existing.ref_columns.push(to_col);
+                }
+            } else {
+                by_id.push((
+                    id,
+                    ForeignKeyInfo {
+                        name: format!("fk_{table}_{id}"),
+                        columns: vec![from_col],
+                        ref_schema: None,
+                        ref_table: row.try_get("ref_table").map_err(crate::sqlx_err)?,
+                        ref_columns: to_col.into_iter().collect(),
+                        on_update: row.try_get("on_update").map_err(crate::sqlx_err)?,
+                        on_delete: row.try_get("on_delete").map_err(crate::sqlx_err)?,
+                    },
+                ));
+            }
+        }
+        Ok(by_id.into_iter().map(|(_, fk)| fk).collect())
+    }
+
+    async fn relation_exists(&self, schema_q: &str, table: &str) -> Result<bool, DbError> {
+        let sql = format!(
+            "SELECT 1 AS ok FROM {schema_q}.sqlite_schema
+             WHERE type IN ('table', 'view') AND name = ?
+             LIMIT 1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(table)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?;
+        Ok(row.is_some())
+    }
+
+    async fn load_ddl(&self, schema_q: &str, table: &str) -> Result<String, DbError> {
+        let table_sql = format!(
+            "SELECT sql FROM {schema_q}.sqlite_schema
+             WHERE type IN ('table', 'view') AND name = ?
+             LIMIT 1"
+        );
+        let row = sqlx::query(&table_sql)
+            .bind(table)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?
+            .ok_or_else(|| DbError::query(format!("table `{table}` not found")))?;
+        let mut ddl: String = row
+            .try_get::<Option<String>, _>("sql")
+            .map_err(crate::sqlx_err)?
+            .unwrap_or_default();
+        let index_sql = format!(
+            "SELECT sql FROM {schema_q}.sqlite_schema
+             WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
+             ORDER BY name"
+        );
+        let index_rows = sqlx::query(&index_sql)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?;
+        for index_row in index_rows {
+            let sql: String = index_row.try_get("sql").map_err(crate::sqlx_err)?;
+            if !ddl.is_empty() {
+                ddl.push_str(";\n");
+            }
+            ddl.push_str(&sql);
+        }
+        if !ddl.is_empty() && !ddl.ends_with(';') {
+            ddl.push(';');
+        }
+        Ok(ddl)
     }
 }
 
@@ -99,6 +307,34 @@ impl DatabaseSession for SqliteSession {
     ) -> Result<Option<u64>, DbError> {
         // SQLite has no cheap planner estimate comparable to reltuples / table_rows.
         Ok(None)
+    }
+
+    async fn describe_table(&self, schema: &str, table: &str) -> Result<TableStructure, DbError> {
+        let schema_q =
+            quote_ident(Dialect::Sqlite, schema).map_err(|err| DbError::query(err.to_string()))?;
+        if !self.relation_exists(&schema_q, table).await? {
+            return Err(DbError::query(format!(
+                "table `{schema}.{table}` not found"
+            )));
+        }
+        let columns = self.load_columns(&schema_q, table).await?;
+        let indexes = self.load_indexes(&schema_q, table).await?;
+        let foreign_keys = self.load_foreign_keys(&schema_q, table).await?;
+        let ddl = self.load_ddl(&schema_q, table).await?;
+        Ok(TableStructure {
+            schema: schema.to_string(),
+            table: table.to_string(),
+            columns,
+            indexes,
+            foreign_keys,
+            ddl,
+        })
+    }
+
+    async fn table_ddl(&self, schema: &str, table: &str) -> Result<String, DbError> {
+        let schema_q =
+            quote_ident(Dialect::Sqlite, schema).map_err(|err| DbError::query(err.to_string()))?;
+        self.load_ddl(&schema_q, table).await
     }
 
     async fn stream_query(
@@ -614,5 +850,107 @@ mod tests {
             after_load_more, after_first,
             "load-more must not re-run INSERT … RETURNING (row count changed)"
         );
+    }
+
+    #[tokio::test]
+    async fn describe_table_reports_columns_indexes_fks_and_ddl() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SqliteSession::open(&dir.path().join("structure.sqlite"), true)
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_struct_parent (
+                    id INTEGER PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    region TEXT NOT NULL,
+                    UNIQUE (label, region)
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_struct_child (
+                    id INTEGER PRIMARY KEY,
+                    parent_id INTEGER NOT NULL,
+                    parent_label TEXT NOT NULL,
+                    parent_region TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    note TEXT DEFAULT 'n/a',
+                    score INTEGER,
+                    FOREIGN KEY (parent_id) REFERENCES sela_struct_parent(id),
+                    FOREIGN KEY (parent_label, parent_region)
+                      REFERENCES sela_struct_parent(label, region)
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute("CREATE UNIQUE INDEX sela_struct_child_code_uidx ON sela_struct_child(code)")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE INDEX sela_struct_child_parent_score_idx
+                 ON sela_struct_child(parent_id, score)",
+            )
+            .await
+            .unwrap();
+        // Mixed-case / quoted identifier round-trip.
+        session
+            .execute("CREATE TABLE \"Weird Name\" (\"Col Id\" INTEGER PRIMARY KEY)")
+            .await
+            .unwrap();
+
+        let structure = session
+            .describe_table("main", "sela_struct_child")
+            .await
+            .unwrap();
+        assert_eq!(structure.table, "sela_struct_child");
+
+        let note = structure
+            .columns
+            .iter()
+            .find(|column| column.name == "note")
+            .expect("note column");
+        assert!(note.nullable);
+        assert_eq!(note.default.as_deref(), Some("'n/a'"));
+
+        assert!(structure.indexes.iter().any(|index| index.primary));
+        assert!(structure.indexes.iter().any(|index| {
+            index.name == "sela_struct_child_code_uidx" && index.unique && !index.primary
+        }));
+        assert!(structure.indexes.iter().any(|index| {
+            index.name == "sela_struct_child_parent_score_idx"
+                && index.columns == vec!["parent_id".to_string(), "score".to_string()]
+        }));
+
+        assert_eq!(structure.foreign_keys.len(), 2);
+        assert!(structure.foreign_keys.iter().any(|fk| {
+            fk.columns == vec!["parent_id".to_string()]
+                && fk.ref_table == "sela_struct_parent"
+                && fk.ref_columns == vec!["id".to_string()]
+        }));
+        assert!(structure.foreign_keys.iter().any(|fk| {
+            fk.columns == vec!["parent_label".to_string(), "parent_region".to_string()]
+                && fk.ref_columns == vec!["label".to_string(), "region".to_string()]
+        }));
+
+        let ddl = session
+            .table_ddl("main", "sela_struct_child")
+            .await
+            .unwrap();
+        assert!(ddl.to_uppercase().contains("CREATE TABLE"));
+        assert!(ddl.contains("sela_struct_child"));
+        assert!(ddl.contains("sela_struct_child_code_uidx"));
+        assert!(structure.ddl.contains("CREATE TABLE"));
+
+        let quoted = session.describe_table("main", "Weird Name").await.unwrap();
+        assert_eq!(quoted.columns[0].name, "Col Id");
+        assert!(quoted.indexes.iter().any(|index| index.primary));
+
+        let missing = session.describe_table("main", "no_such_table").await;
+        assert!(missing.is_err(), "missing table must surface an error");
     }
 }

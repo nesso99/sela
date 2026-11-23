@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::DbError;
 use crate::sql::{self, StatementKind};
+use crate::structure::TableStructure;
 use crate::types::{
     Dialect, ExecOutcome, QueryPage, RowCountKind, RowSet, SchemaInfo, StatementOutcome,
     StreamBatch, StreamOutcome, TableInfo, DEFAULT_SQL_ROW_CAP, PAGE_SIZE, STREAM_BATCH_SIZE,
@@ -29,6 +30,12 @@ pub trait DatabaseSession: Send + Sync {
     /// Cheap row-count estimate for a table (Postgres `reltuples`, MySQL `table_rows`).
     /// SQLite returns `Ok(None)` — use [`exact_table_rows`] only on demand.
     async fn estimate_table_rows(&self, schema: &str, table: &str) -> Result<Option<u64>, DbError>;
+
+    /// Columns, indexes, foreign keys, and DDL for the Structure view.
+    async fn describe_table(&self, schema: &str, table: &str) -> Result<TableStructure, DbError>;
+
+    /// Full DDL for a table (Postgres synthesised; MySQL `SHOW CREATE TABLE`; SQLite `sqlite_master`).
+    async fn table_ddl(&self, schema: &str, table: &str) -> Result<String, DbError>;
 
     /// Stream `sql` in batches into `sink`. Honours `cancel` (and server-side cancel when
     /// the driver supports it).
