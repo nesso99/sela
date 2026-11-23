@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Sela theme swatches</title><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 12px 16px 10px;
+  display: flex; flex-direction: column; gap: 8px; color: #e8e8e8;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; letter-spacing: 0.04em; }
+.cols { flex: 1; min-height: 0; display: flex; gap: 12px; }
+.col {
+  flex: 1; min-width: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid #3a3a3a;
+}
+.col h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; }
+.col h3 {
+  margin: 2px 0 0; font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; opacity: 0.7;
+}
+.sw { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { width: 104px; height: 36px; padding: 3px 6px; border: 1px solid rgba(127,127,127,.45); }
+.chip b { display: block; font-size: 10px; font-weight: 600; }
+.chip span { display: block; font-size: 10px; font-family: "JetBrains Mono", monospace; opacity: 0.85; }
+.line { font-size: 12px; line-height: 16px; padding: 1px 6px; }
+.line em { font-style: italic; }
+.ratio { float: right; font-family: "JetBrains Mono", monospace; font-size: 10px; opacity: 0.75; }
+.syntax { font: 12px/18px "JetBrains Mono", monospace; padding: 4px 6px; }
+.grid { width: 100%; border-collapse: collapse; font: 11px/16px "JetBrains Mono", monospace; }
+.grid td { height: 22px; padding: 0 6px; border-bottom: 1px solid rgba(127,127,127,.35); }
+.note { font-size: 10px; line-height: 1.35; opacity: 0.75; }
+</style></head>
+<body>
+  <div class="kicker"><b>Sela</b><span>Theme tokens · light and dark · gpui-component 0.10</span></div>
+  <div class="cols">
+    
+<section class="col" style="background:#FFFFFF;color:#0A0A0A">
+  <h2>Light</h2>
+  <h3>Surfaces</h3>
+  <div class="sw"><div class="chip" style="background:#FFFFFF;color:#0A0A0A"><b>app</b><span>#FFFFFF</span></div><div class="chip" style="background:#FAFAFA;color:#171717"><b>sidebar</b><span>#FAFAFA</span></div><div class="chip" style="background:#F5F5F5;color:#404040"><b>panel</b><span>#F5F5F5</span></div><div class="chip" style="background:#FFFFFF;color:#000000"><b>editor</b><span>#FFFFFF</span></div><div class="chip" style="background:#FFFFFF;color:#0A0A0A"><b>grid</b><span>#FFFFFF</span></div><div class="chip" style="background:#FAFAFA;color:#0A0A0A"><b>alt</b><span>#FAFAFA</span></div><div class="chip" style="background:#F5F5F5;color:#0A0A0A"><b>hover</b><span>#F5F5F5</span></div><div class="chip" style="background:#F2F8FF;color:#0A0A0A"><b>select</b><span>#F2F8FF</span></div><div class="chip" style="background:#2563EB;color:#FFFFFF"><b>accent</b><span>#2563EB</span></div><div class="chip" style="background:#B91C1C;color:#FFFFFF"><b>error</b><span>#B91C1C</span></div><div class="chip" style="background:#15803D;color:#FFFFFF"><b>success</b><span>#15803D</span></div><div class="chip" style="background:#854D0E;color:#FFFFFF"><b>warning</b><span>#854D0E</span></div></div>
+  <h3>Text on its background</h3>
+  <div class="line" style="background:#FFFFFF;color:#0A0A0A">Primary on app<span class="ratio">19.80</span></div><div class="line" style="background:#F5F5F5;color:#525252">Muted on panel<span class="ratio">7.17</span></div><div class="line" style="background:#F5F5F5;color:#404040">Secondary on panel<span class="ratio">9.51</span></div><div class="line" style="background:#FFFFFF;color:#15803D">Success on app<span class="ratio">5.02</span></div><div class="line" style="background:#FFFFFF;color:#854D0E">Warning on app<span class="ratio">6.85</span></div><div class="line" style="background:#FEF2F2;color:#B91C1C">Error on wash<span class="ratio">5.91</span></div><div class="line" style="background:#FFFFFF;color:#0E7490">Info on app<span class="ratio">5.36</span></div><div class="line" style="background:#FFFFFF;color:#2563EB">Focus ring is the accent<span class="ratio">5.17</span></div>
+  <h3>Syntax on the editor</h3>
+  <div class="syntax" style="background:#FFFFFF;color:#000000"><span style="color:#0433FF">SELECT</span> <span style="color:#000000">title</span>, <span style="color:#0433FF">1965</span> <span style="color:#525252">-- comment</span></div>
+  <h3>Grid</h3>
+  <table class="grid" style="background:#FFFFFF;color:#0A0A0A">
+    <tr style="background:#FAFAFA;color:#525252"><td>title</td><td>year</td></tr>
+    <tr><td>Dune</td><td>1965</td></tr>
+    <tr style="background:#FAFAFA"><td style="color:#525252;font-style:italic">NULL</td><td style="color:#525252;font-style:italic">NULL</td></tr>
+    <tr style="background:#F2F8FF"><td>Neuromancer</td><td>1984</td></tr>
+    <tr style="background:#FEF2F2;color:#B91C1C"><td colspan="2">decode error · numeric</td></tr>
+  </table>
+  <div class="note">Body text target 4.5:1. NULL is muted italic. Decode-error uses the wash, not the NULL color.</div>
+</section>
+
+    
+<section class="col" style="background:#0A0A0A;color:#FAFAFA">
+  <h2>Dark</h2>
+  <h3>Surfaces</h3>
+  <div class="sw"><div class="chip" style="background:#0A0A0A;color:#FAFAFA"><b>app</b><span>#0A0A0A</span></div><div class="chip" style="background:#171717;color:#F5F5F5"><b>sidebar</b><span>#171717</span></div><div class="chip" style="background:#171717;color:#D4D4D4"><b>panel</b><span>#171717</span></div><div class="chip" style="background:#0A0A0A;color:#CACCCA"><b>editor</b><span>#0A0A0A</span></div><div class="chip" style="background:#0A0A0A;color:#FAFAFA"><b>grid</b><span>#0A0A0A</span></div><div class="chip" style="background:#171717;color:#FAFAFA"><b>alt</b><span>#171717</span></div><div class="chip" style="background:#262626;color:#FAFAFA"><b>hover</b><span>#262626</span></div><div class="chip" style="background:#142F7B;color:#FAFAFA"><b>select</b><span>#142F7B</span></div><div class="chip" style="background:#60A5FA;color:#0A0A0A"><b>accent</b><span>#60A5FA</span></div><div class="chip" style="background:#F87171;color:#0A0A0A"><b>error</b><span>#F87171</span></div><div class="chip" style="background:#4ADE80;color:#0A0A0A"><b>success</b><span>#4ADE80</span></div><div class="chip" style="background:#FACC15;color:#0A0A0A"><b>warning</b><span>#FACC15</span></div></div>
+  <h3>Text on its background</h3>
+  <div class="line" style="background:#0A0A0A;color:#FAFAFA">Primary on app<span class="ratio">18.97</span></div><div class="line" style="background:#171717;color:#A3A3A3">Muted on panel<span class="ratio">7.11</span></div><div class="line" style="background:#171717;color:#D4D4D4">Secondary on panel<span class="ratio">12.09</span></div><div class="line" style="background:#0A0A0A;color:#4ADE80">Success on app<span class="ratio">11.36</span></div><div class="line" style="background:#0A0A0A;color:#FACC15">Warning on app<span class="ratio">12.93</span></div><div class="line" style="background:#3F1212;color:#F87171">Error on wash<span class="ratio">5.81</span></div><div class="line" style="background:#0A0A0A;color:#22D3EE">Info on app<span class="ratio">10.96</span></div><div class="line" style="background:#0A0A0A;color:#60A5FA">Focus ring is the accent<span class="ratio">7.79</span></div>
+  <h3>Syntax on the editor</h3>
+  <div class="syntax" style="background:#0A0A0A;color:#CACCCA"><span style="color:#87B1F6">SELECT</span> <span style="color:#CACCCA">title</span>, <span style="color:#CC9E00">1965</span> <span style="color:#9D9D9D">-- comment</span></div>
+  <h3>Grid</h3>
+  <table class="grid" style="background:#0A0A0A;color:#FAFAFA">
+    <tr style="background:#171717;color:#A3A3A3"><td>title</td><td>year</td></tr>
+    <tr><td>Dune</td><td>1965</td></tr>
+    <tr style="background:#171717"><td style="color:#A3A3A3;font-style:italic">NULL</td><td style="color:#A3A3A3;font-style:italic">NULL</td></tr>
+    <tr style="background:#142F7B"><td>Neuromancer</td><td>1984</td></tr>
+    <tr style="background:#3F1212;color:#F87171"><td colspan="2">decode error · numeric</td></tr>
+  </table>
+  <div class="note">Grid selection is the #142F7B wash so muted NULL text stays 4.83:1. Dividers stay under 3:1 on purpose.</div>
+</section>
+
+  </div>
+</body></html>
