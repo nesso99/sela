@@ -12,7 +12,16 @@ use gpui_kit::{
 
 pub use workspace::Workspace;
 
-actions!(sela, [RunQuery, CancelQuery, Quit]);
+actions!(
+    sela,
+    [
+        RunQuery,
+        CancelQuery,
+        ShowTableData,
+        ShowTableStructure,
+        Quit
+    ]
+);
 
 pub fn run() {
     gpui_kit::application()
@@ -26,6 +35,11 @@ pub fn run() {
                 KeyBinding::new("ctrl-enter", RunQuery, None),
                 KeyBinding::new("cmd-.", CancelQuery, None),
                 KeyBinding::new("ctrl-.", CancelQuery, None),
+                // Data ↔ Structure for the open table (US-11 / M1-6).
+                KeyBinding::new("cmd-shift-[", ShowTableData, None),
+                KeyBinding::new("ctrl-shift-[", ShowTableData, None),
+                KeyBinding::new("cmd-shift-]", ShowTableStructure, None),
+                KeyBinding::new("ctrl-shift-]", ShowTableStructure, None),
             ]);
             cx.on_action(|_: &Quit, cx| cx.quit());
 

@@ -7,8 +7,9 @@ use sqlx::MySqlPool;
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    DatabaseSession, DbError, Dialect, QueryPage, RelationKind, SavedConnection, SchemaInfo,
-    StreamBatch, StreamOutcome, TableInfo,
+    quote_ident, ColumnStructure, DatabaseSession, DbError, Dialect, ForeignKeyInfo, IndexInfo,
+    QueryPage, RelationKind, SavedConnection, SchemaInfo, StreamBatch, StreamOutcome, TableInfo,
+    TableStructure,
 };
 
 use sqlx::Row;
@@ -56,6 +57,154 @@ impl MysqlSession {
             .await
             .map_err(crate::sqlx_err)?;
         Ok(Self { pool })
+    }
+
+    async fn load_columns(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<ColumnStructure>, DbError> {
+        // MySQL 8.4 exposes information_schema string columns as BINARY; CAST so sqlx can decode.
+        let rows = sqlx::query(
+            "SELECT CAST(column_name AS CHAR) AS name,
+                    CAST(column_type AS CHAR) AS type_name,
+                    CAST(is_nullable AS CHAR) AS is_nullable,
+                    CAST(column_default AS CHAR) AS column_default,
+                    CAST(column_comment AS CHAR) AS column_comment
+             FROM information_schema.columns
+             WHERE table_schema = ? AND table_name = ?
+             ORDER BY ordinal_position",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        let mut columns = Vec::with_capacity(rows.len());
+        for row in rows {
+            let nullable: String = row.try_get("is_nullable").map_err(crate::sqlx_err)?;
+            let default: Option<String> = row.try_get("column_default").map_err(crate::sqlx_err)?;
+            let comment: Option<String> = row.try_get("column_comment").map_err(crate::sqlx_err)?;
+            columns.push(ColumnStructure {
+                name: row.try_get("name").map_err(crate::sqlx_err)?,
+                type_name: row.try_get("type_name").map_err(crate::sqlx_err)?,
+                nullable: nullable.eq_ignore_ascii_case("YES"),
+                default,
+                comment: comment.filter(|c| !c.is_empty()),
+            });
+        }
+        Ok(columns)
+    }
+
+    async fn load_indexes(&self, schema: &str, table: &str) -> Result<Vec<IndexInfo>, DbError> {
+        let rows = sqlx::query(
+            "SELECT CAST(index_name AS CHAR) AS name,
+                    CAST(column_name AS CHAR) AS column_name,
+                    CAST(non_unique AS UNSIGNED) AS non_unique,
+                    CAST(seq_in_index AS UNSIGNED) AS seq_in_index,
+                    CAST(index_type AS CHAR) AS index_type
+             FROM information_schema.statistics
+             WHERE table_schema = ? AND table_name = ?
+             ORDER BY index_name, seq_in_index",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+
+        let mut indexes: Vec<IndexInfo> = Vec::new();
+        for row in rows {
+            let name: String = row.try_get("name").map_err(crate::sqlx_err)?;
+            let column: String = row.try_get("column_name").map_err(crate::sqlx_err)?;
+            let non_unique: u64 = row.try_get("non_unique").map_err(crate::sqlx_err)?;
+            let primary = name.eq_ignore_ascii_case("PRIMARY");
+            if let Some(existing) = indexes.iter_mut().find(|index| index.name == name) {
+                existing.columns.push(column);
+            } else {
+                indexes.push(IndexInfo {
+                    name,
+                    columns: vec![column],
+                    unique: non_unique == 0,
+                    primary,
+                    definition: None,
+                });
+            }
+        }
+        Ok(indexes)
+    }
+
+    async fn load_foreign_keys(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<ForeignKeyInfo>, DbError> {
+        let rows = sqlx::query(
+            "SELECT CAST(kcu.constraint_name AS CHAR) AS name,
+                    CAST(kcu.column_name AS CHAR) AS column_name,
+                    CAST(kcu.ordinal_position AS UNSIGNED) AS ordinal_position,
+                    CAST(kcu.referenced_table_schema AS CHAR) AS ref_schema,
+                    CAST(kcu.referenced_table_name AS CHAR) AS ref_table,
+                    CAST(kcu.referenced_column_name AS CHAR) AS ref_column,
+                    CAST(rc.update_rule AS CHAR) AS on_update,
+                    CAST(rc.delete_rule AS CHAR) AS on_delete
+             FROM information_schema.key_column_usage kcu
+             JOIN information_schema.referential_constraints rc
+               ON rc.constraint_schema = kcu.constraint_schema
+              AND rc.constraint_name = kcu.constraint_name
+             WHERE kcu.table_schema = ?
+               AND kcu.table_name = ?
+               AND kcu.referenced_table_name IS NOT NULL
+             ORDER BY kcu.constraint_name, kcu.ordinal_position",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+
+        let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
+        for row in rows {
+            let name: String = row.try_get("name").map_err(crate::sqlx_err)?;
+            let column: String = row.try_get("column_name").map_err(crate::sqlx_err)?;
+            let ref_column: String = row.try_get("ref_column").map_err(crate::sqlx_err)?;
+            if let Some(existing) = foreign_keys.iter_mut().find(|fk| fk.name == name) {
+                existing.columns.push(column);
+                existing.ref_columns.push(ref_column);
+            } else {
+                foreign_keys.push(ForeignKeyInfo {
+                    name,
+                    columns: vec![column],
+                    ref_schema: row.try_get("ref_schema").map_err(crate::sqlx_err)?,
+                    ref_table: row.try_get("ref_table").map_err(crate::sqlx_err)?,
+                    ref_columns: vec![ref_column],
+                    on_update: row.try_get("on_update").map_err(crate::sqlx_err)?,
+                    on_delete: row.try_get("on_delete").map_err(crate::sqlx_err)?,
+                });
+            }
+        }
+        Ok(foreign_keys)
+    }
+
+    async fn load_ddl(&self, schema: &str, table: &str) -> Result<String, DbError> {
+        let table_q =
+            quote_ident(Dialect::Mysql, table).map_err(|err| DbError::query(err.to_string()))?;
+        // Qualify with schema so SHOW CREATE works even when the session DB differs.
+        let schema_q =
+            quote_ident(Dialect::Mysql, schema).map_err(|err| DbError::query(err.to_string()))?;
+        let sql = format!("SHOW CREATE TABLE {schema_q}.{table_q}");
+        let row = sqlx::query(&sql)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(crate::sqlx_err)?
+            .ok_or_else(|| DbError::query(format!("table `{schema}.{table}` not found")))?;
+        // Column 1 is "Create Table" (or "Create View").
+        let ddl: String = row
+            .try_get(1)
+            .or_else(|_| row.try_get("Create Table"))
+            .or_else(|_| row.try_get("Create View"))
+            .map_err(crate::sqlx_err)?;
+        Ok(ddl)
     }
 }
 
@@ -137,6 +286,30 @@ impl DatabaseSession for MysqlSession {
         };
         let estimate: Option<u64> = row.try_get("estimate").ok();
         Ok(estimate)
+    }
+
+    async fn describe_table(&self, schema: &str, table: &str) -> Result<TableStructure, DbError> {
+        let columns = self.load_columns(schema, table).await?;
+        if columns.is_empty() {
+            return Err(DbError::query(format!(
+                "table `{schema}.{table}` not found"
+            )));
+        }
+        let indexes = self.load_indexes(schema, table).await?;
+        let foreign_keys = self.load_foreign_keys(schema, table).await?;
+        let ddl = self.load_ddl(schema, table).await?;
+        Ok(TableStructure {
+            schema: schema.to_string(),
+            table: table.to_string(),
+            columns,
+            indexes,
+            foreign_keys,
+            ddl,
+        })
+    }
+
+    async fn table_ddl(&self, schema: &str, table: &str) -> Result<String, DbError> {
+        self.load_ddl(schema, table).await
     }
 
     async fn stream_query(
@@ -446,5 +619,101 @@ mod tests {
             Err(other) => panic!("unexpected stream error: {other:?}"),
         }
         session.execute("DROP TABLE sela_stream").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_describe_table_when_configured() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql structure: set SELA_MYSQL_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
+        let session = MysqlSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| panic!("SELA_MYSQL_URL is set but MySQL is unreachable: {err}"));
+        session
+            .execute("DROP TABLE IF EXISTS sela_struct_child")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TABLE IF EXISTS sela_struct_parent")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_struct_parent (
+                    id INT PRIMARY KEY,
+                    label VARCHAR(64) NOT NULL
+                ) ENGINE=InnoDB",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_struct_child (
+                    id INT PRIMARY KEY,
+                    parent_id INT NOT NULL,
+                    code VARCHAR(64) NOT NULL,
+                    note VARCHAR(64) NULL DEFAULT 'n/a' COMMENT 'optional note',
+                    score INT NULL,
+                    CONSTRAINT sela_struct_child_parent_fk
+                      FOREIGN KEY (parent_id) REFERENCES sela_struct_parent(id),
+                    UNIQUE KEY sela_struct_child_code_uidx (code),
+                    KEY sela_struct_child_parent_score_idx (parent_id, score)
+                ) ENGINE=InnoDB",
+            )
+            .await
+            .unwrap();
+
+        let structure = session
+            .describe_table(&schema, "sela_struct_child")
+            .await
+            .unwrap();
+        assert_eq!(structure.schema, schema);
+        assert_eq!(structure.table, "sela_struct_child");
+
+        let note = structure
+            .columns
+            .iter()
+            .find(|column| column.name == "note")
+            .expect("note column");
+        assert!(note.nullable);
+        assert_eq!(note.default.as_deref(), Some("n/a"));
+        assert_eq!(note.comment.as_deref(), Some("optional note"));
+
+        assert!(structure.indexes.iter().any(|index| index.primary));
+        assert!(structure.indexes.iter().any(|index| {
+            index.name == "sela_struct_child_code_uidx" && index.unique && !index.primary
+        }));
+        assert!(structure.indexes.iter().any(|index| {
+            index.name == "sela_struct_child_parent_score_idx"
+                && index.columns == vec!["parent_id".to_string(), "score".to_string()]
+        }));
+
+        assert_eq!(structure.foreign_keys.len(), 1);
+        let fk = &structure.foreign_keys[0];
+        assert_eq!(fk.name, "sela_struct_child_parent_fk");
+        assert_eq!(fk.columns, vec!["parent_id".to_string()]);
+        assert_eq!(fk.ref_table, "sela_struct_parent");
+        assert_eq!(fk.ref_columns, vec!["id".to_string()]);
+
+        let ddl = session
+            .table_ddl(&schema, "sela_struct_child")
+            .await
+            .unwrap();
+        assert!(ddl.to_uppercase().contains("CREATE TABLE"));
+        assert!(ddl.contains("sela_struct_child"));
+        assert!(ddl.contains("sela_struct_child_code_uidx"));
+        assert!(ddl.contains("optional note"));
+        assert_eq!(structure.ddl, ddl);
+
+        session
+            .execute("DROP TABLE sela_struct_child")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TABLE sela_struct_parent")
+            .await
+            .unwrap();
     }
 }

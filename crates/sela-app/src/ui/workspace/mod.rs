@@ -5,6 +5,7 @@ mod query;
 mod sidebar;
 mod state;
 mod status;
+mod structure;
 mod tree;
 
 use std::collections::HashSet;
@@ -24,7 +25,8 @@ use sela_config::{CachingSecrets, ConfigStore, KeyringStore, SavedConnection};
 use sela_core::{DatabaseSession, LoadedSchema, RowCountKind, DEFAULT_SQL_ROW_CAP};
 
 use super::grid::GridDelegate;
-use super::{CancelQuery, RunQuery};
+use super::{CancelQuery, RunQuery, ShowTableData, ShowTableStructure};
+use structure::StructureCache;
 
 pub struct Workspace {
     store: ConfigStore,
@@ -38,6 +40,9 @@ pub struct Workspace {
     grid: Entity<TableState<GridDelegate>>,
     sql: Entity<TextareaState>,
     source: GridSource,
+    table_pane: TablePane,
+    structure_cache: StructureCache,
+    structure_error: Option<String>,
     page_offset: u64,
     page_len: usize,
     total_rows: Option<u64>,
@@ -65,6 +70,12 @@ enum GridSource {
     Idle,
     Table { schema: String, table: String },
     Sql(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TablePane {
+    Data,
+    Structure,
 }
 
 impl Workspace {
@@ -120,6 +131,9 @@ impl Workspace {
             grid,
             sql,
             source: GridSource::Idle,
+            table_pane: TablePane::Data,
+            structure_cache: StructureCache::new(),
+            structure_error: None,
             page_offset: 0,
             page_len: 0,
             total_rows: None,
@@ -202,6 +216,18 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| workspace.stop_query(cx));
                 }
             })
+            .on_action({
+                let this = this.clone();
+                move |_: &ShowTableData, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.show_table_data(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ShowTableStructure, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.show_table_structure(cx));
+                }
+            })
             .child(self.sidebar(cx))
             .child(
                 v_flex()
@@ -212,7 +238,10 @@ impl Render for Workspace {
                     .when_some(self.error.clone(), |column, error| {
                         column.child(self.error_banner(cx, error))
                     })
-                    .child(self.results_area())
+                    .child(match self.table_pane {
+                        TablePane::Data => self.results_area().into_any_element(),
+                        TablePane::Structure => self.structure_area(cx).into_any_element(),
+                    })
                     .child(self.sql_editor(cx, connected))
                     .child(self.status_bar(cx)),
             )

@@ -7,8 +7,9 @@ use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    DatabaseSession, DbError, Dialect, QueryPage, RelationKind, SavedConnection, SchemaInfo,
-    StreamBatch, StreamOutcome, TableInfo,
+    quote_ident, ColumnStructure, DatabaseSession, DbError, Dialect, ForeignKeyInfo, IndexInfo,
+    QueryPage, RelationKind, SavedConnection, SchemaInfo, StreamBatch, StreamOutcome, TableInfo,
+    TableStructure,
 };
 
 use sqlx::Row;
@@ -48,6 +49,279 @@ impl PostgresSession {
             .await
             .map_err(crate::sqlx_err)?;
         Ok(Self { pool })
+    }
+
+    async fn load_columns(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<ColumnStructure>, DbError> {
+        let rows = sqlx::query(
+            "SELECT a.attname AS name,
+                    format_type(a.atttypid, a.atttypmod) AS type_name,
+                    NOT a.attnotnull AS nullable,
+                    pg_get_expr(ad.adbin, ad.adrelid) AS default_expr,
+                    col_description(c.oid, a.attnum) AS comment
+             FROM pg_catalog.pg_attribute a
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             LEFT JOIN pg_catalog.pg_attrdef ad
+               ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+             WHERE n.nspname = $1
+               AND c.relname = $2
+               AND a.attnum > 0
+               AND NOT a.attisdropped
+             ORDER BY a.attnum",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        let mut columns = Vec::with_capacity(rows.len());
+        for row in rows {
+            columns.push(ColumnStructure {
+                name: row.try_get("name").map_err(crate::sqlx_err)?,
+                type_name: row.try_get("type_name").map_err(crate::sqlx_err)?,
+                nullable: row.try_get("nullable").map_err(crate::sqlx_err)?,
+                default: row.try_get("default_expr").map_err(crate::sqlx_err)?,
+                comment: row.try_get("comment").map_err(crate::sqlx_err)?,
+            });
+        }
+        Ok(columns)
+    }
+
+    async fn load_indexes(&self, schema: &str, table: &str) -> Result<Vec<IndexInfo>, DbError> {
+        let rows = sqlx::query(
+            "SELECT i.relname AS name,
+                    ix.indisunique AS is_unique,
+                    ix.indisprimary AS is_primary,
+                    pg_get_indexdef(ix.indexrelid) AS definition,
+                    COALESCE(
+                      (
+                        SELECT array_agg(a.attname ORDER BY ord.ordinality)
+                        FROM unnest(ix.indkey) WITH ORDINALITY AS ord(attnum, ordinality)
+                        JOIN pg_attribute a
+                          ON a.attrelid = ix.indrelid AND a.attnum = ord.attnum
+                      ),
+                      ARRAY[]::name[]
+                    ) AS columns
+             FROM pg_catalog.pg_index ix
+             JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid
+             JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+             WHERE n.nspname = $1 AND t.relname = $2
+             ORDER BY ix.indisprimary DESC, i.relname",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        let mut indexes = Vec::with_capacity(rows.len());
+        for row in rows {
+            let columns: Vec<String> = row.try_get("columns").map_err(crate::sqlx_err)?;
+            indexes.push(IndexInfo {
+                name: row.try_get("name").map_err(crate::sqlx_err)?,
+                columns,
+                unique: row.try_get("is_unique").map_err(crate::sqlx_err)?,
+                primary: row.try_get("is_primary").map_err(crate::sqlx_err)?,
+                definition: row.try_get("definition").map_err(crate::sqlx_err)?,
+            });
+        }
+        Ok(indexes)
+    }
+
+    async fn load_foreign_keys(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<ForeignKeyInfo>, DbError> {
+        let rows = sqlx::query(
+            "SELECT con.conname AS name,
+                    pg_get_constraintdef(con.oid) AS definition,
+                    (
+                      SELECT array_agg(a.attname ORDER BY ord.ordinality)
+                      FROM unnest(con.conkey) WITH ORDINALITY AS ord(attnum, ordinality)
+                      JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ord.attnum
+                    ) AS columns,
+                    nf.nspname AS ref_schema,
+                    cf.relname AS ref_table,
+                    (
+                      SELECT array_agg(a.attname ORDER BY ord.ordinality)
+                      FROM unnest(con.confkey) WITH ORDINALITY AS ord(attnum, ordinality)
+                      JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = ord.attnum
+                    ) AS ref_columns,
+                    CASE con.confupdtype
+                      WHEN 'a' THEN 'NO ACTION'
+                      WHEN 'r' THEN 'RESTRICT'
+                      WHEN 'c' THEN 'CASCADE'
+                      WHEN 'n' THEN 'SET NULL'
+                      WHEN 'd' THEN 'SET DEFAULT'
+                      ELSE NULL
+                    END AS on_update,
+                    CASE con.confdeltype
+                      WHEN 'a' THEN 'NO ACTION'
+                      WHEN 'r' THEN 'RESTRICT'
+                      WHEN 'c' THEN 'CASCADE'
+                      WHEN 'n' THEN 'SET NULL'
+                      WHEN 'd' THEN 'SET DEFAULT'
+                      ELSE NULL
+                    END AS on_delete
+             FROM pg_catalog.pg_constraint con
+             JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_class cf ON cf.oid = con.confrelid
+             JOIN pg_catalog.pg_namespace nf ON nf.oid = cf.relnamespace
+             WHERE con.contype = 'f'
+               AND n.nspname = $1
+               AND c.relname = $2
+             ORDER BY con.conname",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        let mut foreign_keys = Vec::with_capacity(rows.len());
+        for row in rows {
+            foreign_keys.push(ForeignKeyInfo {
+                name: row.try_get("name").map_err(crate::sqlx_err)?,
+                columns: row.try_get("columns").map_err(crate::sqlx_err)?,
+                ref_schema: row.try_get("ref_schema").map_err(crate::sqlx_err)?,
+                ref_table: row.try_get("ref_table").map_err(crate::sqlx_err)?,
+                ref_columns: row.try_get("ref_columns").map_err(crate::sqlx_err)?,
+                on_update: row.try_get("on_update").map_err(crate::sqlx_err)?,
+                on_delete: row.try_get("on_delete").map_err(crate::sqlx_err)?,
+            });
+        }
+        Ok(foreign_keys)
+    }
+
+    async fn load_constraint_defs(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<(char, String, String)>, DbError> {
+        let rows = sqlx::query(
+            "SELECT con.conname AS name,
+                    con.contype AS kind,
+                    pg_get_constraintdef(con.oid) AS definition
+             FROM pg_catalog.pg_constraint con
+             JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1
+               AND c.relname = $2
+               AND con.contype IN ('p', 'u', 'c', 'f')
+             ORDER BY
+               CASE con.contype
+                 WHEN 'p' THEN 0
+                 WHEN 'u' THEN 1
+                 WHEN 'c' THEN 2
+                 WHEN 'f' THEN 3
+                 ELSE 4
+               END,
+               con.conname",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let kind: i8 = row.try_get("kind").map_err(crate::sqlx_err)?;
+            out.push((
+                kind as u8 as char,
+                row.try_get("name").map_err(crate::sqlx_err)?,
+                row.try_get("definition").map_err(crate::sqlx_err)?,
+            ));
+        }
+        Ok(out)
+    }
+
+    async fn load_standalone_index_defs(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<String>, DbError> {
+        // Indexes that back constraints are already covered by CONSTRAINT clauses.
+        let rows = sqlx::query(
+            "SELECT pg_get_indexdef(ix.indexrelid) AS definition
+             FROM pg_catalog.pg_index ix
+             JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+             WHERE n.nspname = $1
+               AND t.relname = $2
+               AND NOT EXISTS (
+                 SELECT 1 FROM pg_catalog.pg_constraint con
+                 WHERE con.conindid = ix.indexrelid
+               )
+             ORDER BY ix.indexrelid",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        let mut defs = Vec::with_capacity(rows.len());
+        for row in rows {
+            defs.push(row.try_get("definition").map_err(crate::sqlx_err)?);
+        }
+        Ok(defs)
+    }
+
+    fn build_ddl(
+        schema: &str,
+        table: &str,
+        columns: &[ColumnStructure],
+        constraints: &[(char, String, String)],
+        index_defs: &[String],
+    ) -> Result<String, DbError> {
+        let schema_q = quote_ident(Dialect::Postgres, schema)
+            .map_err(|err| DbError::query(err.to_string()))?;
+        let table_q =
+            quote_ident(Dialect::Postgres, table).map_err(|err| DbError::query(err.to_string()))?;
+        let mut parts = Vec::new();
+        for column in columns {
+            let name = quote_ident(Dialect::Postgres, &column.name)
+                .map_err(|err| DbError::query(err.to_string()))?;
+            let mut line = format!("  {name} {}", column.type_name);
+            if !column.nullable {
+                line.push_str(" NOT NULL");
+            }
+            if let Some(default) = &column.default {
+                line.push_str(" DEFAULT ");
+                line.push_str(default);
+            }
+            parts.push(line);
+        }
+        for (_kind, name, definition) in constraints {
+            let name_q = quote_ident(Dialect::Postgres, name)
+                .map_err(|err| DbError::query(err.to_string()))?;
+            parts.push(format!("  CONSTRAINT {name_q} {definition}"));
+        }
+        let mut ddl = format!("CREATE TABLE {schema_q}.{table_q} (\n");
+        ddl.push_str(&parts.join(",\n"));
+        ddl.push_str("\n);");
+        for column in columns {
+            if let Some(comment) = &column.comment {
+                let col_q = quote_ident(Dialect::Postgres, &column.name)
+                    .map_err(|err| DbError::query(err.to_string()))?;
+                let escaped = comment.replace('\'', "''");
+                ddl.push_str(&format!(
+                    "\nCOMMENT ON COLUMN {schema_q}.{table_q}.{col_q} IS '{escaped}';"
+                ));
+            }
+        }
+        for definition in index_defs {
+            ddl.push('\n');
+            ddl.push_str(definition);
+            if !definition.ends_with(';') {
+                ddl.push(';');
+            }
+        }
+        Ok(ddl)
     }
 }
 
@@ -135,6 +409,40 @@ impl DatabaseSession for PostgresSession {
         } else {
             Ok(Some(estimate as u64))
         }
+    }
+
+    async fn describe_table(&self, schema: &str, table: &str) -> Result<TableStructure, DbError> {
+        let columns = self.load_columns(schema, table).await?;
+        if columns.is_empty() {
+            return Err(DbError::query(format!(
+                "table `{schema}.{table}` not found"
+            )));
+        }
+        let indexes = self.load_indexes(schema, table).await?;
+        let foreign_keys = self.load_foreign_keys(schema, table).await?;
+        let constraints = self.load_constraint_defs(schema, table).await?;
+        let index_defs = self.load_standalone_index_defs(schema, table).await?;
+        let ddl = Self::build_ddl(schema, table, &columns, &constraints, &index_defs)?;
+        Ok(TableStructure {
+            schema: schema.to_string(),
+            table: table.to_string(),
+            columns,
+            indexes,
+            foreign_keys,
+            ddl,
+        })
+    }
+
+    async fn table_ddl(&self, schema: &str, table: &str) -> Result<String, DbError> {
+        let columns = self.load_columns(schema, table).await?;
+        if columns.is_empty() {
+            return Err(DbError::query(format!(
+                "table `{schema}.{table}` not found"
+            )));
+        }
+        let constraints = self.load_constraint_defs(schema, table).await?;
+        let index_defs = self.load_standalone_index_defs(schema, table).await?;
+        Self::build_ddl(schema, table, &columns, &constraints, &index_defs)
     }
 
     async fn stream_query(
@@ -481,5 +789,118 @@ mod tests {
             Err(DbError::Cancelled { .. }) => {}
             Err(other) => panic!("unexpected stream error: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn postgres_describe_table_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres structure: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| {
+                panic!("SELA_POSTGRES_URL is set but Postgres is unreachable: {err}")
+            });
+        session
+            .execute("DROP TABLE IF EXISTS sela_struct_child")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TABLE IF EXISTS sela_struct_parent")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_struct_parent (
+                    id integer PRIMARY KEY,
+                    label text NOT NULL
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_struct_child (
+                    id integer PRIMARY KEY,
+                    parent_id integer NOT NULL REFERENCES sela_struct_parent(id),
+                    code text NOT NULL,
+                    note text DEFAULT 'n/a',
+                    score integer
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute("COMMENT ON COLUMN sela_struct_child.note IS 'optional note'")
+            .await
+            .unwrap();
+        session
+            .execute("CREATE UNIQUE INDEX sela_struct_child_code_uidx ON sela_struct_child(code)")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE INDEX sela_struct_child_parent_score_idx
+                 ON sela_struct_child(parent_id, score)",
+            )
+            .await
+            .unwrap();
+
+        let structure = session
+            .describe_table(&schema, "sela_struct_child")
+            .await
+            .unwrap();
+        assert_eq!(structure.schema, schema);
+        assert_eq!(structure.table, "sela_struct_child");
+
+        let note = structure
+            .columns
+            .iter()
+            .find(|column| column.name == "note")
+            .expect("note column");
+        assert!(note.nullable);
+        let default = note.default.as_deref().unwrap_or_default();
+        assert!(
+            default.contains("n/a"),
+            "expected default to mention n/a, got {default:?}"
+        );
+        assert_eq!(note.comment.as_deref(), Some("optional note"));
+
+        assert!(structure.indexes.iter().any(|index| index.primary));
+        assert!(structure.indexes.iter().any(|index| {
+            index.name == "sela_struct_child_code_uidx" && index.unique && !index.primary
+        }));
+        assert!(structure.indexes.iter().any(|index| {
+            index.name == "sela_struct_child_parent_score_idx"
+                && index.columns == vec!["parent_id".to_string(), "score".to_string()]
+        }));
+
+        assert_eq!(structure.foreign_keys.len(), 1);
+        let fk = &structure.foreign_keys[0];
+        assert_eq!(fk.columns, vec!["parent_id".to_string()]);
+        assert_eq!(fk.ref_table, "sela_struct_parent");
+        assert_eq!(fk.ref_columns, vec!["id".to_string()]);
+
+        let ddl = session
+            .table_ddl(&schema, "sela_struct_child")
+            .await
+            .unwrap();
+        assert!(ddl.contains("CREATE TABLE"));
+        assert!(ddl.contains("sela_struct_child"));
+        assert!(ddl.contains("PRIMARY KEY"));
+        assert!(ddl.contains("CREATE INDEX") || ddl.contains("CREATE UNIQUE INDEX"));
+        assert!(ddl.contains("optional note"));
+        assert_eq!(structure.ddl, ddl);
+
+        session
+            .execute("DROP TABLE sela_struct_child")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TABLE sela_struct_parent")
+            .await
+            .unwrap();
     }
 }

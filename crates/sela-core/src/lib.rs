@@ -8,6 +8,7 @@ mod error;
 mod result_window;
 mod session;
 mod sql;
+mod structure;
 mod types;
 
 pub use connection::SavedConnection;
@@ -21,6 +22,7 @@ pub use sql::{
     classify, first_keyword, is_safe_to_rerun_for_load_more, normalize_sql, qualify, quote_ident,
     select_all, split_statements, strip_comments, wrap_count, wrap_page, SqlError, StatementKind,
 };
+pub use structure::{ColumnStructure, ForeignKeyInfo, IndexInfo, TableStructure};
 pub use types::{
     truncate_one_line, ColumnMeta, Dialect, Engine, ExecOutcome, Interval, QueryPage, RelationKind,
     RowCountKind, RowSet, SchemaInfo, StatementOutcome, StreamBatch, StreamOutcome, TableInfo,

@@ -190,6 +190,8 @@ impl Workspace {
         self.session = None;
         self.catalog.clear();
         self.source = GridSource::Idle;
+        self.table_pane = super::TablePane::Data;
+        self.clear_structure_cache();
         self.page_offset = 0;
         self.page_len = 0;
         self.total_rows = None;
@@ -207,6 +209,7 @@ impl Workspace {
             return;
         };
         let active = self.active_id.clone();
+        self.clear_structure_cache();
         self.status = "Refreshing tables…".into();
         self.spawn_work(
             cx,
