@@ -269,14 +269,17 @@ mod tests {
             row[6],
             Value::Decimal(Decimal::from_str("1234.5678").unwrap())
         );
-        assert_eq!(row[7], Value::Text("hello".into()));
+        assert_eq!(row[7], Value::text("hello"));
         assert_eq!(row[8], Value::Bytes(b"hi".to_vec()));
         assert_eq!(
             row[9],
             Value::Uuid(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
         );
-        assert_eq!(row[10], Value::Json(serde_json::json!({"a": 1})));
-        assert_eq!(row[11], Value::Json(serde_json::json!({"b": true})));
+        assert_eq!(row[10].parse_json().unwrap(), serde_json::json!({"a": 1}));
+        assert_eq!(
+            row[11].parse_json().unwrap(),
+            serde_json::json!({"b": true})
+        );
         assert_eq!(
             row[12],
             Value::Date(NaiveDate::from_ymd_opt(2024, 1, 2).unwrap())

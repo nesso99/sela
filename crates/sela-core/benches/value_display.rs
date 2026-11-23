@@ -25,25 +25,25 @@ fn sample_narrow() -> Vec<Value> {
         Value::UInt(99_999),
         Value::Float(std::f64::consts::PI),
         Value::Decimal(Decimal::new(123456789, 4)),
-        Value::Text("bookmark-title-42".into()),
+        Value::text("bookmark-title-42"),
         Value::Uuid(Uuid::nil()),
         Value::Date(NaiveDate::from_ymd_opt(2024, 1, 2).unwrap()),
         Value::Time(NaiveTime::from_hms_opt(3, 4, 5).unwrap()),
         Value::Timestamp(ts),
-        Value::Json(serde_json::json!({"k": 1, "ok": true})),
+        Value::json(&serde_json::json!({"k": 1, "ok": true})),
     ]
 }
 
 fn sample_wide_text_1k() -> Value {
-    Value::Text("x".repeat(1024))
+    Value::text("x".repeat(1024))
 }
 
 fn sample_wide_text_10k() -> Value {
-    Value::Text("y".repeat(10 * 1024))
+    Value::text("y".repeat(10 * 1024))
 }
 
 fn sample_wide_json_multiline() -> Value {
-    // ~10 KB of pretty-printed JSON (multi-line).
+    // ~10 KB of pretty-printed JSON (multi-line), stored as raw Arc<str>.
     let mut items = Vec::with_capacity(200);
     for i in 0..200 {
         items.push(serde_json::json!({
@@ -53,7 +53,7 @@ fn sample_wide_json_multiline() -> Value {
             "tags": ["a", "b", "c", "d"],
         }));
     }
-    Value::Json(serde_json::Value::Array(items))
+    Value::json(&serde_json::Value::Array(items))
 }
 
 fn time_display(label: &str, values: &[Value], iters: u32) {
@@ -107,7 +107,7 @@ fn main() {
     time_single("Text 10 KiB (borrowed)", &text_10k, 200_000);
 
     let json_wide = sample_wide_json_multiline();
-    time_single("Json ~10 KiB (serialize)", &json_wide, 5_000);
+    time_single("Json ~10 KiB (borrowed raw)", &json_wide, 200_000);
 
     // Simulate the grid path: clone Value then display().into_owned().
     let start = Instant::now();

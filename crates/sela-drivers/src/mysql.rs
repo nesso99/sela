@@ -262,9 +262,9 @@ mod tests {
             row[7],
             Value::Decimal(Decimal::from_str("1234.5678").unwrap())
         );
-        assert_eq!(row[8], Value::Text("hello".into()));
+        assert_eq!(row[8], Value::text("hello"));
         assert_eq!(row[9], Value::Bytes(b"hi".to_vec()));
-        assert_eq!(row[10], Value::Json(serde_json::json!({"a": 1})));
+        assert_eq!(row[10].parse_json().unwrap(), serde_json::json!({"a": 1}));
         assert_eq!(
             row[11],
             Value::Date(NaiveDate::from_ymd_opt(2024, 1, 2).unwrap())

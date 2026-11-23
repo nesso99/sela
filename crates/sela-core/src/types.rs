@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, SecondsFormat, Timelike};
@@ -8,6 +9,12 @@ use uuid::Uuid;
 
 /// Rows fetched for one page of a grid.
 pub const PAGE_SIZE: u32 = 100;
+
+/// Max Unicode scalars shown in a grid cell (one line; newlines become ⏎).
+pub const CELL_DISPLAY_MAX_CHARS: usize = 200;
+
+/// Replacement for newlines in truncated cell display.
+pub const CELL_NEWLINE_GLYPH: char = '⏎';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -100,6 +107,10 @@ pub struct Interval {
 }
 
 /// A typed grid cell. `NULL` stays distinct from the text "NULL".
+///
+/// `Text` / `Json` use `Arc<str>` so clones are cheap and wide payloads are not
+/// duplicated when the grid or window retains them. Json is the **raw** engine
+/// string; parse only via [`Value::parse_json`] for detail / pretty / copy-as-JSON.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -109,10 +120,11 @@ pub enum Value {
     Float(f64),
     /// Exact decimal (NUMERIC/DECIMAL); never stored as `f64`.
     Decimal(Decimal),
-    Text(String),
+    Text(Arc<str>),
     Bytes(Vec<u8>),
     Uuid(Uuid),
-    Json(serde_json::Value),
+    /// Raw JSON text from the engine (not a parsed tree).
+    Json(Arc<str>),
     Date(NaiveDate),
     Time(NaiveTime),
     /// Naive timestamp (no timezone).
@@ -120,10 +132,10 @@ pub enum Value {
     /// Timestamp with timezone offset.
     TimestampTz(DateTime<FixedOffset>),
     Interval(Interval),
-    /// Unknown or unsupported engine type; keep a readable fallback.
+    /// Unknown, unsupported, or decode-error marker; keep a readable fallback.
     Other {
         type_name: String,
-        text: String,
+        text: Arc<str>,
     },
 }
 
@@ -132,7 +144,47 @@ impl Value {
         matches!(self, Self::Null)
     }
 
-    /// Stable grid formatting: `NULL`, ISO dates/times, compact JSON, hex blobs.
+    /// Build [`Value::Text`] from any stringy input.
+    pub fn text(value: impl Into<Arc<str>>) -> Self {
+        Self::Text(value.into())
+    }
+
+    /// Store compact JSON text from an already-parsed value (tests / synthetics).
+    pub fn json(value: &serde_json::Value) -> Self {
+        Self::Json(Arc::from(compact_json(value)))
+    }
+
+    /// Store raw JSON text without parsing.
+    pub fn json_raw(value: impl Into<Arc<str>>) -> Self {
+        Self::Json(value.into())
+    }
+
+    /// Marker used when `try_get_raw` fails (must not be confused with SQL NULL).
+    pub fn decode_error(type_name: impl Into<String>) -> Self {
+        let type_name = type_name.into();
+        Self::Other {
+            text: Arc::from(format!("<decode error: {type_name}>")),
+            type_name,
+        }
+    }
+
+    pub fn json_str(&self) -> Option<&str> {
+        match self {
+            Self::Json(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Lazily parse Json (detail view / pretty print / copy as JSON).
+    pub fn parse_json(&self) -> Result<serde_json::Value, serde_json::Error> {
+        match self {
+            Self::Json(text) => serde_json::from_str(text),
+            _ => serde_json::from_str("null"),
+        }
+    }
+
+    /// Full, untruncated display for copy / detail. Grid cells use
+    /// [`truncate_one_line`] (via the result window cache) instead.
     pub fn display(&self) -> Cow<'_, str> {
         match self {
             Self::Null => Cow::Borrowed("NULL"),
@@ -144,7 +196,7 @@ impl Value {
             Self::Text(text) => Cow::Borrowed(text),
             Self::Bytes(bytes) => Cow::Owned(format_bytes(bytes)),
             Self::Uuid(value) => Cow::Owned(value.to_string()),
-            Self::Json(value) => Cow::Owned(compact_json(value)),
+            Self::Json(text) => Cow::Borrowed(text),
             Self::Date(value) => Cow::Owned(value.format("%Y-%m-%d").to_string()),
             Self::Time(value) => Cow::Owned(format_time(value)),
             Self::Timestamp(value) => Cow::Owned(format_timestamp(value)),
@@ -155,6 +207,58 @@ impl Value {
             Self::Other { text, .. } => Cow::Borrowed(text),
         }
     }
+
+    /// One-line truncated display for a cell renderer (no cache).
+    pub fn display_cell(&self) -> String {
+        truncate_one_line(&self.display(), CELL_DISPLAY_MAX_CHARS).into_owned()
+    }
+}
+
+/// Collapse newlines to ⏎ and truncate to `max_chars` Unicode scalars (UTF-8 safe).
+///
+/// When truncated, an ellipsis `…` is appended (the ellipsis does not count toward
+/// `max_chars`). Multi-byte characters are never split.
+pub fn truncate_one_line(input: &str, max_chars: usize) -> Cow<'_, str> {
+    let mut char_count = 0usize;
+    let mut needs_owned = false;
+    for c in input.chars() {
+        char_count += 1;
+        if c == '\n' || c == '\r' || char_count > max_chars {
+            needs_owned = true;
+            break;
+        }
+    }
+    if !needs_owned {
+        return Cow::Borrowed(input);
+    }
+
+    let mut out = String::with_capacity(max_chars.min(input.len()) + 4);
+    let mut count = 0usize;
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if count >= max_chars {
+            out.push('…');
+            break;
+        }
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push(CELL_NEWLINE_GLYPH);
+                count += 1;
+            }
+            '\n' => {
+                out.push(CELL_NEWLINE_GLYPH);
+                count += 1;
+            }
+            other => {
+                out.push(other);
+                count += 1;
+            }
+        }
+    }
+    Cow::Owned(out)
 }
 
 fn format_float(value: f64) -> String {
@@ -292,10 +396,13 @@ mod tests {
             Value::Uuid(id).display(),
             "550e8400-e29b-41d4-a716-446655440000"
         );
-        assert_eq!(
-            Value::Json(serde_json::json!({"a": 1})).display(),
-            "{\"a\":1}"
-        );
+        let json = Value::json(&serde_json::json!({"a": 1}));
+        assert_eq!(json.display(), "{\"a\":1}");
+        assert_eq!(json.parse_json().unwrap(), serde_json::json!({"a": 1}));
+        // Raw storage stays unparsed until asked.
+        let raw = Value::json_raw("{\n  \"a\": 1\n}");
+        assert_eq!(raw.display().as_ref(), "{\n  \"a\": 1\n}");
+        assert_eq!(raw.parse_json().unwrap(), serde_json::json!({"a": 1}));
         assert_eq!(
             Value::Date(NaiveDate::from_ymd_opt(2024, 1, 2).unwrap()).display(),
             "2024-01-02"
@@ -335,6 +442,44 @@ mod tests {
             }
             .display(),
             "(1,2)"
+        );
+        assert!(!Value::decode_error("TEXT").is_null());
+    }
+
+    #[test]
+    fn truncate_one_line_newlines_and_utf8_boundaries() {
+        assert_eq!(truncate_one_line("hi", 200), "hi");
+        assert_eq!(truncate_one_line("a\nb\r\nc", 200), "a⏎b⏎c");
+        // 3-byte UTF-8 (日本語) must not be split mid-character.
+        let japanese = "あいうえおかきくけこ"; // 10 chars
+        let truncated = truncate_one_line(japanese, 3);
+        assert_eq!(truncated, "あいう…");
+        assert!(truncated.is_char_boundary(truncated.len()));
+        // Exactly max_chars, no ellipsis.
+        assert_eq!(truncate_one_line("abcd", 4), "abcd");
+        // Over max: ellipsis after max_chars scalars.
+        assert_eq!(truncate_one_line("abcde", 4), "abcd…");
+        // Combining: emoji (may be multiple scalars) still respects char boundaries.
+        let emoji = "😀😀😀😀";
+        let cut = truncate_one_line(emoji, 2);
+        assert_eq!(cut.chars().count(), 3); // two emoji + ellipsis
+        assert!(cut.ends_with('…'));
+        // display_cell uses the helper; newline inside the window becomes ⏎.
+        let wide = Value::text(format!("hello\n{}", "x".repeat(250)));
+        let cell = wide.display_cell();
+        assert!(cell.chars().count() <= CELL_DISPLAY_MAX_CHARS + 1);
+        assert!(cell.starts_with("hello⏎"));
+        assert!(cell.ends_with('…'));
+        assert_eq!(wide.display().as_ref().len(), 5 + 1 + 250);
+    }
+
+    #[test]
+    fn json_stays_raw_until_parsed() {
+        let value = Value::json_raw(r#"{"keep":"raw","n":2}"#);
+        assert_eq!(value.json_str(), Some(r#"{"keep":"raw","n":2}"#));
+        assert_eq!(
+            value.parse_json().unwrap(),
+            serde_json::json!({"keep": "raw", "n": 2})
         );
     }
 }
