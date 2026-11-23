@@ -12,11 +12,13 @@ name = "sela"
 path = "src/main.rs"
 
 [dependencies]
-chrono = { workspace = true }
 gpui-kit = { workspace = true }
-rust_decimal = { workspace = true }
 sela-config = { workspace = true }
 sela-core = { workspace = true }
 sela-drivers = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
