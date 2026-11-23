@@ -2,7 +2,7 @@
 
 # Technical specs — Sela
 
-Architecture, APIs, data model, execution, config, testing, and per-feature specs. Product intent lives in [PRD.md](./PRD.md); milestones in [roadmap.md](./roadmap.md). Contribution process: [CONTRIBUTING.md](../../CONTRIBUTING.md). Condensed overview: [architecture.md](../dev/architecture.md).
+Architecture, APIs, data model, execution, config, testing, and per-feature specs. Product intent lives in [PRD.md](./PRD.md); milestones in [roadmap.md](./roadmap.md). UX specs for the window, filter/sort, and SQL editor live in [ux/](./ux/README.md). Contribution process: [CONTRIBUTING.md](../../CONTRIBUTING.md). Condensed overview: [architecture.md](../dev/architecture.md).
 
 **License:** GPL-3.0-or-later (see root `LICENSE`).  
 **Name:** Sela (Birch retired). Crates: `sela-core`, `sela-drivers`, `sela-config`, `sela-app` (binary `sela`). Keychain service `app.sela.database`. Config under `~/.config/sela/` (macOS Application Support / Windows `%APPDATA%\Sela\`), override `SELA_CONFIG_DIR`.
@@ -270,7 +270,7 @@ Rule: tests assert **observable behavior**; every bugfix gets a regression test.
 ## SQL editor
 
 - Today: multi-line `Textarea`, one statement, Cmd/Ctrl+Enter.
-- M1-4: code editor with highlight, statement-at-cursor, multi-statement (via `split_statements`), format (`sqlformat`).
+- M1-4: code editor with highlight, statement-at-cursor, multi-statement (via `split_statements`). Format (`sqlformat`) is backlog, not M1-4. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md).
 - M3-2: autocomplete from `SchemaCache` + dialect keywords.
 
 ---
@@ -330,8 +330,8 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 | M1-2b Cancel / stream / estimates / SQL cap | This file § Execution | Done (#10) |
 | M1-1 Tabs | Per-tab state, cancel-on-close, `tabs.json` | Done (#12) |
 | M1-6 Structure view | `describe_table` / `TableStructure` | Done (#11) |
-| M1-3 Filter / sort | Generated SQL + bind params | Backlog |
-| M1-4 Editor | Highlight, multi-statement | Backlog |
+| M1-3 Filter / sort | [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md) | Backlog |
+| M1-4 Editor | [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Backlog |
 | M1-5 History | `history.sqlite` FTS | Backlog |
 | M1-7 Selection / copy / themes | Grid selection model | Backlog |
 | M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done |

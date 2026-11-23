@@ -9,7 +9,7 @@ Open-source, native desktop database client (PostgreSQL, MySQL, SQLite) built wi
 **Engines:** PostgreSQL, MySQL, SQLite.  
 **Stack:** Rust 1.85+, gpui-kit 0.10.0 (gpui-pre 0.3.12 + gpui-component), sqlx 0.8, tokio, keyring 3.
 
-See also: [SPECS.md](./SPECS.md), [roadmap.md](./roadmap.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), [benchmarks.md](../dev/benchmarks.md).
+See also: [SPECS.md](./SPECS.md), [roadmap.md](./roadmap.md), [UX specs](./ux/README.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), [benchmarks.md](../dev/benchmarks.md).
 
 ---
 
@@ -94,7 +94,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | Filter bar, header sort, on-demand exact count | v1 | Planned (M1-3) |
 | Cell edit, insert/delete/duplicate, pending changes, preview SQL, commit/discard | v1 | Planned (M2) |
 | Safe mode per connection, warn UPDATE/DELETE without WHERE, color label | v1 | Planned (M2) |
-| SQL editor: highlight, autocomplete, statement-at-cursor, multi-statement, format | v1 | Planned (M1-4 / M3) |
+| SQL editor: highlight, autocomplete, statement-at-cursor, multi-statement. Format (`sqlformat`) is backlog, not M1-4 | v1 | Highlight and multi-statement: M1-4. Autocomplete: M3-2. Format: backlog |
 | Query history with search, saved queries | v1 | Planned (M1-5) |
 | Selection + copy TSV/CSV/JSON/INSERT; themes | v1 | Planned (M1-7) |
 | TLS modes + CA cert; config schema_version 2 | v1 | Done (M1-8) |

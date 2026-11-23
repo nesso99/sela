@@ -2,6 +2,8 @@
 
 Bindings are registered in `crates/sela-app/src/ui/mod.rs`. On macOS use **⌘**; on Linux/Windows use **Ctrl** for the same actions (both are bound).
 
+The design target for shortcuts that are not built yet (filter, editor split, find) is [docs/design/ux/README.md](../design/ux/README.md). That folder writes the platform key as `secondary`. `secondary-shift-f` is reserved for format and is backlog, not M1-4. This page stays the list of what the app binds today.
+
 | Action | Shortcut |
 | --- | --- |
 | Run query | Cmd/Ctrl+Enter |
