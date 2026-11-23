@@ -12,7 +12,7 @@ mod structure;
 mod tabs;
 mod types;
 
-pub use connection::SavedConnection;
+pub use connection::{SavedConnection, TlsMode, TlsSettings};
 pub use error::DbError;
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
 pub use session::{

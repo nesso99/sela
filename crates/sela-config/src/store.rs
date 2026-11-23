@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use sela_core::SavedConnection;
 
+/// Current on-disk schema for `connections.json`.
+///
+/// Bumped to 2 for TLS fields. There is **no migration code**: v1 files still
+/// load because new fields have serde defaults, and the next save writes v2.
+pub const SCHEMA_VERSION: u32 = 2;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("could not read {path}: {source}")]
@@ -25,10 +31,17 @@ pub enum ConfigError {
     },
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileShape {
+    #[serde(default = "default_schema_version")]
+    schema_version: u32,
     #[serde(default)]
     connections: Vec<SavedConnection>,
+}
+
+fn default_schema_version() -> u32 {
+    // Missing field means a pre-v2 file; load succeeds via field defaults.
+    1
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +86,7 @@ impl ConfigStore {
             })?;
         }
         let body = serde_json::to_vec_pretty(&FileShape {
+            schema_version: SCHEMA_VERSION,
             connections: connections.to_vec(),
         })
         .expect("connection config is always serializable");
@@ -130,7 +144,7 @@ pub fn config_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sela_core::{Engine, SavedConnection};
+    use sela_core::{Engine, SavedConnection, TlsMode, TlsSettings};
 
     #[test]
     fn round_trip_omits_any_password_field() {
@@ -157,11 +171,13 @@ mod tests {
         assert_eq!(loaded[0].name, "Local");
         assert_eq!(loaded[0].engine, Engine::Postgres);
         assert_eq!(loaded[0].database, "sample");
+        assert_eq!(loaded[0].tls.mode, TlsMode::Disable);
 
         store.save(&loaded).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.to_ascii_lowercase().contains("password"));
         assert!(!text.contains("should-not-survive"));
+        assert!(text.contains("\"schema_version\": 2"));
 
         #[cfg(unix)]
         {
@@ -169,6 +185,99 @@ mod tests {
             let mode = fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn loads_v1_file_without_schema_version_or_tls() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connections.json");
+        // Legacy v1 shape: boolean `ssl`, no schema_version, no `tls` object.
+        let seeded = r#"{
+            "connections": [{
+                "id": "legacy",
+                "name": "Legacy PG",
+                "engine": "postgres",
+                "host": "10.0.0.1",
+                "port": 5432,
+                "username": "app",
+                "database": "orders",
+                "ssl": true
+            }]
+        }"#;
+        fs::write(&path, seeded).unwrap();
+
+        let store = ConfigStore::with_path(&path);
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "Legacy PG");
+        // No file migration: legacy ssl:true is honored in memory as require.
+        assert_eq!(loaded[0].tls.mode, TlsMode::Require);
+
+        store.save(&loaded).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["schema_version"], 2);
+        // Old boolean `ssl` must not be rewritten; mode lands under `tls`.
+        assert!(saved["connections"][0].get("ssl").is_none());
+        assert_eq!(saved["connections"][0]["tls"]["mode"], "require");
+        assert!(!text.to_ascii_lowercase().contains("passphrase"));
+        assert!(!text.to_ascii_lowercase().contains("password"));
+    }
+
+    #[test]
+    fn loads_v1_ssl_false_as_disable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connections.json");
+        let seeded = r#"{
+            "connections": [{
+                "id": "plain",
+                "name": "Plain PG",
+                "engine": "postgres",
+                "host": "10.0.0.1",
+                "port": 5432,
+                "username": "app",
+                "database": "orders",
+                "ssl": false
+            }]
+        }"#;
+        fs::write(&path, seeded).unwrap();
+        let loaded = ConfigStore::with_path(&path).load().unwrap();
+        assert_eq!(loaded[0].tls.mode, TlsMode::Disable);
+    }
+
+    #[test]
+    fn v2_round_trip_preserves_tls_paths_not_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connections.json");
+        let mut connection = SavedConnection::new(Engine::Mysql);
+        connection.name = "Prod".into();
+        connection.host = "db.example.com".into();
+        connection.port = 3306;
+        connection.username = "app".into();
+        connection.database = "orders".into();
+        connection.tls = TlsSettings {
+            mode: TlsMode::VerifyFull,
+            ca_path: "/etc/ssl/certs/ca.pem".into(),
+            client_cert_path: "/etc/ssl/certs/client.crt".into(),
+            client_key_path: "/etc/ssl/private/client.key".into(),
+        };
+
+        let store = ConfigStore::with_path(&path);
+        store.save(std::slice::from_ref(&connection)).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"schema_version\": 2"));
+        assert!(text.contains("verify-full"));
+        assert!(text.contains("/etc/ssl/certs/ca.pem"));
+        // Secrets must never appear in the JSON file.
+        assert!(!text.to_ascii_lowercase().contains("password"));
+        assert!(!text.to_ascii_lowercase().contains("passphrase"));
+        assert!(!text.contains("hunter2"));
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded[0].tls.mode, TlsMode::VerifyFull);
+        assert_eq!(loaded[0].tls.ca_path, "/etc/ssl/certs/ca.pem");
+        assert_eq!(loaded[0].tls.client_cert_path, "/etc/ssl/certs/client.crt");
+        assert_eq!(loaded[0].tls.client_key_path, "/etc/ssl/private/client.key");
     }
 
     #[test]

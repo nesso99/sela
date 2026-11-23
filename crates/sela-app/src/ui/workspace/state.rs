@@ -131,7 +131,7 @@ impl Workspace {
         let subscription =
             cx.subscribe_in(&form, window, |this, _, event, window, cx| match event {
                 FormEvent::Submit(draft) => {
-                    this.save_draft(draft.clone(), cx);
+                    this.save_draft((**draft).clone(), cx);
                     window.close_dialog(cx);
                 }
                 FormEvent::Cancel => window.close_dialog(cx),
@@ -140,7 +140,7 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title.clone())
-                .width(px(460.))
+                .width(px(520.))
                 .child(form.clone())
         });
     }
