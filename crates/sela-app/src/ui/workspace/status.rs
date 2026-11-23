@@ -8,6 +8,14 @@ use super::Workspace;
 
 impl Workspace {
     pub(super) fn status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
+        let status = self
+            .active_view()
+            .map(|view| view.status.clone())
+            .unwrap_or_default();
+        let label = self
+            .active_view()
+            .map(|view| view.source_label())
+            .unwrap_or_else(|| "No table open".into());
         h_flex()
             .h(px(28.))
             .px_3()
@@ -17,7 +25,7 @@ impl Workspace {
             .border_color(cx.theme().border)
             .bg(cx.theme().muted)
             .text_xs()
-            .child(self.status.clone())
-            .child(self.source_label())
+            .child(status)
+            .child(label)
     }
 }

@@ -154,7 +154,7 @@ Generated SQL quotes identifiers (`"name"` or `` `name` ``) and rejects an empty
 
 The pieces below are intentionally not in this version. The module split is there so they can land without rewriting the drivers.
 
-- Multiple result tabs, and a tab per open table.
+- ~~Multiple result tabs, and a tab per open table.~~ (M1-1)
 - Inline cell editing and inserting or deleting rows.
 - Filters, sorts, and a where-bar that composes SQL instead of replacing it.
 - Inline structure editing (create/alter/drop from the Structure view).

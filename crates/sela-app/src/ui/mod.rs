@@ -7,7 +7,7 @@ mod workspace;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    actions, px, size, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions,
+    actions, px, size, Action, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions,
 };
 
 pub use workspace::Workspace;
@@ -17,11 +17,18 @@ actions!(
     [
         RunQuery,
         CancelQuery,
+        NewQueryTab,
+        CloseTab,
         ShowTableData,
         ShowTableStructure,
         Quit
     ]
 );
+
+/// Activate tab N where N is 1..=9 (Cmd/Ctrl+N).
+#[derive(Clone, PartialEq, Eq, Action)]
+#[action(namespace = sela, no_json)]
+pub struct ActivateTab(pub usize);
 
 pub fn run() {
     gpui_kit::application()
@@ -35,7 +42,29 @@ pub fn run() {
                 KeyBinding::new("ctrl-enter", RunQuery, None),
                 KeyBinding::new("cmd-.", CancelQuery, None),
                 KeyBinding::new("ctrl-.", CancelQuery, None),
-                // Data ↔ Structure for the open table (US-11 / M1-6).
+                KeyBinding::new("cmd-t", NewQueryTab, None),
+                KeyBinding::new("ctrl-t", NewQueryTab, None),
+                KeyBinding::new("cmd-w", CloseTab, None),
+                KeyBinding::new("ctrl-w", CloseTab, None),
+                KeyBinding::new("cmd-1", ActivateTab(1), None),
+                KeyBinding::new("ctrl-1", ActivateTab(1), None),
+                KeyBinding::new("cmd-2", ActivateTab(2), None),
+                KeyBinding::new("ctrl-2", ActivateTab(2), None),
+                KeyBinding::new("cmd-3", ActivateTab(3), None),
+                KeyBinding::new("ctrl-3", ActivateTab(3), None),
+                KeyBinding::new("cmd-4", ActivateTab(4), None),
+                KeyBinding::new("ctrl-4", ActivateTab(4), None),
+                KeyBinding::new("cmd-5", ActivateTab(5), None),
+                KeyBinding::new("ctrl-5", ActivateTab(5), None),
+                KeyBinding::new("cmd-6", ActivateTab(6), None),
+                KeyBinding::new("ctrl-6", ActivateTab(6), None),
+                KeyBinding::new("cmd-7", ActivateTab(7), None),
+                KeyBinding::new("ctrl-7", ActivateTab(7), None),
+                KeyBinding::new("cmd-8", ActivateTab(8), None),
+                KeyBinding::new("ctrl-8", ActivateTab(8), None),
+                KeyBinding::new("cmd-9", ActivateTab(9), None),
+                KeyBinding::new("ctrl-9", ActivateTab(9), None),
+                // Data ↔ Structure for the open table tab (US-11 / M1-6).
                 KeyBinding::new("cmd-shift-[", ShowTableData, None),
                 KeyBinding::new("ctrl-shift-[", ShowTableData, None),
                 KeyBinding::new("cmd-shift-]", ShowTableStructure, None),

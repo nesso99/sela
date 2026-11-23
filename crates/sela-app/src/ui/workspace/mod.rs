@@ -6,30 +6,27 @@ mod sidebar;
 mod state;
 mod status;
 mod structure;
+mod tab_view;
+mod tabs;
 mod tree;
 
-use std::collections::HashSet;
-use std::sync::atomic::AtomicUsize;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
 
-use gpui_kit::component::input::TextareaState;
-use gpui_kit::component::table::TableState;
 use gpui_kit::component::tree::{TreeEvent, TreeState};
 use gpui_kit::component::{v_flex, ActiveTheme};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, Entity, IntoElement, Render, Subscription, Window};
-use tokio_util::sync::CancellationToken;
 
-use sela_config::{CachingSecrets, ConfigStore, KeyringStore, SavedConnection};
-use sela_core::{DatabaseSession, LoadedSchema, RowCountKind, DEFAULT_SQL_ROW_CAP};
+use sela_config::{CachingSecrets, ConfigStore, KeyringStore, SavedConnection, TabStore};
+use sela_core::{DatabaseSession, LoadedSchema, TabId, TabList};
 
-use super::grid::GridDelegate;
-use super::{CancelQuery, RunQuery, ShowTableData, ShowTableStructure};
-use structure::StructureCache;
+use super::{ActivateTab, CancelQuery, CloseTab, NewQueryTab, RunQuery, ShowTableData, ShowTableStructure};
+use tab_view::TabView;
 
 pub struct Workspace {
     store: ConfigStore,
+    tab_store: TabStore,
     secrets: CachingSecrets<KeyringStore>,
     connections: Vec<SavedConnection>,
     active_id: Option<String>,
@@ -37,43 +34,23 @@ pub struct Workspace {
     catalog: Vec<LoadedSchema>,
     expanded: HashSet<String>,
     tree: Entity<TreeState>,
-    grid: Entity<TableState<GridDelegate>>,
-    sql: Entity<TextareaState>,
-    source: GridSource,
-    table_pane: TablePane,
-    structure_cache: StructureCache,
-    structure_error: Option<String>,
-    page_offset: u64,
-    page_len: usize,
-    total_rows: Option<u64>,
-    row_count_kind: RowCountKind,
-    paged: bool,
-    truncated: bool,
-    /// When true, the Load more button may raise a live stream cap or re-run a
-    /// read-only statement. Cleared for DML / locking SQL that must not re-run.
-    can_load_more: bool,
-    sql_row_cap: u32,
-    live_row_cap: Option<Arc<AtomicUsize>>,
-    status: String,
-    error: Option<String>,
-    note: Option<String>,
-    busy: bool,
-    request: u64,
-    cancel: Option<CancellationToken>,
-    query_started: Option<Instant>,
+    tabs: TabList,
+    views: HashMap<TabId, TabView>,
+    /// Workspace-level load error (e.g. connections.json), shown when no tab error.
+    boot_error: Option<String>,
     last_selection: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
 #[derive(Clone)]
-enum GridSource {
+pub(super) enum GridSource {
     Idle,
     Table { schema: String, table: String },
     Sql(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TablePane {
+pub(super) enum TablePane {
     Data,
     Structure,
 }
@@ -81,21 +58,12 @@ enum TablePane {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = ConfigStore::with_path(ConfigStore::default_path());
-        let (connections, error) = match store.load() {
+        let tab_store = TabStore::with_path(TabStore::default_path());
+        let (connections, boot_error) = match store.load() {
             Ok(connections) => (connections, None),
             Err(err) => (Vec::new(), Some(err.to_string())),
         };
         let tree = cx.new(|cx| TreeState::new(cx));
-        let grid = cx.new(|cx| {
-            TableState::new(GridDelegate::empty(), window, cx)
-                .sortable(false)
-                .col_movable(false)
-        });
-        let sql = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(6)
-                .placeholder("SELECT * FROM books\n-- Ctrl+Enter or ⌘+Enter runs the statement")
-        });
         let tree_events = cx.subscribe(&tree, |this, _, event: &TreeEvent, cx| {
             match event {
                 TreeEvent::Expanded(id) => {
@@ -107,20 +75,16 @@ impl Workspace {
             }
             cx.notify();
         });
-        let tree_selection = cx.observe(&tree, |this, tree, cx| {
+        let tree_selection = cx.observe_in(&tree, window, |this, tree, window, cx| {
             let selected = tree
                 .read(cx)
                 .selected_item()
                 .map(|item| item.id.to_string());
-            this.on_selection(selected, cx);
-        });
-        let grid_pages = cx.observe(&grid, |this, grid, cx| {
-            if !grid.read(cx).delegate().pending_pages.is_empty() {
-                this.fetch_pending_pages(cx);
-            }
+            this.on_selection(selected, window, cx);
         });
         let mut workspace = Self {
             store,
+            tab_store,
             secrets: CachingSecrets::new(KeyringStore),
             connections,
             active_id: None,
@@ -128,47 +92,36 @@ impl Workspace {
             catalog: Vec::new(),
             expanded: HashSet::new(),
             tree,
-            grid,
-            sql,
-            source: GridSource::Idle,
-            table_pane: TablePane::Data,
-            structure_cache: StructureCache::new(),
-            structure_error: None,
-            page_offset: 0,
-            page_len: 0,
-            total_rows: None,
-            row_count_kind: RowCountKind::Unknown,
-            paged: false,
-            truncated: false,
-            can_load_more: false,
-            sql_row_cap: DEFAULT_SQL_ROW_CAP,
-            live_row_cap: None,
-            status: "No database connected".into(),
-            error,
-            note: None,
-            busy: false,
-            request: 0,
-            cancel: None,
-            query_started: None,
+            tabs: TabList::new(),
+            views: HashMap::new(),
+            boot_error,
             last_selection: None,
-            _subscriptions: vec![tree_events, tree_selection, grid_pages],
+            _subscriptions: vec![tree_events, tree_selection],
         };
+        workspace.restore_tabs(window, cx);
         workspace.rebuild_tree(cx);
-        workspace
-    }
-
-    fn source_label(&self) -> String {
-        match &self.source {
-            GridSource::Idle => "No table open".into(),
-            GridSource::Table { schema, table } => format!("{schema}.{table}"),
-            GridSource::Sql(_) => "SQL result".into(),
+        // Reconnect the active restored tab's connection when possible.
+        if let Some(connection_id) = workspace
+            .tabs
+            .active()
+            .map(|tab| tab.connection_id.clone())
+            .filter(|id| !id.is_empty())
+        {
+            workspace.connect_id(connection_id, cx);
         }
+        workspace
     }
 
     fn active_connection(&self) -> Option<&SavedConnection> {
         self.active_id
             .as_ref()
             .and_then(|id| self.connections.iter().find(|item| &item.id == id))
+    }
+
+    fn banner_error(&self) -> Option<String> {
+        self.active_view()
+            .and_then(|view| view.error.clone())
+            .or_else(|| self.boot_error.clone())
     }
 }
 
@@ -177,10 +130,17 @@ impl Render for Workspace {
         let this = cx.entity();
         let connected = self.session.is_some();
         let can_next = self.can_go_next();
-        let can_prev = self.page_offset > 0;
-        let page_number = self.page_offset / sela_core::PAGE_SIZE as u64 + 1;
-        let page_label = match self.total_rows {
-            Some(total) if self.paged => {
+        let can_prev = self
+            .active_view()
+            .map(|view| view.page_offset > 0)
+            .unwrap_or(false);
+        let page_offset = self.active_view().map(|view| view.page_offset).unwrap_or(0);
+        let page_len = self.active_view().map(|view| view.page_len).unwrap_or(0);
+        let total_rows = self.active_view().and_then(|view| view.total_rows);
+        let paged = self.active_view().map(|view| view.paged).unwrap_or(false);
+        let page_number = page_offset / sela_core::PAGE_SIZE as u64 + 1;
+        let page_label = match total_rows {
+            Some(total) if paged => {
                 let pages = total.div_ceil(sela_core::PAGE_SIZE as u64).max(1);
                 format!("Page {page_number} of {pages}")
             }
@@ -196,6 +156,12 @@ impl Render for Workspace {
                 )
             })
             .unwrap_or_else(|| "Choose a connection to browse its tables.".into());
+        let has_tabs = !self.tabs.is_empty();
+        let table_pane = self
+            .active_view()
+            .map(|view| view.table_pane)
+            .unwrap_or(TablePane::Data);
+        let _ = page_len;
 
         div()
             .id("sela-root")
@@ -218,6 +184,27 @@ impl Render for Workspace {
             })
             .on_action({
                 let this = this.clone();
+                move |_: &NewQueryTab, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.new_query_tab(window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CloseTab, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.close_active_tab(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |action: &ActivateTab, _, cx| {
+                    let number = action.0;
+                    this.update(cx, |workspace, cx| {
+                        workspace.activate_tab_number(number, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
                 move |_: &ShowTableData, _, cx| {
                     this.update(cx, |workspace, cx| workspace.show_table_data(cx));
                 }
@@ -234,16 +221,34 @@ impl Render for Workspace {
                     .flex_1()
                     .min_w(px(0.))
                     .h_full()
-                    .child(self.toolbar(cx, &endpoint, &page_label, can_prev, can_next, connected))
-                    .when_some(self.error.clone(), |column, error| {
-                        column.child(self.error_banner(cx, error))
+                    .child(self.tab_bar(cx))
+                    .when(has_tabs, |column| {
+                        column
+                            .child(self.toolbar(
+                                cx,
+                                &endpoint,
+                                &page_label,
+                                can_prev,
+                                can_next,
+                                connected,
+                            ))
+                            .when_some(self.banner_error(), |column, error| {
+                                column.child(self.error_banner(cx, error))
+                            })
+                            .child(match table_pane {
+                                TablePane::Data => self.results_area().into_any_element(),
+                                TablePane::Structure => self.structure_area(cx).into_any_element(),
+                            })
+                            .child(self.sql_editor(cx, connected))
+                            .child(self.status_bar(cx))
                     })
-                    .child(match self.table_pane {
-                        TablePane::Data => self.results_area().into_any_element(),
-                        TablePane::Structure => self.structure_area(cx).into_any_element(),
-                    })
-                    .child(self.sql_editor(cx, connected))
-                    .child(self.status_bar(cx)),
+                    .when(!has_tabs, |column| {
+                        column
+                            .when_some(self.boot_error.clone(), |column, error| {
+                                column.child(self.error_banner(cx, error))
+                            })
+                            .child(self.empty_content(cx))
+                    }),
             )
     }
 }
