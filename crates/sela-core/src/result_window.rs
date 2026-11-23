@@ -73,7 +73,10 @@ pub struct ResultWindow {
     columns: Vec<ColumnMeta>,
     total_rows: usize,
     page_size: usize,
+    /// Active eviction cap (may be raised by [`Self::replace_with_page`]).
     max_pages: usize,
+    /// Cap from construction; restored on [`Self::reset`].
+    base_max_pages: usize,
     pages: HashMap<usize, Page>,
     /// Last viewport used for eviction distance.
     viewport: Range<usize>,
@@ -92,14 +95,17 @@ impl ResultWindow {
             total_rows: 0,
             page_size: PAGE_SIZE as usize,
             max_pages: ROW_WINDOW_MAX_PAGES,
+            base_max_pages: ROW_WINDOW_MAX_PAGES,
             pages: HashMap::new(),
             viewport: 0..0,
         }
     }
 
     pub fn with_capacity(max_pages: usize, page_size: usize) -> Self {
+        let max_pages = max_pages.max(1);
         Self {
-            max_pages: max_pages.max(1),
+            max_pages,
+            base_max_pages: max_pages,
             page_size: page_size.max(1),
             ..Self::empty()
         }
@@ -131,19 +137,35 @@ impl ResultWindow {
         keys
     }
 
-    /// Reset to a new result shape; drops all cached pages.
+    /// Reset to a new result shape; drops all cached pages and restores the base page cap.
     pub fn reset(&mut self, columns: Vec<ColumnMeta>, total_rows: usize) {
         self.columns = columns;
         self.total_rows = total_rows;
         self.pages.clear();
         self.viewport = 0..0;
+        self.max_pages = self.base_max_pages;
     }
 
-    /// Replace the window with a single materialized page (current prev/next UX).
+    /// Replace the window with a fully materialized [`QueryPage`] (current prev/next / raw-query UX).
+    ///
+    /// Chunks `page.rows` into `page_size` pages so [`Self::row`] / [`Self::cell`] address every
+    /// index. If the chunk count exceeds the base cap, **raises** [`Self::max_pages`] so the
+    /// already-fetched result is not silently truncated or left as permanent `…` placeholders.
     pub fn replace_with_page(&mut self, page: QueryPage) {
         let total = page.rows.len();
+        let page_size = self.page_size;
+        let chunks = if total == 0 {
+            0
+        } else {
+            total.div_ceil(page_size)
+        };
         self.reset(page.columns, total);
-        self.insert_page(0, page.rows);
+        if chunks > self.max_pages {
+            self.max_pages = chunks;
+        }
+        for (page_index, chunk) in page.rows.chunks(page_size).enumerate() {
+            self.insert_page(page_index, chunk.to_vec());
+        }
     }
 
     /// Insert (or replace) a page of rows. `rows` may be shorter than `page_size` on the last page.
@@ -343,6 +365,53 @@ mod tests {
         assert_eq!(window.loaded_page_count(), 1);
         assert!(matches!(window.row(6), RowState::Ready(_)));
         assert!(matches!(window.row(7), RowState::Loading));
+    }
+
+    #[test]
+    fn replace_with_page_chunks_beyond_page_size() {
+        // Default page_size is 100; 250 rows must become three resident pages, not one
+        // oversized page-0 blob that leaves rows 100+ as permanent Loading / "…".
+        let rows: Vec<Vec<Value>> = (0..250)
+            .map(|i| vec![Value::Text(format!("row-{i}").into())])
+            .collect();
+        let mut window = ResultWindow::empty();
+        assert_eq!(window.page_size(), PAGE_SIZE as usize);
+        window.replace_with_page(QueryPage {
+            columns: cols(),
+            rows,
+            duration: std::time::Duration::ZERO,
+        });
+        assert_eq!(window.total_rows(), 250);
+        assert_eq!(window.loaded_page_count(), 3);
+        // Raised above the default 16 only when needed; 3 fits, so base cap stays.
+        assert!(window.max_pages() >= 3);
+
+        for &i in &[0usize, 150, 249] {
+            match window.row(i) {
+                RowState::Ready(cells) => {
+                    assert_eq!(cells[0].display().as_ref(), format!("row-{i}"));
+                }
+                RowState::Loading => panic!("row {i} should be Ready after replace_with_page"),
+            }
+        }
+        assert!(matches!(window.row(250), RowState::Loading));
+    }
+
+    #[test]
+    fn replace_with_page_raises_cap_when_chunks_exceed_max() {
+        // Tiny window (max 2 pages × 10 rows) receiving 50 rows → 5 chunks; raise cap.
+        let mut window = ResultWindow::with_capacity(2, 10);
+        let rows: Vec<Vec<Value>> = (0..50)
+            .map(|i| vec![Value::Text(format!("r{i}").into())])
+            .collect();
+        window.replace_with_page(QueryPage {
+            columns: cols(),
+            rows,
+            duration: std::time::Duration::ZERO,
+        });
+        assert_eq!(window.max_pages(), 5);
+        assert_eq!(window.loaded_page_count(), 5);
+        assert!(matches!(window.row(49), RowState::Ready(_)));
     }
 
     #[test]

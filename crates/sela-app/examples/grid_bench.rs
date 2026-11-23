@@ -7,8 +7,11 @@
 //! export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
 //! xvfb-run -a cargo run -p sela-app --release --example grid_bench
 //!
-//! # Wide Text/Json cells (1 KiB + ~10 KiB columns):
+//! # Wide Text/Json cells (1 KiB + ~10 KiB columns), shared Arc payloads:
 //! xvfb-run -a cargo run -p sela-app --release --example grid_bench -- --wide
+//!
+//! # Same shape, but unique Arc<str> per wide cell (realistic RSS):
+//! xvfb-run -a cargo run -p sela-app --release --example grid_bench -- --wide-unique
 //! ```
 
 use std::env;
@@ -42,13 +45,18 @@ const COL_STEP: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DatasetKind {
     Narrow,
+    /// Wide columns share one Arc per payload type (optimistic RSS).
     Wide,
+    /// Wide columns allocate a distinct Arc per cell (realistic RSS).
+    WideUnique,
 }
 
 impl DatasetKind {
     fn from_args() -> Self {
-        let wide = env::args().any(|a| a == "--wide" || a == "-w");
-        if wide {
+        let args: Vec<String> = env::args().collect();
+        if args.iter().any(|a| a == "--wide-unique") {
+            Self::WideUnique
+        } else if args.iter().any(|a| a == "--wide" || a == "-w") {
             Self::Wide
         } else {
             Self::Narrow
@@ -59,7 +67,12 @@ impl DatasetKind {
         match self {
             Self::Narrow => "narrow",
             Self::Wide => "wide",
+            Self::WideUnique => "wide-unique",
         }
+    }
+
+    fn is_wide(self) -> bool {
+        matches!(self, Self::Wide | Self::WideUnique)
     }
 }
 
@@ -517,6 +530,7 @@ impl BenchApp {
         self.quit_scheduled = true;
 
         let loaded_pages = self.grid.read(cx).delegate().result.loaded_page_count();
+        let end_rss_kb = current_rss_kb();
         let visible = self.grid.read(cx).visible_range();
         let vis_rows = visible.rows().clone();
         let vis_cols = visible.cols().clone();
@@ -533,6 +547,7 @@ impl BenchApp {
             setup_ms: self.setup_ms,
             baseline_rss_mib: self.baseline_rss_kb as f64 / 1024.0,
             after_load_rss_mib: self.after_load_rss_kb as f64 / 1024.0,
+            end_rss_mib: end_rss_kb as f64 / 1024.0,
             load_to_first_frame_ms: self.load_to_first_frame_ms,
             first_frame_render_td: self.first_frame_render_td,
             loaded_pages_at_end: loaded_pages,
@@ -608,6 +623,8 @@ struct BenchReport {
     setup_ms: f64,
     baseline_rss_mib: f64,
     after_load_rss_mib: f64,
+    /// RSS after flings with a full resident window (`loaded_at_end` pages).
+    end_rss_mib: f64,
     load_to_first_frame_ms: f64,
     first_frame_render_td: u64,
     loaded_pages_at_end: usize,
@@ -650,10 +667,12 @@ fn print_report(r: &BenchReport) {
     );
     println!("setup_ms: {:.1}", r.setup_ms);
     println!(
-        "rss_mib: baseline={:.1} after_load={:.1} delta={:.1}",
+        "rss_mib: baseline={:.1} after_load={:.1} delta={:.1} end={:.1} end_delta={:.1}",
         r.baseline_rss_mib,
         r.after_load_rss_mib,
-        r.after_load_rss_mib - r.baseline_rss_mib
+        r.after_load_rss_mib - r.baseline_rss_mib,
+        r.end_rss_mib,
+        r.end_rss_mib - r.baseline_rss_mib
     );
     println!(
         "time_to_first_frame_ms: {:.1} (render_td on that frame: {})",
@@ -713,14 +732,28 @@ fn make_columns(cols: usize, kind: DatasetKind) -> Vec<ColumnMeta> {
     ];
     (0..cols)
         .map(|i| {
-            let (name, type_name) = match (kind, i) {
-                (DatasetKind::Wide, i) if i == cols - 2 => ("wide_text_1k".into(), "text".into()),
-                (DatasetKind::Wide, i) if i == cols - 1 => ("wide_json_10k".into(), "jsonb".into()),
-                _ => (format!("c{i}"), type_names[i % type_names.len()].into()),
+            let (name, type_name) = if kind.is_wide() && i == cols - 2 {
+                ("wide_text_1k".into(), "text".into())
+            } else if kind.is_wide() && i == cols - 1 {
+                ("wide_json_10k".into(), "jsonb".into())
+            } else {
+                (format!("c{i}"), type_names[i % type_names.len()].into())
             };
             ColumnMeta { name, type_name }
         })
         .collect()
+}
+
+fn unique_text_1k(row: usize) -> Arc<str> {
+    // Distinct content per row so Arc cannot coalesce; keep length ≈ 1 KiB.
+    let prefix = format!("W{row:08}-");
+    let fill = 1024usize.saturating_sub(prefix.len());
+    Arc::from(format!("{prefix}{}", "x".repeat(fill)))
+}
+
+fn unique_json_10k(row: usize, template: &str) -> Arc<str> {
+    // Prefix with a unique key so each cell is a distinct allocation (~10 KiB).
+    Arc::from(format!("{{\"row\":{row},\"payload\":{template}}}"))
 }
 
 fn generate_page(
@@ -736,12 +769,20 @@ fn generate_page(
     for r in start..end {
         let mut row = Vec::with_capacity(cols);
         for c in 0..cols {
-            if kind == DatasetKind::Wide && c == cols - 2 {
-                row.push(Value::Text(wide.text_1k.clone()));
+            if kind.is_wide() && c == cols - 2 {
+                let text = match kind {
+                    DatasetKind::WideUnique => unique_text_1k(r),
+                    _ => wide.text_1k.clone(),
+                };
+                row.push(Value::Text(text));
                 continue;
             }
-            if kind == DatasetKind::Wide && c == cols - 1 {
-                row.push(Value::Json(wide.json_10k.clone()));
+            if kind.is_wide() && c == cols - 1 {
+                let json = match kind {
+                    DatasetKind::WideUnique => unique_json_10k(r, wide.json_10k.as_ref()),
+                    _ => wide.json_10k.clone(),
+                };
+                row.push(Value::Json(json));
                 continue;
             }
             row.push(cell_for(r, c));

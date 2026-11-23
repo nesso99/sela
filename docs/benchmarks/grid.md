@@ -22,7 +22,7 @@ Do **not** rewrite the grid for virtualization. The measurable risk at 100k×50 
 
 | Piece | How to run |
 | --- | --- |
-| Grid UI bench | `cargo run -p sela-app --release --example grid_bench` (+ `--wide`) |
+| Grid UI bench | `cargo run -p sela-app --release --example grid_bench` (+ `--wide` / `--wide-unique`) |
 | `Value::display` microbench | `cargo bench -p sela-core --bench value_display` |
 
 The example mirrors production `crates/sela-app/src/ui/grid.rs`: `TableDelegate::render_td` asks `ResultWindow::cell` (truncated + cached), and copy uses full `Value::display()`. Pages are generated on demand as the viewport moves; at most `ROW_WINDOW_MAX_PAGES` (16) pages stay resident.
@@ -37,7 +37,8 @@ Protocol:
 ### Datasets
 
 - **narrow**: cycling Int / Decimal / short Text / Timestamp / Uuid / Bool / Float / small Json / Date / Time (with occasional Null).
-- **wide**: same, but column 48 = Text(1 KiB) and column 49 = Json (~10 KiB) on every row (shared `Arc<str>` payloads across pages).
+- **wide**: same, but column 48 = Text(1 KiB) and column 49 = Json (~10 KiB) on every row, with **one shared** `Arc<str>` per payload type (optimistic RSS — Arc coalescing hides per-cell cost).
+- **wide-unique** (`--wide-unique`): same shape, but a **distinct** `Arc<str>` per wide cell (realistic RSS for editor / raw-query results).
 
 ### Machine (this run)
 
@@ -82,27 +83,42 @@ Wide RSS is now dominated by the bounded window (≤16 × 100 rows), not by reta
 | Horizontal fling | 52 frames · p50 **48.0 ms** · p95 48.0 ms · p99 48.1 ms · **20.8 fps** |
 | Horizontal paint | 13 340 `render_td` · 178 425 display bytes |
 
-### Grid — wide (100 000 × 50, last two cols 1 KiB / ~10 KiB)
+### Grid — wide (100 000 × 50, shared 1 KiB / ~10 KiB Arcs)
 
 | Metric | Value |
 | --- | --- |
-| Setup (columns + warm page) | 0.5 ms |
+| Setup (columns + warm page) | 0.3 ms |
 | Baseline RSS | 106.1 MiB |
-| RSS after load | 139.8 MiB (**+33.6 MiB**) |
-| Time to first frame | **66.6 ms** |
+| RSS after load (1 page) | 139.6 MiB (**+33.5 MiB**) |
+| RSS at end (16 pages resident) | 156.2 MiB (**+50.1 MiB**) |
+| Time to first frame | **46.4 ms** |
 | `render_td` on that frame | 253 |
-| Pages inserted / loaded at end | 128 / 16 |
+| Pages inserted / loaded at end | 130 / 16 |
 | Max visible rows / cols | **23 / 11** |
 | Columns virtualized? | **yes** |
-| Vertical fling | 62 frames · p50 **48.0 ms** · p95/p99 ~48–50 ms · **20.7 fps** |
+| Vertical fling | 63 frames · p50 **48.0 ms** · p95/p99 ~48 ms · **20.9 fps** |
 | Horizontal fling | 52 frames · p50 **48.0 ms** · p95/p99 ~48 ms · **20.8 fps** |
+| Horizontal paint | 13 271 `render_td` · **231 516** display bytes |
+
+### Grid — wide-unique (distinct Arc per wide cell)
+
+| Metric | Value |
+| --- | --- |
+| Setup (columns + warm page) | 1.2 ms |
+| Baseline RSS | 106.0 MiB |
+| RSS after load (1 page) | 141.1 MiB (**+35.1 MiB**) |
+| RSS at end (16 pages resident) | 181.6 MiB (**+75.7 MiB**) |
+| Time to first frame | **50.8 ms** |
+| Pages inserted / loaded at end | 128 / 16 |
 | Horizontal paint | 13 271 `render_td` · **231 516** display bytes |
 
 Notes:
 
 - The logical result is still 100k rows; only a sliding window of pages is resident.
+- Shared `--wide` understates payload cost (one Arc reused). Unique payloads add ~**+25.6 MiB** at a full 16-page window vs shared (~18 MiB expected for 1600×(~1 KiB+~10 KiB), plus allocator / `Arc` / display-cache overhead). Still **≪ 500 MiB**.
 - Wide horizontal display bytes stay bounded by truncation even when trailing wide columns enter the virtualized column window.
 - Frame times do **not** move on lavapipe (still vsync-ish ~48 ms).
+- `ResultWindow::replace_with_page` **raises** `max_pages` when a materialized `QueryPage` needs more chunks than the base cap (no silent truncation of already-fetched rows).
 
 ### `Value::display()` microbench
 
