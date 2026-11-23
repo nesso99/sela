@@ -89,6 +89,11 @@ fn classify_database(db: &dyn sqlx::error::DatabaseError) -> DbError {
             sqlstate,
             vendor_code,
         },
+        ErrorClass::Internal => DbError::Internal {
+            message,
+            sqlstate,
+            vendor_code,
+        },
     }
 }
 
@@ -99,18 +104,34 @@ enum ErrorClass {
     Cancelled,
     Connection,
     Timeout,
+    Internal,
 }
 
 impl ErrorClass {
     fn from_codes(sqlstate: Option<&str>, vendor_code: Option<&str>, kind: &ErrorKind) -> Self {
         if let Some(state) = sqlstate {
-            let class = &state[..state.len().min(2)];
-            match class {
-                "28" => return Self::Auth,
-                "42" => return Self::Query,
-                "08" => return Self::Connection,
-                "57" if state == "57014" => return Self::Cancelled,
-                "53" | "57" | "58" => return Self::Timeout,
+            match state {
+                // Invalid authorization specification.
+                s if s.starts_with("28") => return Self::Auth,
+                // Syntax error or access rule violation.
+                s if s.starts_with("42") => return Self::Query,
+                // Connection exception.
+                s if s.starts_with("08") => return Self::Connection,
+                // query_canceled — also the SQLSTATE Postgres uses for
+                // statement_timeout (same class as an explicit cancel).
+                "57014" => return Self::Cancelled,
+                // Admin shutdown / crash shutdown / cannot connect now.
+                "57P01" | "57P02" | "57P03" => return Self::Connection,
+                // Other operator-intervention codes are unexpected internals.
+                s if s.starts_with("57") => return Self::Internal,
+                // too_many_connections is a connection capacity failure.
+                "53300" => return Self::Connection,
+                // Other insufficient-resources (disk_full, out_of_memory, …).
+                s if s.starts_with("53") => return Self::Internal,
+                // System error / external IO — not a client timeout.
+                s if s.starts_with("58") => return Self::Internal,
+                // lock_not_available — wait for a lock timed out / failed.
+                "55P03" => return Self::Timeout,
                 _ => {}
             }
         }
@@ -118,11 +139,13 @@ impl ErrorClass {
         if let Some(code) = vendor_code {
             match code {
                 // MySQL access denied / auth
-                "1044" | "1045" | "1698" | "28000" => return Self::Auth,
+                "1044" | "1045" | "1698" => return Self::Auth,
                 // MySQL syntax / bad query
                 "1064" | "1146" | "1054" | "1149" => return Self::Query,
                 // MySQL query interrupted / cancelled
                 "1317" | "1028" => return Self::Cancelled,
+                // MySQL lock wait timeout / max_execution_time exceeded
+                "1205" | "3024" => return Self::Timeout,
                 // MySQL cannot connect / gone away
                 "2002" | "2003" | "2006" | "2013" => return Self::Connection,
                 _ => {}
@@ -237,6 +260,50 @@ mod tests {
     }
 
     #[test]
+    fn classifies_sqlstate_too_many_connections() {
+        assert_eq!(
+            ErrorClass::from_codes(Some("53300"), None, &ErrorKind::Other),
+            ErrorClass::Connection
+        );
+    }
+
+    #[test]
+    fn classifies_sqlstate_disk_full_as_internal() {
+        assert_eq!(
+            ErrorClass::from_codes(Some("53100"), None, &ErrorKind::Other),
+            ErrorClass::Internal
+        );
+    }
+
+    #[test]
+    fn classifies_sqlstate_admin_shutdown_as_connection() {
+        assert_eq!(
+            ErrorClass::from_codes(Some("57P01"), None, &ErrorKind::Other),
+            ErrorClass::Connection
+        );
+    }
+
+    #[test]
+    fn classifies_sqlstate_lock_not_available_as_timeout() {
+        assert_eq!(
+            ErrorClass::from_codes(Some("55P03"), None, &ErrorKind::Other),
+            ErrorClass::Timeout
+        );
+    }
+
+    #[test]
+    fn classifies_sqlstate_system_error_as_internal() {
+        assert_eq!(
+            ErrorClass::from_codes(Some("58000"), None, &ErrorKind::Other),
+            ErrorClass::Internal
+        );
+        assert_eq!(
+            ErrorClass::from_codes(Some("58030"), None, &ErrorKind::Other),
+            ErrorClass::Internal
+        );
+    }
+
+    #[test]
     fn classifies_mysql_vendor_auth() {
         assert_eq!(
             ErrorClass::from_codes(None, Some("1045"), &ErrorKind::Other),
@@ -257,6 +324,22 @@ mod tests {
         assert_eq!(
             ErrorClass::from_codes(None, Some("1317"), &ErrorKind::Other),
             ErrorClass::Cancelled
+        );
+    }
+
+    #[test]
+    fn classifies_mysql_lock_wait_timeout() {
+        assert_eq!(
+            ErrorClass::from_codes(None, Some("1205"), &ErrorKind::Other),
+            ErrorClass::Timeout
+        );
+    }
+
+    #[test]
+    fn classifies_mysql_max_execution_time() {
+        assert_eq!(
+            ErrorClass::from_codes(None, Some("3024"), &ErrorKind::Other),
+            ErrorClass::Timeout
         );
     }
 
@@ -357,5 +440,68 @@ mod tests {
             code: Some("57014"),
         }));
         assert!(matches!(map_sqlx_error(&err), DbError::Cancelled { .. }));
+    }
+
+    #[test]
+    fn database_too_many_connections_maps_to_connection() {
+        let err = SqlxError::Database(Box::new(FakeDbError {
+            message: "sorry, too many clients already",
+            code: Some("53300"),
+        }));
+        assert!(matches!(map_sqlx_error(&err), DbError::Connection { .. }));
+    }
+
+    #[test]
+    fn database_disk_full_maps_to_internal() {
+        let err = SqlxError::Database(Box::new(FakeDbError {
+            message: "could not write to file: No space left on device",
+            code: Some("53100"),
+        }));
+        assert!(matches!(map_sqlx_error(&err), DbError::Internal { .. }));
+    }
+
+    #[test]
+    fn database_admin_shutdown_maps_to_connection() {
+        let err = SqlxError::Database(Box::new(FakeDbError {
+            message: "terminating connection due to administrator command",
+            code: Some("57P01"),
+        }));
+        assert!(matches!(map_sqlx_error(&err), DbError::Connection { .. }));
+    }
+
+    #[test]
+    fn database_lock_not_available_maps_to_timeout() {
+        let err = SqlxError::Database(Box::new(FakeDbError {
+            message: "could not obtain lock on relation",
+            code: Some("55P03"),
+        }));
+        assert!(matches!(map_sqlx_error(&err), DbError::Timeout { .. }));
+    }
+
+    #[test]
+    fn database_system_io_error_maps_to_internal() {
+        let err = SqlxError::Database(Box::new(FakeDbError {
+            message: "io error",
+            code: Some("58030"),
+        }));
+        assert!(matches!(map_sqlx_error(&err), DbError::Internal { .. }));
+    }
+
+    #[test]
+    fn database_mysql_lock_wait_timeout_maps_to_timeout() {
+        let err = SqlxError::Database(Box::new(FakeDbError {
+            message: "Lock wait timeout exceeded",
+            code: Some("1205"),
+        }));
+        assert!(matches!(map_sqlx_error(&err), DbError::Timeout { .. }));
+    }
+
+    #[test]
+    fn database_mysql_max_execution_time_maps_to_timeout() {
+        let err = SqlxError::Database(Box::new(FakeDbError {
+            message: "Query execution was interrupted, maximum statement execution time exceeded",
+            code: Some("3024"),
+        }));
+        assert!(matches!(map_sqlx_error(&err), DbError::Timeout { .. }));
     }
 }
