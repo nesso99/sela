@@ -1,15 +1,17 @@
-//! Results-grid benchmark: 100k rows × 50 columns through gpui-component DataTable.
-//!
-//! Mirrors production `ui/grid.rs` rendering (`Value::display()` per painted cell)
-//! and instruments call counts, frame times, RSS, and visible ranges.
+//! Results-grid benchmark: 100k rows × 50 columns through gpui-component DataTable
+//! backed by [`sela_core::ResultWindow`] (bounded pages, lazy Json/`Arc<str>` Text,
+//! truncated + cached cell display).
 //!
 //! ```text
 //! # Software Vulkan (lavapipe) under Xvfb — numbers are a lower bound vs a real GPU:
 //! export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
 //! xvfb-run -a cargo run -p sela-app --release --example grid_bench
 //!
-//! # Wide Text/Json cells (1 KiB + ~10 KiB columns):
+//! # Wide Text/Json cells (1 KiB + ~10 KiB columns), shared Arc payloads:
 //! xvfb-run -a cargo run -p sela-app --release --example grid_bench -- --wide
+//!
+//! # Same shape, but unique Arc<str> per wide cell (realistic RSS):
+//! xvfb-run -a cargo run -p sela-app --release --example grid_bench -- --wide-unique
 //! ```
 
 use std::env;
@@ -27,7 +29,9 @@ use gpui_kit::{
     TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rust_decimal::Decimal;
-use sela_core::{ColumnMeta, Value};
+use sela_core::{
+    CellView, ColumnMeta, ResultWindow, RowState, Value, PAGE_SIZE, ROW_WINDOW_MAX_PAGES,
+};
 use uuid::Uuid;
 
 const ROWS: usize = 100_000;
@@ -41,13 +45,18 @@ const COL_STEP: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DatasetKind {
     Narrow,
+    /// Wide columns share one Arc per payload type (optimistic RSS).
     Wide,
+    /// Wide columns allocate a distinct Arc per cell (realistic RSS).
+    WideUnique,
 }
 
 impl DatasetKind {
     fn from_args() -> Self {
-        let wide = env::args().any(|a| a == "--wide" || a == "-w");
-        if wide {
+        let args: Vec<String> = env::args().collect();
+        if args.iter().any(|a| a == "--wide-unique") {
+            Self::WideUnique
+        } else if args.iter().any(|a| a == "--wide" || a == "-w") {
             Self::Wide
         } else {
             Self::Narrow
@@ -58,7 +67,12 @@ impl DatasetKind {
         match self {
             Self::Narrow => "narrow",
             Self::Wide => "wide",
+            Self::WideUnique => "wide-unique",
         }
+    }
+
+    fn is_wide(self) -> bool {
+        matches!(self, Self::Wide | Self::WideUnique)
     }
 }
 
@@ -69,6 +83,7 @@ struct Counters {
     display_bytes: AtomicU64,
     visible_rows_callbacks: AtomicU64,
     visible_cols_callbacks: AtomicU64,
+    pages_inserted: AtomicU64,
     last_visible_rows: Mutex<(usize, usize)>,
     last_visible_cols: Mutex<(usize, usize)>,
     max_visible_rows: AtomicU64,
@@ -91,38 +106,73 @@ impl Counters {
     }
 }
 
+/// Shared wide payloads so pages do not each allocate unique 1 KiB / 10 KiB strings.
+struct WidePayloads {
+    text_1k: Arc<str>,
+    json_10k: Arc<str>,
+}
+
+impl WidePayloads {
+    fn new() -> Self {
+        let text_1k: Arc<str> = Arc::from("W".repeat(1024));
+        let mut items = Vec::with_capacity(180);
+        for i in 0..180 {
+            items.push(serde_json::json!({
+                "id": i,
+                "label": format!("row-payload-{i}"),
+                "blob": "abcdefghijklmnopqrstuvwxyz0123456789",
+            }));
+        }
+        let json_10k: Arc<str> =
+            Arc::from(serde_json::to_string(&serde_json::Value::Array(items)).unwrap());
+        Self { text_1k, json_10k }
+    }
+}
+
 struct BenchDelegate {
-    columns: Vec<ColumnMeta>,
-    rows: Vec<Vec<Value>>,
+    result: ResultWindow,
+    kind: DatasetKind,
+    wide: Arc<WidePayloads>,
     counters: Arc<Counters>,
 }
 
 impl BenchDelegate {
-    fn empty(counters: Arc<Counters>) -> Self {
+    fn empty(kind: DatasetKind, wide: Arc<WidePayloads>, counters: Arc<Counters>) -> Self {
         Self {
-            columns: Vec::new(),
-            rows: Vec::new(),
+            result: ResultWindow::with_capacity(ROW_WINDOW_MAX_PAGES, PAGE_SIZE as usize),
+            kind,
+            wide,
             counters,
         }
     }
 
-    fn load(&mut self, columns: Vec<ColumnMeta>, rows: Vec<Vec<Value>>) {
-        self.columns = columns;
-        self.rows = rows;
+    fn begin(&mut self, columns: Vec<ColumnMeta>) {
+        self.result.reset(columns, ROWS);
+    }
+
+    fn fill_missing(&mut self, pages: &[usize]) {
+        for &page in pages {
+            if self.result.loaded_page_indices().contains(&page) {
+                continue;
+            }
+            let rows = generate_page(page, PAGE_SIZE as usize, COLS, self.kind, &self.wide);
+            self.result.insert_page(page, rows);
+            self.counters.pages_inserted.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
 impl TableDelegate for BenchDelegate {
     fn columns_count(&self, _: &App) -> usize {
-        self.columns.len()
+        self.result.columns().len()
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.rows.len()
+        self.result.total_rows()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
-        let meta = &self.columns[col_ix];
+        let meta = &self.result.columns()[col_ix];
         let header = format!("{}   {}", meta.name, meta.type_name);
         let width = (header.chars().count() as f32 * 7.5).clamp(140.0, 340.0);
         Column::new(format!("{col_ix}:{}", meta.name), header)
@@ -139,20 +189,18 @@ impl TableDelegate for BenchDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         self.counters.render_td.fetch_add(1, Ordering::Relaxed);
-        // Match production grid.rs: clone the cell, then display().into_owned().
-        let cell = self
-            .rows
-            .get(row_ix)
-            .and_then(|row| row.get(col_ix))
-            .cloned()
-            .unwrap_or(Value::Null);
-        let null = cell.is_null();
-        let text = cell.display().into_owned();
-        self.counters.display_calls.fetch_add(1, Ordering::Relaxed);
-        self.counters
-            .display_bytes
-            .fetch_add(text.len() as u64, Ordering::Relaxed);
-        let color = if null {
+        let view = self.result.cell(row_ix, col_ix);
+        let (null, loading, text) = match view {
+            CellView::Loading => (false, true, "…".to_string()),
+            CellView::Ready { null, display } => {
+                self.counters.display_calls.fetch_add(1, Ordering::Relaxed);
+                self.counters
+                    .display_bytes
+                    .fetch_add(display.len() as u64, Ordering::Relaxed);
+                (null, false, display.to_string())
+            }
+        };
+        let color = if null || loading {
             cx.theme().muted_foreground
         } else {
             cx.theme().foreground
@@ -166,7 +214,7 @@ impl TableDelegate for BenchDelegate {
             .truncate()
             .text_color(color)
             .font_family(cx.theme().mono_font_family.clone())
-            .when(null, |cell| cell.italic())
+            .when(null || loading, |cell| cell.italic())
             .child(text)
     }
 
@@ -176,7 +224,9 @@ impl TableDelegate for BenchDelegate {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) {
-        self.counters.note_visible_rows(visible_range);
+        self.counters.note_visible_rows(visible_range.clone());
+        let needed = self.result.touch(visible_range);
+        self.fill_missing(&needed);
     }
 
     fn visible_columns_changed(
@@ -189,12 +239,13 @@ impl TableDelegate for BenchDelegate {
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
-        // Not used during paint; still count if dump/export were called.
-        self.rows
-            .get(row_ix)
-            .and_then(|row| row.get(col_ix))
-            .map(|cell| cell.display().into_owned())
-            .unwrap_or_else(|| "NULL".into())
+        match self.result.row(row_ix) {
+            RowState::Ready(cells) => cells
+                .get(col_ix)
+                .map(|cell| cell.display().into_owned())
+                .unwrap_or_else(|| "NULL".into()),
+            RowState::Loading => String::new(),
+        }
     }
 }
 
@@ -250,16 +301,15 @@ struct BenchApp {
     grid: Entity<TableState<BenchDelegate>>,
     counters: Arc<Counters>,
     kind: DatasetKind,
+    columns: Vec<ColumnMeta>,
     phase: Phase,
-    dataset: Option<(Vec<ColumnMeta>, Vec<Vec<Value>>)>,
     baseline_rss_kb: u64,
     after_load_rss_kb: u64,
-    gen_ms: f64,
+    setup_ms: f64,
     load_to_first_frame_ms: f64,
     first_frame_render_td: u64,
     vertical: FrameStats,
     horizontal: FrameStats,
-    /// Totals accumulated before the horizontal fling (load + vertical).
     pre_horizontal_render_td: u64,
     pre_horizontal_display_calls: u64,
     pre_horizontal_display_bytes: u64,
@@ -276,28 +326,36 @@ impl BenchApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let kind = DatasetKind::from_args();
         let counters = Arc::new(Counters::default());
+        let wide = Arc::new(WidePayloads::new());
         let grid = cx.new(|cx| {
-            TableState::new(BenchDelegate::empty(counters.clone()), window, cx)
-                .sortable(false)
-                .col_movable(false)
-                .col_resizable(false)
-                .row_selectable(false)
-                .col_selectable(false)
-                .cell_selectable(false)
+            TableState::new(
+                BenchDelegate::empty(kind, wide.clone(), counters.clone()),
+                window,
+                cx,
+            )
+            .sortable(false)
+            .col_movable(false)
+            .col_resizable(false)
+            .row_selectable(false)
+            .col_selectable(false)
+            .cell_selectable(false)
         });
 
         let baseline_rss_kb = current_rss_kb();
         eprintln!(
-            "grid_bench: generating {} × {} ({}) …",
+            "grid_bench: preparing {} × {} ({}) with ResultWindow (max_pages={}) …",
             ROWS,
             COLS,
-            kind.label()
+            kind.label(),
+            ROW_WINDOW_MAX_PAGES
         );
-        let gen_start = Instant::now();
-        let dataset = generate_dataset(ROWS, COLS, kind);
-        let gen_ms = gen_start.elapsed().as_secs_f64() * 1000.0;
+        let setup_start = Instant::now();
+        let columns = make_columns(COLS, kind);
+        // Warm one page so generation cost is visible without retaining 100k rows.
+        let _warm = generate_page(0, PAGE_SIZE as usize, COLS, kind, &wide);
+        let setup_ms = setup_start.elapsed().as_secs_f64() * 1000.0;
         eprintln!(
-            "grid_bench: generated in {gen_ms:.1} ms; baseline RSS {} MiB",
+            "grid_bench: setup in {setup_ms:.1} ms; baseline RSS {} MiB",
             baseline_rss_kb as f64 / 1024.0
         );
 
@@ -305,11 +363,11 @@ impl BenchApp {
             grid,
             counters,
             kind,
+            columns,
             phase: Phase::WaitingFirstPaint,
-            dataset: Some(dataset),
             baseline_rss_kb,
             after_load_rss_kb: 0,
-            gen_ms,
+            setup_ms,
             load_to_first_frame_ms: 0.0,
             first_frame_render_td: 0,
             vertical: FrameStats::new(),
@@ -349,18 +407,20 @@ impl BenchApp {
 
         match self.phase {
             Phase::WaitingFirstPaint => {
-                // Empty table painted once; now load the dataset.
                 self.phase = Phase::LoadAndMeasureFirstFrame;
-                self.status = "loading dataset into DataTable…".into();
+                self.status = "loading ResultWindow into DataTable…".into();
                 let before_td = self.counters.render_td.load(Ordering::Relaxed);
                 self.load_started = Some(Instant::now());
-                if let Some((columns, rows)) = self.dataset.take() {
-                    self.grid.update(cx, |state, cx| {
-                        state.delegate_mut().load(columns, rows);
-                        state.refresh(cx);
-                        cx.notify();
-                    });
-                }
+                let columns = self.columns.clone();
+                self.grid.update(cx, |state, cx| {
+                    let delegate = state.delegate_mut();
+                    delegate.begin(columns);
+                    // Seed the first viewport pages before paint.
+                    let needed = delegate.result.touch(0..32);
+                    delegate.fill_missing(&needed);
+                    state.refresh(cx);
+                    cx.notify();
+                });
                 self.after_load_rss_kb = current_rss_kb();
                 self.first_frame_render_td = before_td;
                 cx.notify();
@@ -371,10 +431,12 @@ impl BenchApp {
                 let td_now = self.counters.render_td.load(Ordering::Relaxed);
                 self.first_frame_render_td = td_now.saturating_sub(self.first_frame_render_td);
                 self.after_load_rss_kb = current_rss_kb();
+                let pages = self.grid.read(cx).delegate().result.loaded_page_count();
                 eprintln!(
-                    "grid_bench: first frame after load in {:.1} ms (render_td={}) RSS {:.1} MiB",
+                    "grid_bench: first frame after load in {:.1} ms (render_td={}, pages={}) RSS {:.1} MiB",
                     self.load_to_first_frame_ms,
                     self.first_frame_render_td,
+                    pages,
                     self.after_load_rss_kb as f64 / 1024.0
                 );
                 self.phase = Phase::VerticalFling;
@@ -393,13 +455,12 @@ impl BenchApp {
                     self.last_frame = None;
                     self.scroll_col = 0;
                     self.status = "horizontal fling…".into();
-                    // Pin near the top, then sweep columns (including trailing wide ones).
                     self.grid.update(cx, |state, cx| {
                         state.scroll_to_row(0, cx);
                         state.scroll_to_col(0, cx);
+                        let needed = state.delegate_mut().result.touch(0..32);
+                        state.delegate_mut().fill_missing(&needed);
                     });
-                    // Snapshot pre-horizontal paint cost, then reset so the fling
-                    // isolates column-sweep (and wide trailing columns) cost.
                     self.pre_horizontal_render_td = self.counters.render_td.load(Ordering::Relaxed);
                     self.pre_horizontal_display_calls =
                         self.counters.display_calls.load(Ordering::Relaxed);
@@ -409,9 +470,10 @@ impl BenchApp {
                     self.counters.display_calls.store(0, Ordering::Relaxed);
                     self.counters.display_bytes.store(0, Ordering::Relaxed);
                     eprintln!(
-                        "grid_bench: vertical fling done ({} frames, p50={:.1} ms)",
+                        "grid_bench: vertical fling done ({} frames, p50={:.1} ms, pages_inserted={})",
                         self.vertical.samples.len(),
-                        self.vertical.percentile_ms(50.0)
+                        self.vertical.percentile_ms(50.0),
+                        self.counters.pages_inserted.load(Ordering::Relaxed)
                     );
                 } else {
                     self.advance_vertical(cx);
@@ -439,6 +501,11 @@ impl BenchApp {
         let row = self.scroll_row;
         self.grid.update(cx, |state, cx| {
             state.scroll_to_row(row, cx);
+            // Ensure pages around the jump target are resident (mirrors production touch).
+            let start = row.saturating_sub(16);
+            let end = (row + 48).min(ROWS);
+            let needed = state.delegate_mut().result.touch(start..end);
+            state.delegate_mut().fill_missing(&needed);
         });
         if self.scroll_row >= ROWS.saturating_sub(1) {
             self.scroll_row = 0;
@@ -462,6 +529,8 @@ impl BenchApp {
         }
         self.quit_scheduled = true;
 
+        let loaded_pages = self.grid.read(cx).delegate().result.loaded_page_count();
+        let end_rss_kb = current_rss_kb();
         let visible = self.grid.read(cx).visible_range();
         let vis_rows = visible.rows().clone();
         let vis_cols = visible.cols().clone();
@@ -475,11 +544,15 @@ impl BenchApp {
             kind: self.kind.label().to_string(),
             rows: ROWS,
             cols: COLS,
-            gen_ms: self.gen_ms,
+            setup_ms: self.setup_ms,
             baseline_rss_mib: self.baseline_rss_kb as f64 / 1024.0,
             after_load_rss_mib: self.after_load_rss_kb as f64 / 1024.0,
+            end_rss_mib: end_rss_kb as f64 / 1024.0,
             load_to_first_frame_ms: self.load_to_first_frame_ms,
             first_frame_render_td: self.first_frame_render_td,
+            loaded_pages_at_end: loaded_pages,
+            pages_inserted: self.counters.pages_inserted.load(Ordering::Relaxed),
+            max_pages: ROW_WINDOW_MAX_PAGES,
             render_td_total: self.pre_horizontal_render_td + horiz_td,
             display_calls: self.pre_horizontal_display_calls + horiz_disp,
             display_bytes: self.pre_horizontal_display_bytes + horiz_bytes,
@@ -511,7 +584,6 @@ impl BenchApp {
 
         print_report(&report);
         let _ = cx;
-        // Exit the process; the GPUI run loop has no more work for this bench.
         process::exit(0);
     }
 }
@@ -548,15 +620,19 @@ struct BenchReport {
     kind: String,
     rows: usize,
     cols: usize,
-    gen_ms: f64,
+    setup_ms: f64,
     baseline_rss_mib: f64,
     after_load_rss_mib: f64,
+    /// RSS after flings with a full resident window (`loaded_at_end` pages).
+    end_rss_mib: f64,
     load_to_first_frame_ms: f64,
     first_frame_render_td: u64,
+    loaded_pages_at_end: usize,
+    pages_inserted: u64,
+    max_pages: usize,
     render_td_total: u64,
     display_calls: u64,
     display_bytes: u64,
-    /// `render_td` / `display` counts during the horizontal fling only (counters reset at its start).
     horizontal_render_td: u64,
     horizontal_display_calls: u64,
     horizontal_display_bytes: u64,
@@ -585,16 +661,26 @@ fn print_report(r: &BenchReport) {
     println!();
     println!("=== Sela grid_bench results ===");
     println!("dataset: {} ({} × {})", r.kind, r.rows, r.cols);
-    println!("generate_ms: {:.1}", r.gen_ms);
     println!(
-        "rss_mib: baseline={:.1} after_load={:.1} delta={:.1}",
+        "model: ResultWindow max_pages={} page_size={}",
+        r.max_pages, PAGE_SIZE
+    );
+    println!("setup_ms: {:.1}", r.setup_ms);
+    println!(
+        "rss_mib: baseline={:.1} after_load={:.1} delta={:.1} end={:.1} end_delta={:.1}",
         r.baseline_rss_mib,
         r.after_load_rss_mib,
-        r.after_load_rss_mib - r.baseline_rss_mib
+        r.after_load_rss_mib - r.baseline_rss_mib,
+        r.end_rss_mib,
+        r.end_rss_mib - r.baseline_rss_mib
     );
     println!(
         "time_to_first_frame_ms: {:.1} (render_td on that frame: {})",
         r.load_to_first_frame_ms, r.first_frame_render_td
+    );
+    println!(
+        "window: pages_inserted={} loaded_at_end={}",
+        r.pages_inserted, r.loaded_pages_at_end
     );
     println!(
         "paint_calls: render_td={} display={} display_bytes={}",
@@ -631,11 +717,7 @@ fn print_report(r: &BenchReport) {
     println!("=== end ===");
 }
 
-fn generate_dataset(
-    rows: usize,
-    cols: usize,
-    kind: DatasetKind,
-) -> (Vec<ColumnMeta>, Vec<Vec<Value>>) {
+fn make_columns(cols: usize, kind: DatasetKind) -> Vec<ColumnMeta> {
     let type_names = [
         "int8",
         "numeric",
@@ -648,50 +730,66 @@ fn generate_dataset(
         "date",
         "text",
     ];
-    let columns: Vec<ColumnMeta> = (0..cols)
+    (0..cols)
         .map(|i| {
-            let (name, type_name) = match (kind, i) {
-                (DatasetKind::Wide, i) if i == cols - 2 => ("wide_text_1k".into(), "text".into()),
-                (DatasetKind::Wide, i) if i == cols - 1 => ("wide_json_10k".into(), "jsonb".into()),
-                _ => (format!("c{i}"), type_names[i % type_names.len()].into()),
+            let (name, type_name) = if kind.is_wide() && i == cols - 2 {
+                ("wide_text_1k".into(), "text".into())
+            } else if kind.is_wide() && i == cols - 1 {
+                ("wide_json_10k".into(), "jsonb".into())
+            } else {
+                (format!("c{i}"), type_names[i % type_names.len()].into())
             };
             ColumnMeta { name, type_name }
         })
-        .collect();
+        .collect()
+}
 
-    let text_1k = "W".repeat(1024);
-    let json_10k = {
-        let mut items = Vec::with_capacity(180);
-        for i in 0..180 {
-            items.push(serde_json::json!({
-                "id": i,
-                "label": format!("row-payload-{i}"),
-                "blob": "abcdefghijklmnopqrstuvwxyz0123456789",
-            }));
-        }
-        serde_json::Value::Array(items)
-    };
+fn unique_text_1k(row: usize) -> Arc<str> {
+    // Distinct content per row so Arc cannot coalesce; keep length ≈ 1 KiB.
+    let prefix = format!("W{row:08}-");
+    let fill = 1024usize.saturating_sub(prefix.len());
+    Arc::from(format!("{prefix}{}", "x".repeat(fill)))
+}
 
-    let mut out = Vec::with_capacity(rows);
-    for r in 0..rows {
+fn unique_json_10k(row: usize, template: &str) -> Arc<str> {
+    // Prefix with a unique key so each cell is a distinct allocation (~10 KiB).
+    Arc::from(format!("{{\"row\":{row},\"payload\":{template}}}"))
+}
+
+fn generate_page(
+    page: usize,
+    page_size: usize,
+    cols: usize,
+    kind: DatasetKind,
+    wide: &WidePayloads,
+) -> Vec<Vec<Value>> {
+    let start = page * page_size;
+    let end = (start + page_size).min(ROWS);
+    let mut out = Vec::with_capacity(end.saturating_sub(start));
+    for r in start..end {
         let mut row = Vec::with_capacity(cols);
         for c in 0..cols {
-            if kind == DatasetKind::Wide && c == cols - 2 {
-                row.push(Value::Text(text_1k.clone()));
+            if kind.is_wide() && c == cols - 2 {
+                let text = match kind {
+                    DatasetKind::WideUnique => unique_text_1k(r),
+                    _ => wide.text_1k.clone(),
+                };
+                row.push(Value::Text(text));
                 continue;
             }
-            if kind == DatasetKind::Wide && c == cols - 1 {
-                row.push(Value::Json(json_10k.clone()));
+            if kind.is_wide() && c == cols - 1 {
+                let json = match kind {
+                    DatasetKind::WideUnique => unique_json_10k(r, wide.json_10k.as_ref()),
+                    _ => wide.json_10k.clone(),
+                };
+                row.push(Value::Json(json));
                 continue;
             }
             row.push(cell_for(r, c));
         }
         out.push(row);
-        if r > 0 && r % 20_000 == 0 {
-            eprintln!("  … {r} rows");
-        }
     }
-    (columns, out)
+    out
 }
 
 fn cell_for(row: usize, col: usize) -> Value {
@@ -707,7 +805,7 @@ fn cell_for(row: usize, col: usize) -> Value {
             }
         }
         1 => Value::Decimal(Decimal::new((mix % 10_000_000) as i64, 3)),
-        2 => Value::Text(format!("r{row}-c{col}-{:x}", mix & 0xffff)),
+        2 => Value::text(format!("r{row}-c{col}-{:x}", mix & 0xffff)),
         3 => {
             let day = (mix % 28) as u32 + 1;
             let hour = (mix % 24) as u32;
@@ -727,7 +825,7 @@ fn cell_for(row: usize, col: usize) -> Value {
         }
         5 => Value::Bool(mix % 2 == 0),
         6 => Value::Float((mix % 10_000) as f64 / 100.0),
-        7 => Value::Json(serde_json::json!({"row": row, "col": col, "v": mix % 1000})),
+        7 => Value::json(&serde_json::json!({"row": row, "col": col, "v": mix % 1000})),
         8 => Value::Date(
             NaiveDate::from_ymd_opt(2018, 3, 1 + (mix % 28) as u32)
                 .unwrap_or_else(|| NaiveDate::from_ymd_opt(2018, 3, 1).unwrap()),
@@ -757,7 +855,6 @@ fn current_rss_kb() -> u64 {
 }
 
 fn main() {
-    // Help lavapipe / software Vulkan when no ICD was chosen by the environment.
     if env::var_os("VK_ICD_FILENAMES").is_none() {
         let lvp = "/usr/share/vulkan/icd.d/lvp_icd.json";
         if std::path::Path::new(lvp).exists() {

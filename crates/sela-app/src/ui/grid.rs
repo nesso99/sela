@@ -1,15 +1,20 @@
 //! Virtualized result grid backed by gpui-component's `DataTable`.
+//!
+//! Rows come from [`sela_core::ResultWindow`]: the grid asks by absolute index and
+//! paints a placeholder while the page is loading. Display strings are truncated
+//! and cached inside the window; copy uses the full [`Value::display`].
 
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, App, IntoElement, SharedString, Window};
 
-use sela_core::{ColumnMeta, QueryPage, Value};
+use sela_core::{CellView, QueryPage, ResultWindow, RowState};
 
 pub struct GridDelegate {
-    pub columns: Vec<ColumnMeta>,
-    pub rows: Vec<Vec<Value>>,
+    pub result: ResultWindow,
+    /// Page indices requested by the last viewport touch (M1-2b will fetch these).
+    pub pending_pages: Vec<usize>,
     pub loading: bool,
     pub empty_message: SharedString,
 }
@@ -17,25 +22,25 @@ pub struct GridDelegate {
 impl GridDelegate {
     pub fn empty() -> Self {
         Self {
-            columns: Vec::new(),
-            rows: Vec::new(),
+            result: ResultWindow::empty(),
+            pending_pages: Vec::new(),
             loading: false,
             empty_message: "Open a table, or run a query.".into(),
         }
     }
 
     pub fn show_page(&mut self, page: QueryPage) {
-        self.columns = page.columns;
-        self.rows = page.rows;
+        self.result.replace_with_page(page);
+        self.pending_pages.clear();
         self.loading = false;
-        if self.rows.is_empty() {
+        if self.result.total_rows() == 0 {
             self.empty_message = "The query returned no rows.".into();
         }
     }
 
     pub fn show_message(&mut self, message: impl Into<SharedString>) {
-        self.columns.clear();
-        self.rows.clear();
+        self.result = ResultWindow::empty();
+        self.pending_pages.clear();
         self.loading = false;
         self.empty_message = message.into();
     }
@@ -43,15 +48,15 @@ impl GridDelegate {
 
 impl TableDelegate for GridDelegate {
     fn columns_count(&self, _: &App) -> usize {
-        self.columns.len()
+        self.result.columns().len()
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.rows.len()
+        self.result.total_rows()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
-        let meta = &self.columns[col_ix];
+        let meta = &self.result.columns()[col_ix];
         let header = format!("{}   {}", meta.name, meta.type_name);
         let width = (header.chars().count() as f32 * 7.5).clamp(140.0, 340.0);
         Column::new(format!("{col_ix}:{}", meta.name), header)
@@ -67,14 +72,12 @@ impl TableDelegate for GridDelegate {
         _: &mut Window,
         cx: &mut gpui_kit::Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let cell = self
-            .rows
-            .get(row_ix)
-            .and_then(|row| row.get(col_ix))
-            .cloned()
-            .unwrap_or(Value::Null);
-        let null = cell.is_null();
-        let color = if null {
+        let view = self.result.cell(row_ix, col_ix);
+        let (null, loading, text) = match view {
+            CellView::Loading => (false, true, "…".to_string()),
+            CellView::Ready { null, display } => (null, false, display.to_string()),
+        };
+        let color = if null || loading {
             cx.theme().muted_foreground
         } else {
             cx.theme().foreground
@@ -88,8 +91,17 @@ impl TableDelegate for GridDelegate {
             .truncate()
             .text_color(color)
             .font_family(cx.theme().mono_font_family.clone())
-            .when(null, |cell| cell.italic())
-            .child(cell.display().into_owned())
+            .when(null || loading, |cell| cell.italic())
+            .child(text)
+    }
+
+    fn visible_rows_changed(
+        &mut self,
+        visible_range: std::ops::Range<usize>,
+        _: &mut Window,
+        _: &mut gpui_kit::Context<TableState<Self>>,
+    ) {
+        self.pending_pages = self.result.touch(visible_range);
     }
 
     fn loading(&self, _: &App) -> bool {
@@ -109,10 +121,13 @@ impl TableDelegate for GridDelegate {
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
-        self.rows
-            .get(row_ix)
-            .and_then(|row| row.get(col_ix))
-            .map(|cell| cell.display().into_owned())
-            .unwrap_or_else(|| "NULL".into())
+        // Copy / export: full untruncated value.
+        match self.result.row(row_ix) {
+            RowState::Ready(cells) => cells
+                .get(col_ix)
+                .map(|cell| cell.display().into_owned())
+                .unwrap_or_else(|| "NULL".into()),
+            RowState::Loading => String::new(),
+        }
     }
 }

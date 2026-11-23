@@ -1,5 +1,7 @@
 //! Decode sqlx rows into typed [`sela_core::Value`] cells without panicking.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use sqlx::mysql::MySqlRow;
@@ -18,10 +20,10 @@ pub fn column_meta(column: &impl sqlx::Column) -> ColumnMeta {
 }
 
 pub fn read_postgres_cell(row: &PgRow, index: usize) -> Value {
-    if is_null(row, index) {
-        return Value::Null;
-    }
     let type_name = type_name(row, index);
+    if let Some(early) = early_value(probe_null(row, index), &type_name) {
+        return early;
+    }
     match type_name.as_str() {
         "BOOL" => get_bool(row, index).unwrap_or_else(|| other(&type_name, row, index)),
         "INT2" | "INT4" | "INT8" | "OID" => {
@@ -43,7 +45,7 @@ pub fn read_postgres_cell(row: &PgRow, index: usize) -> Value {
             } else if let Ok(text) = row.try_get::<String, _>(index) {
                 Uuid::parse_str(&text)
                     .map(Value::Uuid)
-                    .unwrap_or(Value::Text(text))
+                    .unwrap_or_else(|_| Value::text(text))
             } else {
                 other(&type_name, row, index)
             }
@@ -74,10 +76,10 @@ pub fn read_postgres_cell(row: &PgRow, index: usize) -> Value {
 }
 
 pub fn read_mysql_cell(row: &MySqlRow, index: usize) -> Value {
-    if is_null(row, index) {
-        return Value::Null;
-    }
     let type_name = type_name(row, index);
+    if let Some(early) = early_value(probe_null(row, index), &type_name) {
+        return early;
+    }
     match type_name.as_str() {
         "BOOLEAN" => get_bool(row, index).unwrap_or_else(|| other(&type_name, row, index)),
         "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "BIGINT" | "YEAR" => {
@@ -137,10 +139,10 @@ pub fn read_mysql_cell(row: &MySqlRow, index: usize) -> Value {
 }
 
 pub fn read_sqlite_cell(row: &SqliteRow, index: usize) -> Value {
-    if is_null(row, index) {
-        return Value::Null;
-    }
     let type_name = type_name(row, index);
+    if let Some(early) = early_value(probe_null(row, index), &type_name) {
+        return early;
+    }
     match type_name.as_str() {
         "NULL" => Value::Null,
         "INTEGER" | "INT4" => get_int(row, index).unwrap_or_else(|| other(&type_name, row, index)),
@@ -194,14 +196,37 @@ pub fn read_sqlite_cell(row: &SqliteRow, index: usize) -> Value {
     }
 }
 
-fn is_null<R>(row: &R, index: usize) -> bool
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NullProbe {
+    Null,
+    Present,
+    /// `try_get_raw` failed — must not be treated as SQL NULL.
+    Error,
+}
+
+fn probe_null<R>(row: &R, index: usize) -> NullProbe
 where
     R: Row,
     usize: ColumnIndex<R>,
 {
     match row.try_get_raw(index) {
-        Ok(raw) => ValueRef::is_null(&raw),
-        Err(_) => true,
+        Ok(raw) => {
+            if ValueRef::is_null(&raw) {
+                NullProbe::Null
+            } else {
+                NullProbe::Present
+            }
+        }
+        Err(_) => NullProbe::Error,
+    }
+}
+
+/// Map a null probe to an early-return value. `None` means decode the typed cell.
+fn early_value(probe: NullProbe, type_name: &str) -> Option<Value> {
+    match probe {
+        NullProbe::Null => Some(Value::Null),
+        NullProbe::Error => Some(Value::decode_error(type_name)),
+        NullProbe::Present => None,
     }
 }
 
@@ -225,7 +250,7 @@ where
     if let Ok(text) = row.try_get::<String, _>(index) {
         return Value::Other {
             type_name: type_name.to_string(),
-            text,
+            text: Arc::from(text),
         };
     }
     if let Ok(bytes) = row.try_get::<Vec<u8>, _>(index) {
@@ -233,7 +258,7 @@ where
     }
     Value::Other {
         type_name: type_name.to_string(),
-        text: format!("<{type_name}>"),
+        text: Arc::from(format!("<{type_name}>")),
     }
 }
 
@@ -300,7 +325,7 @@ where
         if let Ok(value) = text.parse::<Decimal>() {
             return Some(Value::Decimal(value));
         }
-        return Some(Value::Text(text));
+        return Some(Value::text(text));
     }
     None
 }
@@ -311,7 +336,7 @@ where
     usize: ColumnIndex<R>,
     for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
-    row.try_get::<String, _>(index).ok().map(Value::Text)
+    row.try_get::<String, _>(index).ok().map(Value::text)
 }
 
 fn get_bytes<R>(row: &R, index: usize) -> Option<Value>
@@ -330,14 +355,12 @@ where
     for<'a> serde_json::Value: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
-    if let Ok(value) = row.try_get::<serde_json::Value, _>(index) {
-        return Some(Value::Json(value));
-    }
+    // Prefer the raw engine string so we do not build a serde tree for every cell.
     if let Ok(text) = row.try_get::<String, _>(index) {
-        if let Ok(value) = serde_json::from_str(&text) {
-            return Some(Value::Json(value));
-        }
-        return Some(Value::Text(text));
+        return Some(Value::json_raw(text));
+    }
+    if let Ok(value) = row.try_get::<serde_json::Value, _>(index) {
+        return Some(Value::json(&value));
     }
     None
 }
@@ -443,4 +466,27 @@ macro_rules! count_sql {
         };
         Ok(u64::try_from(count).unwrap_or(0))
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_access_error_is_other_not_null() {
+        let value = early_value(NullProbe::Error, "TEXT").expect("error marker");
+        assert!(
+            !value.is_null(),
+            "try_get_raw Err must not be disguised as NULL"
+        );
+        match value {
+            Value::Other { type_name, text } => {
+                assert_eq!(type_name, "TEXT");
+                assert!(text.contains("decode error"));
+            }
+            other => panic!("expected Other, got {other:?}"),
+        }
+        assert!(early_value(NullProbe::Null, "TEXT").unwrap().is_null());
+        assert!(early_value(NullProbe::Present, "TEXT").is_none());
+    }
 }
