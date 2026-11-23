@@ -5846,20 +5846,47 @@ dependencies = [
 ]
 
 [[package]]
-name = "sela"
+name = "sela-app"
+version = "0.1.0"
+dependencies = [
+ "gpui-kit",
+ "sela-config",
+ "sela-core",
+ "sela-drivers",
+]
+
+[[package]]
+name = "sela-config"
+version = "0.1.0"
+dependencies = [
+ "keyring",
+ "sela-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sela-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "sela-drivers"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
- "gpui-kit",
- "keyring",
- "serde",
- "serde_json",
+ "sela-core",
  "sqlx",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "uuid",
 ]
 
 [[package]]

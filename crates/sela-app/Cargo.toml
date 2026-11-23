@@ -1,0 +1,18 @@
+[package]
+name = "sela-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Sela desktop database client (GPUI)."
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sela"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = { workspace = true }
+sela-config = { workspace = true }
+sela-core = { workspace = true }
+sela-drivers = { workspace = true }

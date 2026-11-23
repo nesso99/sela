@@ -2,7 +2,7 @@
 
 use sqlx::{Column as _, ColumnIndex, Row, ValueRef};
 
-use super::types::Cell;
+use sela_core::{Cell, ColumnMeta};
 
 pub fn read_cell<R>(row: &R, index: usize) -> Cell
 where
@@ -90,8 +90,8 @@ fn format_blob(bytes: &[u8]) -> String {
     }
 }
 
-pub fn column_meta(column: &impl sqlx::Column) -> super::types::ColumnMeta {
-    super::types::ColumnMeta {
+pub fn column_meta(column: &impl sqlx::Column) -> ColumnMeta {
+    ColumnMeta {
         name: column.name().to_string(),
         type_name: column.type_info().to_string(),
     }
@@ -104,16 +104,21 @@ macro_rules! query_page {
         use sqlx::Row as _;
         let pool = $pool;
         let sql: &str = $sql;
-        let described = sqlx::Executor::describe(pool, sql).await?;
-        let mut columns: Vec<$crate::db::ColumnMeta> = described
+        let described = sqlx::Executor::describe(pool, sql)
+            .await
+            .map_err($crate::sqlx_err)?;
+        let mut columns: Vec<$crate::ColumnMeta> = described
             .columns()
             .iter()
-            .map($crate::db::column_meta)
+            .map($crate::column_meta)
             .collect();
-        let fetched = sqlx::query(sql).fetch_all(pool).await?;
+        let fetched = sqlx::query(sql)
+            .fetch_all(pool)
+            .await
+            .map_err($crate::sqlx_err)?;
         if columns.is_empty() {
             if let Some(row) = fetched.first() {
-                columns = row.columns().iter().map($crate::db::column_meta).collect();
+                columns = row.columns().iter().map($crate::column_meta).collect();
             }
         }
         let width = columns.len();
@@ -121,11 +126,11 @@ macro_rules! query_page {
         for row in &fetched {
             let mut cells = Vec::with_capacity(width);
             for index in 0..width {
-                cells.push($crate::db::read_cell(row, index));
+                cells.push($crate::read_cell(row, index));
             }
             rows.push(cells);
         }
-        Ok($crate::db::QueryPage {
+        Ok($crate::QueryPage {
             columns,
             rows,
             duration: std::time::Duration::ZERO,
@@ -136,7 +141,10 @@ macro_rules! query_page {
 #[macro_export]
 macro_rules! exec_sql {
     ($pool:expr, $sql:expr) => {{
-        let result = sqlx::query($sql).execute($pool).await?;
+        let result = sqlx::query($sql)
+            .execute($pool)
+            .await
+            .map_err($crate::sqlx_err)?;
         Ok(result.rows_affected())
     }};
 }
@@ -145,11 +153,14 @@ macro_rules! exec_sql {
 macro_rules! count_sql {
     ($pool:expr, $sql:expr) => {{
         use sqlx::Row as _;
-        let row = sqlx::query($sql).fetch_one($pool).await?;
+        let row = sqlx::query($sql)
+            .fetch_one($pool)
+            .await
+            .map_err($crate::sqlx_err)?;
         let count = if let Ok(value) = row.try_get::<i64, _>(0) {
             value
         } else {
-            i64::from(row.try_get::<i32, _>(0)?)
+            i64::from(row.try_get::<i32, _>(0).map_err($crate::sqlx_err)?)
         };
         Ok(u64::try_from(count).unwrap_or(0))
     }};

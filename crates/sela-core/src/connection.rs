@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub use crate::db::Engine;
+use crate::types::Engine;
 
 /// A connection Sela can reopen. The password is not part of this value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::model::SavedConnection;
+use sela_core::SavedConnection;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -130,8 +130,7 @@ pub fn config_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::model::SavedConnection;
-    use crate::db::Engine;
+    use sela_core::{Engine, SavedConnection};
 
     #[test]
     fn round_trip_omits_any_password_field() {

@@ -7,8 +7,7 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, Context, Entity, EventEmitter, IntoElement, Render, Window};
 
-use crate::config::SavedConnection;
-use crate::db::Engine;
+use sela_core::{Engine, SavedConnection};
 
 #[derive(Clone)]
 pub struct ConnectionDraft {

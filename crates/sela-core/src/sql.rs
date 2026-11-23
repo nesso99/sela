@@ -3,7 +3,7 @@
 //! Sela generates these strings. User SQL is passed through after it has been
 //! checked for a single statement.
 
-use super::types::Dialect;
+use crate::types::Dialect;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SqlError {

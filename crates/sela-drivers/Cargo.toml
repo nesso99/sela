@@ -1,0 +1,18 @@
+[package]
+name = "sela-drivers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "PostgreSQL, MySQL, and SQLite drivers for Sela."
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+sela-core = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

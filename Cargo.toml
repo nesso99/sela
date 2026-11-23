@@ -1,13 +1,20 @@
-[package]
-name = "sela"
+[workspace]
+members = [
+    "crates/sela-core",
+    "crates/sela-drivers",
+    "crates/sela-config",
+    "crates/sela-app",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-description = "Sela is a native desktop database client for PostgreSQL, MySQL, and SQLite."
 license = "MIT"
 publish = false
 
-[dependencies]
+[workspace.dependencies]
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 gpui-kit = "=0.10.0"
@@ -23,9 +30,11 @@ sqlx = { version = "0.8", default-features = false, features = [
     "uuid",
     "json",
 ] }
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
-[dev-dependencies]
-tempfile = "3"
+sela-core = { path = "crates/sela-core" }
+sela-drivers = { path = "crates/sela-drivers" }
+sela-config = { path = "crates/sela-config" }

@@ -16,13 +16,14 @@ use gpui_kit::{
     div, px, App, Context, Entity, IntoElement, Render, SharedString, Subscription, Window,
 };
 
-use crate::config::{
+use sela_config::{
     CachingSecrets, ConfigStore, KeyringStore, PasswordPersistence, SavedConnection,
 };
-use crate::db::{
-    connect, create_sample_database, load_catalog, preview_table, run_user_sql, DatabaseSession,
-    DbError, Engine, LoadedSchema, RelationKind, StatementOutcome, TableInfo, PAGE_SIZE,
+use sela_core::{
+    preview_table, run_user_sql, DatabaseSession, DbError, Engine, LoadedSchema, RelationKind,
+    StatementOutcome, TableInfo, PAGE_SIZE,
 };
+use sela_drivers::{connect, create_sample_database, drive, load_catalog};
 
 use super::form::{ConnectionDraft, ConnectionForm, FormEvent};
 use super::grid::GridDelegate;
@@ -149,7 +150,7 @@ impl Workspace {
         self.busy = true;
         cx.notify();
         cx.spawn(async move |this, async_cx| {
-            let result = crate::db::drive(work).await;
+            let result = drive(work).await;
             this.update(async_cx, |this, cx| {
                 if this.request != request {
                     return;

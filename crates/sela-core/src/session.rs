@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 
-use super::error::DbError;
-use super::sql::{self, StatementKind};
-use super::types::{
+use crate::error::DbError;
+use crate::sql::{self, StatementKind};
+use crate::types::{
     Dialect, ExecOutcome, QueryPage, RowSet, SchemaInfo, StatementOutcome, TableInfo,
 };
 
@@ -44,10 +44,7 @@ pub async fn run_user_sql(
             let page_sql = sql::wrap_page(session.dialect(), &sql, limit, offset);
             let count_sql = sql::wrap_count(session.dialect(), &sql);
             let mut page = session.query(&page_sql).await?;
-            let total_rows = match session.count_query(&count_sql).await {
-                Ok(total) => Some(total),
-                Err(_) => None,
-            };
+            let total_rows = session.count_query(&count_sql).await.ok();
             page.duration = started.elapsed();
             Ok(StatementOutcome::Rows(RowSet {
                 page,
@@ -78,7 +75,7 @@ pub async fn run_user_sql(
     }
 }
 
-/// Page through `SELECT *` for one table. `limit` defaults to [`PAGE_SIZE`] at the call site.
+/// Page through `SELECT *` for one table. `limit` defaults to [`crate::PAGE_SIZE`] at the call site.
 pub async fn preview_table(
     session: &dyn DatabaseSession,
     schema: &str,
@@ -89,4 +86,10 @@ pub async fn preview_table(
     let sql = sql::select_all(session.dialect(), schema, table)
         .map_err(|err| DbError::message(err.to_string()))?;
     run_user_sql(session, &sql, limit, offset).await
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedSchema {
+    pub name: String,
+    pub tables: Vec<TableInfo>,
 }
