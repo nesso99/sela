@@ -57,8 +57,10 @@ pub(super) struct TabView {
 impl TabView {
     pub fn new(window: &mut Window, cx: &mut Context<super::Workspace>, sql_text: &str) -> Self {
         let grid = cx.new(|cx| {
+            // sortable(false) by default — enabled only for table Data in load_source_for.
+            // Header clicks require TableState.sortable(true); that path does not reorder rows.
             TableState::new(GridDelegate::empty(), window, cx)
-                .sortable(true)
+                .sortable(false)
                 .col_movable(false)
         });
         let sql = cx.new(|cx| {

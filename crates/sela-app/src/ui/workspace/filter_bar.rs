@@ -4,9 +4,12 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, Entity, IntoElement, Window};
+use gpui_kit::{div, px, Context, Entity, Focusable, IntoElement, Window};
 
-use sela_core::{build_table_select, display_bound_sql, FilterCondition, FilterOp, SortSpec};
+use sela_core::{
+    format_predicate_preview, validate_filter_condition, ColumnKind, FilterCondition, FilterOp,
+    SortDirection, SortSpec, MAX_SORT_KEYS,
+};
 
 use super::Workspace;
 
@@ -15,6 +18,8 @@ pub(super) struct FilterRowUi {
     pub column: Entity<InputState>,
     pub value: Entity<InputState>,
     pub op: FilterOp,
+    /// Validation message from the last Apply attempt (cleared on edit / success).
+    pub error: Option<String>,
 }
 
 impl FilterRowUi {
@@ -33,6 +38,7 @@ impl FilterRowUi {
             column,
             value,
             op: seed.op,
+            error: None,
         }
     }
 
@@ -95,7 +101,7 @@ impl Workspace {
                 view.filter_rows.remove(index);
             }
             if view.filter_rows.is_empty() {
-                view.filters.clear();
+                // Leave one empty draft row; do not reload until Apply/Clear.
             }
         }
         cx.notify();
@@ -105,9 +111,28 @@ impl Workspace {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
+        let kind = {
+            let Some(view) = self.views.get(&tab_id) else {
+                return;
+            };
+            let Some(row) = view.filter_rows.get(index) else {
+                return;
+            };
+            let col_name = row.column.read(cx).value().to_string();
+            view.grid
+                .read(cx)
+                .delegate()
+                .result
+                .columns()
+                .iter()
+                .find(|c| c.name == col_name)
+                .map(|c| ColumnKind::from_type_name(&c.type_name))
+                .unwrap_or(ColumnKind::Other)
+        };
         if let Some(view) = self.view_mut(tab_id) {
             if let Some(row) = view.filter_rows.get_mut(index) {
-                row.op = row.op.next();
+                row.op = row.op.next_for_kind(kind);
+                row.error = None;
             }
         }
         cx.notify();
@@ -117,24 +142,48 @@ impl Workspace {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
-        let conditions = {
+        let (conditions, errors) = {
             let Some(view) = self.views.get(&tab_id) else {
                 return;
             };
             let cols = view.grid.read(cx).delegate().result.columns().to_vec();
-            view.filter_rows
-                .iter()
-                .map(|row| {
-                    let mut cond = row.to_condition(cx);
-                    if let Some(meta) = cols.iter().find(|c| c.name == cond.column) {
-                        cond.column_type = Some(meta.type_name.clone());
+            let mut conditions = Vec::new();
+            let mut errors = Vec::new();
+            for row in &view.filter_rows {
+                let mut cond = row.to_condition(cx);
+                if cond.column.trim().is_empty() && cond.value.is_empty() {
+                    // Skip blank draft rows.
+                    errors.push(None);
+                    continue;
+                }
+                if let Some(meta) = cols.iter().find(|c| c.name == cond.column) {
+                    cond.column_type = Some(meta.type_name.clone());
+                } else if !cond.column.trim().is_empty() {
+                    // Unknown column name — still allow Other operators after validation.
+                    cond.column_type = Some(String::new());
+                }
+                match validate_filter_condition(&cond) {
+                    Ok(()) => {
+                        errors.push(None);
+                        conditions.push(cond);
                     }
-                    cond
-                })
-                .filter(|c| !c.column.trim().is_empty())
-                .collect::<Vec<_>>()
+                    Err(msg) => {
+                        errors.push(Some(msg));
+                    }
+                }
+            }
+            (conditions, errors)
         };
+        let any_invalid = errors.iter().any(|e| e.is_some());
         if let Some(view) = self.view_mut(tab_id) {
+            for (row, err) in view.filter_rows.iter_mut().zip(errors) {
+                row.error = err;
+            }
+            if any_invalid {
+                // Keep previous page; do not send a partial filter.
+                cx.notify();
+                return;
+            }
             view.filters = conditions;
             view.page_offset = 0;
             view.filter_bar_open = true;
@@ -158,6 +207,20 @@ impl Workspace {
         self.load_source_for(tab_id, cx);
     }
 
+    /// True when a filter bar input on the active table tab has focus.
+    pub(super) fn filter_field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        let Some(view) = self.active_view() else {
+            return false;
+        };
+        if !view.filter_bar_open {
+            return false;
+        }
+        view.filter_rows.iter().any(|row| {
+            row.column.read(cx).focus_handle(cx).is_focused(window)
+                || row.value.read(cx).focus_handle(cx).is_focused(window)
+        })
+    }
+
     pub(super) fn filter_bar(&self, cx: &Context<Self>, connected: bool) -> impl IntoElement {
         let this = cx.entity();
         let view = self.active_view();
@@ -169,21 +232,6 @@ impl Workspace {
         if !is_table || !open {
             return div().into_any_element();
         }
-
-        let dialect = self
-            .session
-            .as_ref()
-            .map(|s| s.dialect())
-            .unwrap_or(sela_core::Dialect::Sqlite);
-        let (schema, table) = match view.map(|v| v.source.clone()) {
-            Some(super::GridSource::Table { schema, table }) => (schema, table),
-            _ => (String::new(), String::new()),
-        };
-        let filters = view.map(|v| v.filters.clone()).unwrap_or_default();
-        let sorts = view.map(|v| v.sorts.clone()).unwrap_or_default();
-        let sql_preview = build_table_select(dialect, &schema, &table, &filters, &sorts)
-            .map(|b| display_bound_sql(&b))
-            .unwrap_or_else(|err| err.to_string());
 
         let rows = view.map(|v| v.filter_rows.len()).unwrap_or(0);
 
@@ -256,6 +304,7 @@ impl Workspace {
                 };
                 let op_label = row.op.label().to_string();
                 let needs_value = row.op.needs_value();
+                let err = row.error.clone();
                 h_flex()
                     .gap_2()
                     .items_center()
@@ -269,7 +318,7 @@ impl Workspace {
                             .xsmall()
                             .label(op_label)
                             .disabled(!connected || busy)
-                            .tooltip("Click to cycle operator")
+                            .tooltip("Click to cycle operator for this column type")
                             .on_click(move |_, _, cx| {
                                 this_op.update(cx, |workspace, cx| {
                                     workspace.cycle_filter_op(index, cx)
@@ -291,6 +340,9 @@ impl Workspace {
                                 )
                             }),
                     )
+                    .when_some(err, |row, msg| {
+                        row.child(div().text_xs().text_color(cx.theme().danger).child(msg))
+                    })
                     .child(
                         Button::new(("filter-rm", index))
                             .xsmall()
@@ -304,13 +356,49 @@ impl Workspace {
                     )
                     .into_any_element()
             }))
-            .child(
-                div()
-                    .text_xs()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("SQL: {sql_preview}")),
-            )
+            .into_any_element()
+    }
+
+    /// Read-only WHERE / ORDER BY strip under the grid (does not touch TabView.sql).
+    pub(super) fn predicate_strip(&self, cx: &Context<Self>) -> impl IntoElement {
+        let view = self.active_view();
+        let Some(view) = view else {
+            return div().into_any_element();
+        };
+        let super::GridSource::Table { schema, table } = &view.source else {
+            return div().into_any_element();
+        };
+        if view.filters.is_empty() && view.sorts.is_empty() {
+            return div().into_any_element();
+        }
+        let dialect = self
+            .session
+            .as_ref()
+            .map(|s| s.dialect())
+            .unwrap_or(sela_core::Dialect::Sqlite);
+        let preview = format_predicate_preview(dialect, schema, table, &view.filters, &view.sorts);
+        if preview.is_empty() {
+            return div().into_any_element();
+        }
+        let truncated = if preview.chars().count() > 120 {
+            let t: String = preview.chars().take(117).collect();
+            format!("{t}…")
+        } else {
+            preview.clone()
+        };
+        div()
+            .h(px(20.))
+            .px_3()
+            .flex()
+            .items_center()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted)
+            .text_xs()
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_color(cx.theme().muted_foreground)
+            .truncate()
+            .child(truncated)
             .into_any_element()
     }
 
@@ -318,7 +406,7 @@ impl Workspace {
         &mut self,
         tab_id: sela_core::TabId,
         col_ix: usize,
-        sort: gpui_kit::component::table::ColumnSort,
+        shift: bool,
         cx: &mut Context<Self>,
     ) {
         let column_name = self.views.get(&tab_id).and_then(|view| {
@@ -333,17 +421,46 @@ impl Workspace {
         let Some(column_name) = column_name else {
             return;
         };
+        let mut status_note: Option<String> = None;
         if let Some(view) = self.view_mut(tab_id) {
-            view.sorts = match sort {
-                gpui_kit::component::table::ColumnSort::Default => Vec::new(),
-                gpui_kit::component::table::ColumnSort::Ascending => {
-                    vec![SortSpec::asc(column_name)]
+            if shift {
+                // Multi-sort: append / flip / remove this key only (max MAX_SORT_KEYS).
+                if let Some(pos) = view.sorts.iter().position(|s| s.column == column_name) {
+                    match view.sorts[pos].direction {
+                        SortDirection::Asc => {
+                            view.sorts[pos].direction = SortDirection::Desc;
+                        }
+                        SortDirection::Desc => {
+                            view.sorts.remove(pos);
+                        }
+                    }
+                } else if view.sorts.len() >= MAX_SORT_KEYS {
+                    status_note = Some("At most 3 sort columns".into());
+                } else {
+                    view.sorts.push(SortSpec::asc(column_name));
                 }
-                gpui_kit::component::table::ColumnSort::Descending => {
-                    vec![SortSpec::desc(column_name)]
+            } else {
+                // Plain click: cycle when sole key; otherwise replace list with ASC.
+                if view.sorts.len() == 1 && view.sorts[0].column == column_name {
+                    match view.sorts[0].direction {
+                        SortDirection::Asc => {
+                            view.sorts[0].direction = SortDirection::Desc;
+                        }
+                        SortDirection::Desc => {
+                            view.sorts.clear();
+                        }
+                    }
+                } else {
+                    view.sorts = vec![SortSpec::asc(column_name)];
                 }
-            };
+            }
             view.page_offset = 0;
+            if let Some(note) = status_note {
+                view.status = note;
+                self.persist_tabs(cx);
+                cx.notify();
+                return;
+            }
         }
         self.persist_tabs(cx);
         self.load_source_for(tab_id, cx);

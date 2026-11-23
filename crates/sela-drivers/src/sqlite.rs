@@ -984,7 +984,7 @@ mod tests {
             )
             .await
             .unwrap();
-        // Values with ', %, _, \, and unicode — must match as literals, not wildcards.
+        // Values with ', %, _, \, !, and unicode — must match as literals, not wildcards.
         session
             .execute(
                 "INSERT INTO sela_filter (id, name, note) VALUES
@@ -994,7 +994,8 @@ mod tests {
                  (4, 'back\\slash', 'esc'),
                  (5, 'O''Brien', 'quote'),
                  (6, 'ユニコード', 'unicode'),
-                 (7, 'drop; --', 'inject')",
+                 (7, 'drop; --', 'inject'),
+                 (8, 'wow!', 'bang')",
             )
             .await
             .unwrap();
@@ -1028,7 +1029,7 @@ mod tests {
             0,
             CancellationToken::new(),
             TablePreview {
-                filters: &[FilterCondition::new("name", FilterOp::Eq, "a_b")],
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "_")],
                 sorts: &[],
             },
         )
@@ -1038,6 +1039,47 @@ mod tests {
             panic!("rows");
         };
         assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("a_b"));
+
+        let bang = preview_table(
+            &session,
+            "main",
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "!")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = bang else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("wow!"));
+
+        let backslash = preview_table(
+            &session,
+            "main",
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, r"\")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = backslash else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text(r"back\slash"));
 
         let starts = preview_table(
             &session,
@@ -1085,7 +1127,7 @@ mod tests {
         let still = sela_core::exact_table_rows(&session, "main", "sela_filter", &[])
             .await
             .unwrap();
-        assert_eq!(still, 7);
+        assert_eq!(still, 8);
 
         let sorted =
             preview_table(
@@ -1120,6 +1162,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exact, 7);
+        assert_eq!(exact, 8);
     }
 }

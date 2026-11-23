@@ -54,10 +54,11 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 ### M1-3 details
 
 - Filter bar on table tabs only: column + operator + value, AND-combined; generated SQL with bound parameters; LIKE wildcards escaped; PG uses `ILIKE` for contains/starts/ends.
-- Header click cycles desc / asc / none via server-side `ORDER BY` on quoted identifiers.
-- Applying filter or sort re-queries from page 0 with a new request id (cancels in-flight work). Under a filter, row count is Unknown until Exact count runs `COUNT(*)` with the same WHERE.
+- Header click cycles asc → desc → none via server-side `ORDER BY` on quoted identifiers. Shift-click adds up to 3 keys (▲1 / ▼2 marks). SQL result tabs have no header sort.
+- Operators depend on column kind (`ColumnKind`); pattern ops (contains / starts / ends) only on text. Apply validates every row; invalid Apply refuses the whole set.
+- Applying filter or sort re-queries from page 0 with a new request id (cancels in-flight work). Under a filter, row count is Unknown until Count runs `COUNT(*)` with the same WHERE (status bar).
 - Filters/sorts persist on table tabs in `tabs.json` (serde defaults); restore never auto-runs beyond the normal table preview after reconnect.
-- Shortcut: Cmd/Ctrl+F (`secondary-f`) toggles the filter bar.
+- Shortcut: Cmd/Ctrl+F (`secondary-f`) toggles the filter bar. Secondary-enter in a filter field Applies; in the editor it Runs.
 - User docs: [filtering.md](../user/filtering.md).
 
 ### M1 backlog (follow-ups)

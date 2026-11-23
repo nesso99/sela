@@ -189,11 +189,11 @@ impl Workspace {
             if pending_pages {
                 this.fetch_pending_pages_for(id, cx);
             }
-            if let Some((col_ix, sort)) = pending_sort {
+            if let Some((col_ix, shift)) = pending_sort {
                 grid.update(cx, |state, _| {
                     state.delegate_mut().pending_sort = None;
                 });
-                this.apply_column_sort(id, col_ix, sort, cx);
+                this.apply_column_sort(id, col_ix, shift, cx);
             }
         });
         self._subscriptions.push(subscription);

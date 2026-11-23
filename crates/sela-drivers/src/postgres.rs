@@ -1209,7 +1209,8 @@ mod tests {
                  (4, E'back\\slash', 'esc'),
                  (5, 'O''Brien', 'quote'),
                  (6, 'ユニコード', 'unicode'),
-                 (7, 'drop; --', 'inject')"#,
+                 (7, 'drop; --', 'inject'),
+                 (8, 'wow!', 'bang')"#,
             )
             .await
             .unwrap();
@@ -1237,6 +1238,66 @@ mod tests {
         assert_eq!(rows.page.rows[0][1], Value::text("100%"));
         assert_eq!(rows.row_count_kind, sela_core::RowCountKind::Unknown);
 
+        let contains_under = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "_")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains_under else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("a_b"));
+
+        let contains_bang = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "!")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains_bang else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("wow!"));
+
+        let contains_bs = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, r"\")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains_bs else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text(r"back\slash"));
+
         let inject = preview_table(
             &session,
             &schema,
@@ -1263,7 +1324,7 @@ mod tests {
             sela_core::exact_table_rows(&session, &schema, "sela_filter", &[])
                 .await
                 .unwrap(),
-            7
+            8
         );
 
         let sorted =

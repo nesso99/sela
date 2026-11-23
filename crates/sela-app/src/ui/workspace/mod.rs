@@ -176,8 +176,15 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action({
                 let this = this.clone();
-                move |_: &RunQuery, _, cx| {
-                    this.update(cx, |workspace, cx| workspace.run_editor(cx));
+                move |_: &RunQuery, window, cx| {
+                    // Scope secondary-enter: filter fields Apply; otherwise Run in the editor.
+                    this.update(cx, |workspace, cx| {
+                        if workspace.filter_field_focused(window, cx) {
+                            workspace.apply_filters(cx);
+                        } else {
+                            workspace.run_editor(cx);
+                        }
+                    });
                 }
             })
             .on_action({
@@ -251,6 +258,9 @@ impl Render for Workspace {
                             .child(match table_pane {
                                 TablePane::Data => self.results_area().into_any_element(),
                                 TablePane::Structure => self.structure_area(cx).into_any_element(),
+                            })
+                            .when(matches!(table_pane, TablePane::Data), |column| {
+                                column.child(self.predicate_strip(cx))
                             })
                             .child(self.sql_editor(cx, connected))
                             .child(self.status_bar(cx))

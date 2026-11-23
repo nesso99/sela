@@ -196,12 +196,8 @@ pub async fn preview_table(
     };
     let (outcome, (columns, rows)) = tokio::join!(stream, collect);
     let outcome = outcome?;
-    let filtered = !opts.filters.is_empty()
-        && opts.filters.iter().any(|f| {
-            !f.column.trim().is_empty()
-                && (matches!(f.op, filter::FilterOp::IsNull | filter::FilterOp::IsNotNull)
-                    || !f.value.is_empty())
-        });
+    // Any applied predicate (including `col = ''`) invalidates planner estimates.
+    let filtered = opts.filters.iter().any(|f| !f.column.trim().is_empty());
     let (row_count_kind, total_rows) = if filtered {
         // Planner estimates ignore WHERE; show unknown until Exact count.
         (RowCountKind::Unknown, None)

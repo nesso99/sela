@@ -3,6 +3,7 @@
 //! This crate has no GPUI or sqlx dependency. Drivers live in `sela-drivers`;
 //! saved-connection persistence lives in `sela-config`.
 
+mod column_kind;
 mod connection;
 mod error;
 mod filter;
@@ -13,11 +14,13 @@ mod structure;
 mod tabs;
 mod types;
 
+pub use column_kind::{ColumnKind, MAX_SORT_KEYS};
 pub use connection::{SavedConnection, TlsMode, TlsSettings};
 pub use error::DbError;
 pub use filter::{
     build_table_count, build_table_page, build_table_select, display_bound_sql, escape_like,
-    parse_filter_value, BoundSql, FilterCondition, FilterOp, SortDirection, SortSpec,
+    format_predicate_preview, parse_filter_value, validate_filter_condition, BoundSql,
+    FilterCondition, FilterOp, SortDirection, SortSpec, LIKE_ESCAPE,
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
 pub use session::{

@@ -221,9 +221,10 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(err) => {
+                    // Count failure is not a data-query failure — keep the grid
+                    // and previous kind; do not set view.error (no banner).
                     if let Some(view) = this.view_mut(tab_id) {
-                        view.error = Some(err.to_string());
-                        view.status = "Count failed".into();
+                        view.status = format!("Count failed · {err}");
                     }
                     cx.notify();
                 }
@@ -254,6 +255,9 @@ impl Workspace {
         view.truncated = false;
         view.can_load_more = false;
         view.grid.update(cx, |state, _| {
+            // gpui-component only delivers header clicks when TableState.sortable
+            // is true; that path calls perform_sort and does not reorder rows.
+            state.sortable = is_table;
             let d = state.delegate_mut();
             d.sortable = is_table;
             d.sorts = sorts.clone();
@@ -732,22 +736,22 @@ impl Workspace {
             .query_started
             .map(|t| t.elapsed().as_millis())
             .unwrap_or(0);
-        let rows = view.total_rows.unwrap_or(view.page_len as u64);
+        let page_len = view.page_len;
+        let rows = view.total_rows.unwrap_or(page_len as u64);
         let count = match view.row_count_kind {
             RowCountKind::Estimated => format!("~{rows} rows"),
             RowCountKind::AtLeast if view.truncated => format!("{rows}+ rows"),
             RowCountKind::Unknown => {
-                if view.paged {
-                    format!("{} rows (page)", view.page_len)
-                } else {
-                    format!("{rows} rows")
-                }
+                format!("unknown rows · {page_len} on this page")
             }
             _ => format!("{rows} rows"),
         };
         view.status = format!("{count} · {ms} ms");
         if let Some(note) = &view.note {
-            view.status = format!("{} · {note}", view.status);
+            // Avoid duplicating the unknown-rows sentence when a note is set.
+            if !matches!(view.row_count_kind, RowCountKind::Unknown) {
+                view.status = format!("{} · {note}", view.status);
+            }
         }
     }
 
