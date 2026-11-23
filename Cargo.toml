@@ -43,3 +43,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 sela-core = { path = "crates/sela-core" }
 sela-drivers = { path = "crates/sela-drivers" }
 sela-config = { path = "crates/sela-config" }
+
+# sqlx 0.8.6 rustls VerifyCa ignores only NotValidForName; rustls ≥ 0.23.24
+# emits NotValidForNameContext. Patch until sqlx ≥ 0.9 (see vendor/README.md).
+[patch.crates-io]
+sqlx-core = { path = "vendor/sqlx-core" }

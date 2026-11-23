@@ -70,7 +70,7 @@ CERT_DIR=$(mktemp -d)
 # then start Postgres with ssl_cert_file / ssl_key_file / hba_file pointing at $CERT_DIR
 ```
 
-Never commit key or cert material. CI job `db-tls-postgres` generates certs in the job and runs the same suite. MySQL live TLS is a follow-up.
+Never commit key or cert material. CI job `db-tls-postgres` generates certs in the job and runs the same suite (`require`, `verify-ca` with hostname mismatch OK, `verify-full` mismatch → `DbError::Tls`, hostssl-only `disable`). MySQL live TLS is a follow-up.
 
 ## cargo-deny
 

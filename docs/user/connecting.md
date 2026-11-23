@@ -27,7 +27,7 @@ For Postgres and MySQL, set **SSL mode** and optional certificate paths:
 | `disable` | Plain TCP only (default for new connections and for docker-compose) |
 | `prefer` | Try TLS first; fall back to plain if the server refuses |
 | `require` | Require TLS; do not verify the server certificate |
-| `verify-ca` | Require TLS and verify the server certificate against a CA |
+| `verify-ca` | Require TLS and verify the server certificate against a CA (hostname not checked) |
 | `verify-full` | Like verify-ca, and check the server hostname |
 
 Optional paths (plain text in JSON):

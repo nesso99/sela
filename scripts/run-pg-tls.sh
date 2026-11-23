@@ -9,13 +9,16 @@ PORT="${1:-5433}"
 CERT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sela-pg-tls.XXXXXX")"
 "$ROOT/scripts/gen-pg-tls-certs.sh" "$CERT_DIR" >/dev/null
 
-# Official image runs as uid 999 (postgres).
+# Official image runs as uid 999 (postgres). mktemp dirs are mode 0700, so
+# open the directory for traversal; chmod the key after chown needs sudo.
+chmod 755 "$CERT_DIR"
 if command -v sudo >/dev/null 2>&1; then
   sudo chown 999:999 "$CERT_DIR/server.key" "$CERT_DIR/server.crt" "$CERT_DIR/ca.crt" "$CERT_DIR/pg_hba.conf"
+  sudo chmod 600 "$CERT_DIR/server.key"
 else
   chown 999:999 "$CERT_DIR/server.key" "$CERT_DIR/server.crt" "$CERT_DIR/ca.crt" "$CERT_DIR/pg_hba.conf" 2>/dev/null || true
+  chmod 600 "$CERT_DIR/server.key" 2>/dev/null || true
 fi
-chmod 600 "$CERT_DIR/server.key"
 
 docker rm -f sela-pg-tls >/dev/null 2>&1 || true
 docker run -d --name sela-pg-tls \

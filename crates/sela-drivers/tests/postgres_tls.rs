@@ -72,13 +72,16 @@ async fn postgres_tls_verify_ca_succeeds() {
         eprintln!("skip postgres TLS: set SELA_PG_TLS_URL and SELA_PG_TLS_CA");
         return;
     };
+    // Cert SAN is localhost only. verify-ca must accept a hostname mismatch
+    // when the CA chain is trusted (do not rewrite the host to paper this over).
+    connection.host = "127.0.0.1".into();
     connection.tls = TlsSettings {
         mode: TlsMode::VerifyCa,
         ca_path: ca,
         ..TlsSettings::default()
     };
     let session = connect(&connection, &password).await.unwrap_or_else(|err| {
-        panic!("verify-ca with test CA should connect: {err:?}");
+        panic!("verify-ca with test CA should connect despite hostname mismatch: {err:?}");
     });
     let _ = session.list_schemas().await.expect("list_schemas");
 }

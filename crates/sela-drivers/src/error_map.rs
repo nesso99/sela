@@ -23,6 +23,15 @@ fn map_sqlx_error(err: &SqlxError) -> DbError {
             sqlstate: None,
             vendor_code: None,
         },
+        // Handshake certificate/rustls failures often arrive as Io ("error
+        // communicating with database: invalid peer certificate…"), not Tls.
+        SqlxError::Io(_) | SqlxError::Protocol(_) if is_tls_failure_message(&message) => {
+            DbError::Tls {
+                message,
+                sqlstate: None,
+                vendor_code: None,
+            }
+        }
         SqlxError::Io(_) | SqlxError::Protocol(_) | SqlxError::PoolClosed => DbError::Connection {
             message,
             sqlstate: None,
@@ -58,6 +67,33 @@ fn map_sqlx_error(err: &SqlxError) -> DbError {
             vendor_code: None,
         },
     }
+}
+
+/// True when a sqlx Io/Protocol message is really a TLS/certificate failure.
+///
+/// sqlx's rustls handshake maps rustls errors through `io::Error`, so
+/// `Error::Tls` is often never constructed for peer-cert problems.
+fn is_tls_failure_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "invalid peer certificate",
+        "certificate not valid",
+        "notvalidforname",
+        "unknownissuer",
+        "unknown issuer",
+        "certificate verify",
+        "certificate has expired",
+        "certificate expired",
+        "certificatenotvalidyet",
+        "not valid yet",
+        "invalid certificate",
+        "invalid dns name",
+        "tls handshake",
+        "handshake failure",
+        "webpki(",
+        "rustls(",
+    ];
+    NEEDLES.iter().any(|n| lower.contains(n))
 }
 
 fn classify_database(db: &dyn sqlx::error::DatabaseError) -> DbError {
@@ -222,6 +258,36 @@ mod tests {
             "refused",
         )));
         assert!(matches!(err, DbError::Connection { .. }));
+    }
+
+    #[test]
+    fn io_invalid_peer_certificate_is_tls() {
+        let err = map_sqlx_error(&SqlxError::Io(std::io::Error::other(
+            "invalid peer certificate: certificate not valid for name \"127.0.0.1\"; \
+             certificate is only valid for DnsName(\"localhost\")",
+        )));
+        match &err {
+            DbError::Tls { message, .. } => {
+                assert!(message.contains("invalid peer certificate"));
+            }
+            other => panic!("expected Tls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn io_unknown_issuer_is_tls() {
+        let err = map_sqlx_error(&SqlxError::Io(std::io::Error::other(
+            "invalid peer certificate: UnknownIssuer",
+        )));
+        assert!(matches!(err, DbError::Tls { .. }));
+    }
+
+    #[test]
+    fn protocol_not_valid_for_name_is_tls() {
+        let err = map_sqlx_error(&SqlxError::Protocol(
+            "NotValidForNameContext: certificate is only valid for DnsName(\"localhost\")".into(),
+        ));
+        assert!(matches!(err, DbError::Tls { .. }));
     }
 
     #[test]

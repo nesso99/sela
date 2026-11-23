@@ -157,7 +157,7 @@ pub enum DbError {
 ```
 
 - Drivers map vendor / sqlx failures and preserve SQLSTATE / MySQL errno when available.
-- `sqlx::Error::Tls` (handshake / cert verification) maps to [`DbError::Tls`], distinct from [`Auth`].
+- `sqlx::Error::Tls` and Io/Protocol messages that are certificate/rustls failures (`invalid peer certificate`, `UnknownIssuer`, `NotValidForName`, …) map to [`DbError::Tls`], distinct from [`Auth`] / [`Connection`].
 - UI shows `Display` text; never log passwords or connection strings that embed passwords.
 - Errors must not silently become NULL, empty success, or a wrong success path (see [CONTRIBUTING.md](../../CONTRIBUTING.md) checklist).
 
@@ -209,7 +209,7 @@ TLS fields on each connection (Postgres / MySQL only; SQLite ignores them in the
 | `tls.ca_path` | Optional CA PEM path (required for verify-ca / verify-full) |
 | `tls.client_cert_path` / `tls.client_key_path` | Optional; both set or both empty. Paths only; keys must be unencrypted PEM today |
 
-Mapped to sqlx: Postgres `PgSslMode::{Disable,Prefer,Require,VerifyCa,VerifyFull}`; MySQL `MySqlSslMode::{Disabled,Preferred,Required,VerifyCa,VerifyIdentity}`.
+Mapped to sqlx: Postgres `PgSslMode::{Disable,Prefer,Require,VerifyCa,VerifyFull}`; MySQL `MySqlSslMode::{Disabled,Preferred,Required,VerifyCa,VerifyIdentity}`. `verify-ca` verifies the CA chain and skips hostname checks (sqlx 0.8.6 rustls needs a one-line `NotValidForNameContext` backport — see `vendor/README.md`).
 
 Current on-disk shape (fields beyond TLS land in later milestones):
 
@@ -234,7 +234,7 @@ Current on-disk shape (fields beyond TLS land in later milestones):
 }
 ```
 
-Postgres TLS is covered in CI (`db-tls-postgres`): throwaway certs generated in the job; `require` and `verify-ca` succeed; `verify-full` against `127.0.0.1` with a `localhost`-only SAN fails as `DbError::Tls`; `hostssl`-only `disable` fails as a non-Tls connection error. MySQL live TLS and passphrase-protected client keys remain follow-ups.
+Postgres TLS is covered in CI (`db-tls-postgres`): throwaway certs generated in the job; `require` succeeds; `verify-ca` to `127.0.0.1` with a `localhost`-only SAN succeeds (hostname skipped); `verify-full` against `127.0.0.1` fails as `DbError::Tls`; `hostssl`-only `disable` fails as a non-Tls connection error. MySQL live TLS and passphrase-protected client keys remain follow-ups.
 
 History / saved queries: `history.sqlite` with FTS5 (M1-5), default cap ~10 000 entries; optional disable for production connections.
 
