@@ -6,15 +6,15 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: birch
-      POSTGRES_PASSWORD: birch
+      POSTGRES_USER: sela
+      POSTGRES_PASSWORD: sela
       POSTGRES_DB: sample
     ports:
       - "5432:5432"
     volumes:
       - ./scripts/seed-postgres.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U birch -d sample"]
+      test: ["CMD-SHELL", "pg_isready -U sela -d sample"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -22,9 +22,9 @@ services:
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: birch
-      MYSQL_USER: birch
-      MYSQL_PASSWORD: birch
+      MYSQL_ROOT_PASSWORD: sela
+      MYSQL_USER: sela
+      MYSQL_PASSWORD: sela
       MYSQL_DATABASE: sample
     ports:
       - "3306:3306"
@@ -32,7 +32,7 @@ services:
       - ./scripts/seed-mysql.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
     command: ["--default-authentication-plugin=caching_sha2_password"]
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ubirch", "-pbirch"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-usela", "-psela"]
       interval: 5s
       timeout: 5s
       retries: 30

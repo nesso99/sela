@@ -1,5 +1,5 @@
 -- Seed for the docker-compose Postgres service.
--- User `birch` is the superuser created by the image, and this script runs as that user.
+-- User `sela` is the superuser created by the image, and this script runs as that user.
 
 CREATE TABLE authors (
     id integer PRIMARY KEY,

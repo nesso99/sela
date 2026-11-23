@@ -38,21 +38,7 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn default_path() -> PathBuf {
-        connections_file(&config_dir())
-    }
-
-    fn legacy_path() -> PathBuf {
-        connections_file(&legacy_config_dir())
-    }
-
-    /// Open the Sela connections file, copying a Birch file forward when needed.
-    ///
-    /// The original Birch file is left in place. A copy error is returned beside
-    /// the store so the window can still open.
-    pub fn open_default() -> (Self, Option<ConfigError>) {
-        let path = Self::default_path();
-        let error = migrate_config_file(&path, &Self::legacy_path()).err();
-        (Self::with_path(path), error)
+        config_dir().join("connections.json")
     }
 
     pub fn with_path(path: impl Into<PathBuf>) -> Self {
@@ -117,152 +103,28 @@ fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-const CONNECTIONS_FILE: &str = "connections.json";
-
-#[derive(Clone, Copy)]
-enum AppName {
-    Sela,
-    Birch,
-}
-
-struct DirEnv<'a> {
-    override_dir: Option<&'a Path>,
-    home: Option<&'a Path>,
-    xdg: Option<&'a Path>,
-    appdata: Option<&'a Path>,
-}
-
-fn resolve_dir(name: AppName, env: DirEnv<'_>) -> PathBuf {
-    if let Some(dir) = env.override_dir {
-        return dir.to_path_buf();
+pub fn config_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("SELA_CONFIG_DIR") {
+        return PathBuf::from(dir);
     }
-    if let Some(home) = env.home {
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
         #[cfg(target_os = "macos")]
         {
-            // `xdg` is only consulted on the non-macOS branch. Mention it so the
-            // field stays live when this crate is built for macOS.
-            let _xdg = env.xdg;
-            let titled = match name {
-                AppName::Sela => "Sela",
-                AppName::Birch => "Birch",
-            };
-            return home.join("Library/Application Support").join(titled);
+            return home.join("Library/Application Support/Sela");
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let unix_name = match name {
-                AppName::Sela => "sela",
-                AppName::Birch => "birch",
-            };
-            if let Some(xdg) = env.xdg {
-                return xdg.join(unix_name);
+            if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+                return PathBuf::from(xdg).join("sela");
             }
-            return home.join(".config").join(unix_name);
+            return home.join(".config").join("sela");
         }
     }
-    if let Some(appdata) = env.appdata {
-        let titled = match name {
-            AppName::Sela => "Sela",
-            AppName::Birch => "Birch",
-        };
-        return appdata.join(titled);
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        return PathBuf::from(appdata).join("Sela");
     }
-    PathBuf::from(match name {
-        AppName::Sela => ".sela",
-        AppName::Birch => ".birch",
-    })
-}
-
-fn dir_env<'a>(
-    override_dir: &'a Option<PathBuf>,
-    home: &'a Option<PathBuf>,
-    xdg: &'a Option<PathBuf>,
-    appdata: &'a Option<PathBuf>,
-) -> DirEnv<'a> {
-    DirEnv {
-        override_dir: override_dir.as_deref(),
-        home: home.as_deref(),
-        xdg: xdg.as_deref(),
-        appdata: appdata.as_deref(),
-    }
-}
-
-pub fn config_dir() -> PathBuf {
-    let override_dir = std::env::var_os("SELA_CONFIG_DIR").map(PathBuf::from);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-    resolve_dir(AppName::Sela, dir_env(&override_dir, &home, &xdg, &appdata))
-}
-
-fn legacy_config_dir() -> PathBuf {
-    let override_dir = std::env::var_os("BIRCH_CONFIG_DIR").map(PathBuf::from);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-    resolve_dir(
-        AppName::Birch,
-        dir_env(&override_dir, &home, &xdg, &appdata),
-    )
-}
-
-fn connections_file(dir: &Path) -> PathBuf {
-    dir.join(CONNECTIONS_FILE)
-}
-
-/// Copy Birch's connections file to `new_path` when Sela's file is absent.
-///
-/// The Birch file is not deleted. Returns whether a copy was made.
-fn migrate_config_file(new_path: &Path, old_path: &Path) -> Result<bool, ConfigError> {
-    if new_path == old_path || new_path.exists() || !old_path.exists() {
-        return Ok(false);
-    }
-    if let Some(parent) = new_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-    }
-    let tmp = new_path.with_extension("json.migrate");
-    fs::copy(old_path, &tmp).map_err(|source| ConfigError::Write {
-        path: tmp.clone(),
-        source,
-    })?;
-    #[cfg(unix)]
-    copy_permissions(old_path, &tmp)?;
-    if let Err(source) = fs::rename(&tmp, new_path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(ConfigError::Write {
-            path: new_path.to_path_buf(),
-            source,
-        });
-    }
-    Ok(true)
-}
-
-#[cfg(unix)]
-fn copy_permissions(from: &Path, to: &Path) -> Result<(), ConfigError> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = fs::metadata(from)
-        .map_err(|source| ConfigError::Read {
-            path: from.to_path_buf(),
-            source,
-        })?
-        .permissions()
-        .mode();
-    let mut perms = fs::metadata(to)
-        .map_err(|source| ConfigError::Read {
-            path: to.to_path_buf(),
-            source,
-        })?
-        .permissions();
-    perms.set_mode(mode & 0o777);
-    fs::set_permissions(to, perms).map_err(|source| ConfigError::Write {
-        path: to.to_path_buf(),
-        source,
-    })
+    PathBuf::from(".sela")
 }
 
 #[cfg(test)]
@@ -282,7 +144,7 @@ mod tests {
                 "engine": "postgres",
                 "host": "127.0.0.1",
                 "port": 5432,
-                "username": "birch",
+                "username": "sela",
                 "database": "sample",
                 "password": "should-not-survive",
                 "ssl": false
@@ -341,167 +203,10 @@ mod tests {
 
         let mut pg = SavedConnection::new(Engine::Postgres);
         pg.name = "Warehouse".into();
-        pg.username = "birch".into();
+        pg.username = "sela".into();
         pg.database = "sample".into();
         assert!(pg.validate().is_ok());
         pg.port = 0;
         assert!(pg.validate().is_err());
-    }
-
-    fn sample_env<'a>(
-        override_dir: Option<&'a Path>,
-        home: Option<&'a Path>,
-        xdg: Option<&'a Path>,
-        appdata: Option<&'a Path>,
-    ) -> DirEnv<'a> {
-        DirEnv {
-            override_dir,
-            home,
-            xdg,
-            appdata,
-        }
-    }
-
-    #[test]
-    fn directories_follow_the_platform_and_keep_the_birch_names_for_migration() {
-        let custom = PathBuf::from("/tmp/custom");
-        let home = PathBuf::from("/home/ada");
-        let xdg = PathBuf::from("/xdg");
-        let appdata = PathBuf::from("/AppData/Roaming");
-
-        assert_eq!(
-            resolve_dir(
-                AppName::Sela,
-                sample_env(Some(&custom), Some(&home), Some(&xdg), Some(&appdata)),
-            ),
-            custom
-        );
-        assert_eq!(
-            resolve_dir(AppName::Sela, sample_env(None, None, None, None)),
-            PathBuf::from(".sela")
-        );
-        assert_eq!(
-            resolve_dir(AppName::Birch, sample_env(None, None, None, None)),
-            PathBuf::from(".birch")
-        );
-        assert_eq!(
-            resolve_dir(AppName::Sela, sample_env(None, None, Some(&xdg), None)),
-            PathBuf::from(".sela")
-        );
-
-        let sela_appdata = resolve_dir(AppName::Sela, sample_env(None, None, None, Some(&appdata)));
-        let birch_appdata =
-            resolve_dir(AppName::Birch, sample_env(None, None, None, Some(&appdata)));
-        assert_eq!(sela_appdata, appdata.join("Sela"));
-        assert_eq!(birch_appdata, appdata.join("Birch"));
-
-        let sela_home = resolve_dir(
-            AppName::Sela,
-            sample_env(None, Some(&home), Some(&xdg), Some(&appdata)),
-        );
-        let birch_home = resolve_dir(
-            AppName::Birch,
-            sample_env(None, Some(&home), Some(&xdg), Some(&appdata)),
-        );
-        #[cfg(target_os = "macos")]
-        {
-            assert_eq!(sela_home, home.join("Library/Application Support/Sela"));
-            assert_eq!(birch_home, home.join("Library/Application Support/Birch"));
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            assert_eq!(sela_home, xdg.join("sela"));
-            assert_eq!(birch_home, xdg.join("birch"));
-        }
-
-        let sela_default = resolve_dir(AppName::Sela, sample_env(None, Some(&home), None, None));
-        let birch_default = resolve_dir(AppName::Birch, sample_env(None, Some(&home), None, None));
-        #[cfg(target_os = "macos")]
-        {
-            assert_eq!(sela_default, home.join("Library/Application Support/Sela"));
-            assert_eq!(
-                birch_default,
-                home.join("Library/Application Support/Birch")
-            );
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            assert_eq!(sela_default, home.join(".config/sela"));
-            assert_eq!(birch_default, home.join(".config/birch"));
-        }
-        assert_eq!(
-            connections_file(&sela_default).file_name().unwrap(),
-            "connections.json"
-        );
-        assert_eq!(
-            connections_file(&birch_default).file_name().unwrap(),
-            "connections.json"
-        );
-    }
-
-    #[test]
-    fn copies_birch_config_without_deleting_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = dir.path().join("birch").join("connections.json");
-        let new = dir.path().join("sela").join("connections.json");
-        fs::create_dir_all(old.parent().unwrap()).unwrap();
-        let body = b"{\"connections\":[]}\n";
-        fs::write(&old, body).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&old).unwrap().permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&old, perms).unwrap();
-        }
-
-        assert!(migrate_config_file(&new, &old).unwrap());
-        assert_eq!(fs::read(&old).unwrap(), body);
-        assert_eq!(fs::read(&new).unwrap(), body);
-        let migrated_dir: Vec<_> = fs::read_dir(new.parent().unwrap())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(
-            migrated_dir,
-            vec![std::ffi::OsString::from("connections.json")]
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&new).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-        assert!(!migrate_config_file(&new, &old).unwrap());
-    }
-
-    #[test]
-    fn does_not_overwrite_an_existing_sela_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = dir.path().join("old.json");
-        let new = dir.path().join("new.json");
-        fs::write(&old, b"old").unwrap();
-        fs::write(&new, b"new").unwrap();
-        assert!(!migrate_config_file(&new, &old).unwrap());
-        assert_eq!(fs::read(&old).unwrap(), b"old");
-        assert_eq!(fs::read(&new).unwrap(), b"new");
-    }
-
-    #[test]
-    fn missing_birch_config_is_left_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let old = dir.path().join("missing.json");
-        let new = dir.path().join("sela").join("connections.json");
-        assert!(!migrate_config_file(&new, &old).unwrap());
-        assert!(!new.exists());
-    }
-
-    #[test]
-    fn same_path_is_not_copied_onto_itself() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("connections.json");
-        fs::write(&path, b"same\n").unwrap();
-        assert!(!migrate_config_file(&path, &path).unwrap());
-        assert_eq!(fs::read(&path).unwrap(), b"same\n");
     }
 }

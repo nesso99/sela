@@ -69,12 +69,10 @@ enum NodeId {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (store, migration_error) = ConfigStore::open_default();
-        let (connections, error) = match (store.load(), migration_error) {
-            (Ok(connections), None) => (connections, None),
-            (Ok(connections), Some(err)) => (connections, Some(err.to_string())),
-            (Err(err), None) => (Vec::new(), Some(err.to_string())),
-            (Err(err), Some(migration)) => (Vec::new(), Some(format!("{migration} ({err})"))),
+        let store = ConfigStore::with_path(ConfigStore::default_path());
+        let (connections, error) = match store.load() {
+            Ok(connections) => (connections, None),
+            Err(err) => (Vec::new(), Some(err.to_string())),
         };
         let tree = cx.new(|cx| TreeState::new(cx));
         let grid = cx.new(|cx| {

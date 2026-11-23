@@ -81,7 +81,7 @@ impl ConnectionForm {
             }),
             username: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("birch")
+                    .placeholder("sela")
                     .default_value(seed.username)
             }),
             database: cx.new(|cx| {

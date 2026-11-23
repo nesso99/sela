@@ -75,8 +75,6 @@ The connections file is:
 
 Set `SELA_CONFIG_DIR` to point the file somewhere else. The file mode is `0600` on Unix.
 
-If that Sela file is missing and a Birch `connections.json` is still present, Sela copies it on startup and leaves the original in place. The Birch paths are `$XDG_CONFIG_HOME/birch/connections.json` or `~/.config/birch/connections.json` on Linux, `~/Library/Application Support/Birch/connections.json` on macOS, and `%APPDATA%\Birch\connections.json` on Windows. `BIRCH_CONFIG_DIR`, when set, is the Birch directory that gets copied. A password stored under the Birch keychain service `app.birch.database` is copied to `app.sela.database` the first time it is read. The Birch keychain entry is left in place.
-
 ### Sample SQLite library
 
 Click **Sample library** in the sidebar. Sela creates `sample.sqlite` next to the connections file and opens it. The database has `authors`, `books`, `bookmarks`, and a `books_in_print` view.
@@ -92,7 +90,7 @@ Then add a SQLite connection whose file path is `examples/library.sqlite`.
 
 ### PostgreSQL and MySQL
 
-`docker-compose.yml` starts Postgres 16 and MySQL 8.4 with the same library data. Postgres also creates an `archive` schema. MySQL also creates an `archive` database and grants it to `birch`.
+`docker-compose.yml` starts Postgres 16 and MySQL 8.4 with the same library data. Postgres also creates an `archive` schema. MySQL also creates an `archive` database and grants it to `sela`.
 
 ```bash
 docker compose up -d
@@ -100,8 +98,8 @@ docker compose up -d
 
 | Engine | Host | Port | User | Password | Database |
 | --- | --- | --- | --- | --- | --- |
-| PostgreSQL | `127.0.0.1` | `5432` | `birch` | `birch` | `sample` |
-| MySQL | `127.0.0.1` | `3306` | `birch` | `birch` | `sample` |
+| PostgreSQL | `127.0.0.1` | `5432` | `sela` | `sela` | `sample` |
+| MySQL | `127.0.0.1` | `3306` | `sela` | `sela` | `sample` |
 
 Leave **Require SSL** off for these containers. They do not serve TLS.
 
@@ -118,8 +116,8 @@ SQLite tests use a temporary file and do not need a server. They cover the catal
 PostgreSQL and MySQL tests run only when their URL is set. Otherwise they print a skip line and pass.
 
 ```bash
-export SELA_POSTGRES_URL='postgres://birch:birch@127.0.0.1:5432/sample?sslmode=disable'
-export SELA_MYSQL_URL='mysql://birch:birch@127.0.0.1:3306/sample?ssl-mode=disabled'
+export SELA_POSTGRES_URL='postgres://sela:sela@127.0.0.1:5432/sample?sslmode=disable'
+export SELA_MYSQL_URL='mysql://sela:sela@127.0.0.1:3306/sample?ssl-mode=disabled'
 cargo test
 ```
 
