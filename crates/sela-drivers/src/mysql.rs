@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
+use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::MySqlPool;
 
 use tokio_util::sync::CancellationToken;
@@ -26,14 +26,10 @@ impl MysqlSession {
             .username(connection.username.trim())
             .password(password)
             .database(connection.database.trim())
-            .ssl_mode(if connection.ssl {
-                MySqlSslMode::Required
-            } else {
-                MySqlSslMode::Disabled
-            })
             // TIMESTAMP has no offset on the wire; sqlx's DateTime<Utc> decode assumes the
             // session time_zone is UTC. Pin +00:00 so TIMESTAMP -> TimestampTz stays consistent.
             .timezone(Some("+00:00".into()));
+        let options = crate::tls::apply_mysql_tls(options, &connection.tls)?;
         let pool = MySqlPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))

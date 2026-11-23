@@ -97,7 +97,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | SQL editor: highlight, autocomplete, statement-at-cursor, multi-statement. Format (`sqlformat`) is backlog, not M1-4 | v1 | Highlight and multi-statement: M1-4. Autocomplete: M3-2. Format: backlog |
 | Query history with search, saved queries | v1 | Planned (M1-5) |
 | Selection + copy TSV/CSV/JSON/INSERT; themes | v1 | Planned (M1-7) |
-| TLS modes + CA cert; config schema_version 2 | v1 | Planned (M1-8) |
+| TLS modes + CA cert; config schema_version 2 | v1 | Done (M1-8) |
 | Postgres text-cast fallback | v1 | Planned (M1-9, own PR) |
 | SSH tunnel (password, key, agent, `~/.ssh/config`), SSL certs, connection groups | v1 | Planned (M3) |
 | Export CSV/JSON/SQL INSERT, import CSV | v1 | Planned (M3) |
@@ -179,7 +179,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 
 ## Milestones M0–M4
 
-Milestone tables, M1 details, and post-v1 ideas live in **[roadmap.md](./roadmap.md)**. M0 is done; M1-1 (tabs), M1-2a/b, and M1-6 are done on `main`.
+Milestone tables, M1 details, and post-v1 ideas live in **[roadmap.md](./roadmap.md)**. M0 is done; M1-1 (tabs), M1-2a/b, M1-6, and M1-8 (TLS + config v2, PR #15) are done or in review on `main`.
 
 ---
 

@@ -1,13 +1,12 @@
 //! Create and edit a saved connection. The password never enters the JSON file.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, Context, Entity, EventEmitter, IntoElement, Render, Window};
 
-use sela_core::{Engine, SavedConnection};
+use sela_core::{Engine, SavedConnection, TlsMode, TlsSettings};
 
 #[derive(Clone)]
 pub struct ConnectionDraft {
@@ -16,14 +15,14 @@ pub struct ConnectionDraft {
 }
 
 pub enum FormEvent {
-    Submit(ConnectionDraft),
+    Submit(Box<ConnectionDraft>),
     Cancel,
 }
 
 pub struct ConnectionForm {
     existing_id: Option<String>,
     engine: Engine,
-    ssl: bool,
+    tls_mode: TlsMode,
     warning: Option<String>,
     error: Option<String>,
     name: Entity<InputState>,
@@ -33,6 +32,9 @@ pub struct ConnectionForm {
     database: Entity<InputState>,
     file_path: Entity<InputState>,
     password: Entity<InputState>,
+    ca_path: Entity<InputState>,
+    client_cert_path: Entity<InputState>,
+    client_key_path: Entity<InputState>,
 }
 
 impl EventEmitter<FormEvent> for ConnectionForm {}
@@ -60,7 +62,7 @@ impl ConnectionForm {
         Self {
             existing_id: existing.map(|item| item.id),
             engine,
-            ssl: seed.ssl,
+            tls_mode: seed.tls.mode,
             warning,
             error: None,
             name: cx.new(|cx| {
@@ -98,6 +100,21 @@ impl ConnectionForm {
                     .placeholder("Password")
                     .default_value(password)
             }),
+            ca_path: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("/path/to/ca.pem")
+                    .default_value(seed.tls.ca_path)
+            }),
+            client_cert_path: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("/path/to/client.crt")
+                    .default_value(seed.tls.client_cert_path)
+            }),
+            client_key_path: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("/path/to/client.key (PEM, unencrypted)")
+                    .default_value(seed.tls.client_key_path)
+            }),
         }
     }
 
@@ -119,6 +136,17 @@ impl ConnectionForm {
                 state.set_value(next, window, cx);
             });
         }
+        if engine == Engine::Sqlite {
+            self.tls_mode = TlsMode::Disable;
+        }
+        cx.notify();
+    }
+
+    fn set_tls_mode(&mut self, mode: TlsMode, cx: &mut Context<Self>) {
+        if self.tls_mode == mode {
+            return;
+        }
+        self.tls_mode = mode;
         cx.notify();
     }
 
@@ -129,7 +157,6 @@ impl ConnectionForm {
         }
         connection.name = Self::value(&self.name, cx).trim().to_string();
         connection.engine = self.engine;
-        connection.ssl = self.ssl;
         connection.host = Self::value(&self.host, cx).trim().to_string();
         connection.username = Self::value(&self.username, cx).trim().to_string();
         connection.database = Self::value(&self.database, cx).trim().to_string();
@@ -140,7 +167,7 @@ impl ConnectionForm {
             connection.host.clear();
             connection.username.clear();
             connection.database.clear();
-            connection.ssl = false;
+            connection.tls = TlsSettings::default();
         } else {
             match port_text.parse::<u16>() {
                 Ok(0) | Err(_) => {
@@ -150,6 +177,12 @@ impl ConnectionForm {
                 }
                 Ok(port) => connection.port = port,
             }
+            connection.tls = TlsSettings {
+                mode: self.tls_mode,
+                ca_path: Self::value(&self.ca_path, cx).trim().to_string(),
+                client_cert_path: Self::value(&self.client_cert_path, cx).trim().to_string(),
+                client_key_path: Self::value(&self.client_key_path, cx).trim().to_string(),
+            };
         }
         if let Err(message) = connection.validate() {
             self.error = Some(message);
@@ -157,10 +190,10 @@ impl ConnectionForm {
             return;
         }
         let password = Self::value(&self.password, cx);
-        cx.emit(FormEvent::Submit(ConnectionDraft {
+        cx.emit(FormEvent::Submit(Box::new(ConnectionDraft {
             connection,
             password,
-        }));
+        })));
     }
 }
 
@@ -201,21 +234,19 @@ impl Render for ConnectionForm {
                     .child(Input::new(&self.username))
                     .child(label("Database", cx))
                     .child(Input::new(&self.database))
-                    .child(
-                        Checkbox::new("ssl")
-                            .checked(self.ssl)
-                            .label("Require SSL")
-                            .on_change({
-                                let this = this.clone();
-                                move |checked, _window, cx| {
-                                    let checked = *checked;
-                                    this.update(cx, |form, cx| {
-                                        form.ssl = checked;
-                                        cx.notify();
-                                    });
-                                }
-                            }),
-                    )
+                    .child(label("SSL mode", cx))
+                    .child(h_flex().gap_1().children(
+                        TlsMode::all()
+                            .iter()
+                            .copied()
+                            .map(|mode| tls_mode_button(this.clone(), mode, self.tls_mode)),
+                    ))
+                    .child(label("CA certificate path", cx))
+                    .child(Input::new(&self.ca_path))
+                    .child(label("Client certificate path", cx))
+                    .child(Input::new(&self.client_cert_path))
+                    .child(label("Client key path", cx))
+                    .child(Input::new(&self.client_key_path))
             })
             .when(!network, |form| {
                 form.child(label("SQLite file", cx))
@@ -233,7 +264,7 @@ impl Render for ConnectionForm {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(
-                        "Passwords are stored in the OS keychain, not in the connections file. An empty password is kept only for this session.",
+                        "Passwords are stored in the OS keychain, not in the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only.",
                     ),
             )
             .when_some(self.warning.clone(), |form, warning| {
@@ -290,5 +321,28 @@ fn engine_button(
         .when(!selected, |button| button.ghost())
         .on_click(move |_, window, cx| {
             form.update(cx, |form, cx| form.set_engine(engine, window, cx));
+        })
+}
+
+fn tls_mode_button(
+    form: Entity<ConnectionForm>,
+    mode: TlsMode,
+    current: TlsMode,
+) -> impl IntoElement {
+    let selected = mode == current;
+    let id = match mode {
+        TlsMode::Disable => "tls-disable",
+        TlsMode::Prefer => "tls-prefer",
+        TlsMode::Require => "tls-require",
+        TlsMode::VerifyCa => "tls-verify-ca",
+        TlsMode::VerifyFull => "tls-verify-full",
+    };
+    Button::new(id)
+        .small()
+        .label(mode.label())
+        .when(selected, |button| button.primary())
+        .when(!selected, |button| button.ghost())
+        .on_click(move |_, _, cx| {
+            form.update(cx, |form, cx| form.set_tls_mode(mode, cx));
         })
 }
