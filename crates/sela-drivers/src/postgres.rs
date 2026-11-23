@@ -705,6 +705,235 @@ mod tests {
         session.execute("DROP TABLE sela_types").await.unwrap();
     }
 
+    /// M1-9: arrays, enums, inet family, money, bit, point, ranges, tsvector, and
+    /// domains must show psql-like text for both table preview and raw SELECT.
+    /// Unsupported binary types (polygon, tstzrange, composites, tsquery) must fail
+    /// safe as `<TYPE>` — never control-character junk.
+    #[tokio::test]
+    async fn postgres_text_fallback_types_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres text fallback: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+
+        session
+            .execute("DROP TABLE IF EXISTS sela_text_fallback")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TYPE IF EXISTS sela_mood")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TYPE IF EXISTS sela_pair")
+            .await
+            .unwrap();
+        session
+            .execute("DROP DOMAIN IF EXISTS sela_inet_dom")
+            .await
+            .unwrap();
+        session
+            .execute("CREATE TYPE sela_mood AS ENUM ('sad', 'ok', 'happy')")
+            .await
+            .unwrap();
+        session
+            .execute("CREATE TYPE sela_pair AS (a int, b text)")
+            .await
+            .unwrap();
+        session
+            .execute("CREATE DOMAIN sela_inet_dom AS inet")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_text_fallback (
+                    id int PRIMARY KEY,
+                    ints int[],
+                    texts text[],
+                    mood sela_mood,
+                    addr inet,
+                    net cidr,
+                    mac macaddr,
+                    cash money,
+                    flags bit(4),
+                    pt point,
+                    span int4range,
+                    search tsvector,
+                    wrapped sela_inet_dom,
+                    poly polygon,
+                    window_tz tstzrange,
+                    pair sela_pair,
+                    query tsquery
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "INSERT INTO sela_text_fallback VALUES (
+                    1,
+                    ARRAY[1, 2, NULL, 3]::int[],
+                    ARRAY['a', NULL, 'b,c', '\"x\"']::text[],
+                    'happy',
+                    '192.168.1.1',
+                    '192.168.0.0/24',
+                    '08:00:2b:01:02:03',
+                    12.34::money,
+                    B'1010',
+                    point(1.5, 2.5),
+                    int4range(1, 10),
+                    to_tsvector('english', 'fat cats ate rats'),
+                    '10.0.0.1'::sela_inet_dom,
+                    '((0,0),(1,0),(0,1))'::polygon,
+                    tstzrange('2024-01-01 00:00:00+00', '2024-01-02 00:00:00+00'),
+                    ROW(1, 'x')::sela_pair,
+                    to_tsquery('english', 'fat & cat')
+                ), (
+                    2,
+                    NULL, NULL, NULL, NULL, NULL, NULL,
+                    NULL, NULL, NULL, NULL, NULL, NULL,
+                    NULL, NULL, NULL, NULL
+                )",
+            )
+            .await
+            .unwrap();
+
+        // Decoded types: exact psql-like text. Unsupported binary types: `<TYPE>` only.
+        let expected_exact = [
+            ("ints", "{1,2,NULL,3}"),
+            ("texts", r#"{a,NULL,"b,c","\"x\""}"#),
+            ("mood", "happy"),
+            ("addr", "192.168.1.1/32"),
+            ("net", "192.168.0.0/24"),
+            ("mac", "08:00:2b:01:02:03"),
+            ("cash", "$12.34"),
+            ("flags", "1010"),
+            ("pt", "(1.5,2.5)"),
+            ("span", "[1,10)"),
+            ("search", "'ate':3 'cat':2 'fat':1 'rat':4"),
+            ("wrapped", "10.0.0.1/32"),
+        ];
+        let expected_placeholder = ["poly", "window_tz", "pair", "query"];
+
+        let assert_no_control_chars = |label: &str, name: &str, text: &str| {
+            assert!(
+                !text.chars().any(char::is_control),
+                "{label}: {name} display must not contain control characters, got {text:?}"
+            );
+        };
+
+        let assert_payload = |label: &str, row: &[Value], null_row: bool| {
+            // Skip the leading `id` column when present (preview SELECT *).
+            let payload_len = expected_exact.len() + expected_placeholder.len();
+            let offset = if row.len() == payload_len + 1 { 1 } else { 0 };
+            assert_eq!(row.len() - offset, payload_len, "{label}: column count");
+
+            for (i, cell) in row.iter().enumerate().skip(offset) {
+                let got = cell.display().into_owned();
+                assert_no_control_chars(label, &format!("col{i}"), &got);
+            }
+
+            for (i, (name, want)) in expected_exact.iter().enumerate() {
+                let cell = &row[offset + i];
+                if null_row {
+                    assert!(
+                        cell.is_null(),
+                        "{label}: {name} should be NULL, got {cell:?}"
+                    );
+                    continue;
+                }
+                let got = cell.display().into_owned();
+                assert_eq!(
+                    got, *want,
+                    "{label}: column {name} display mismatch (value={cell:?})"
+                );
+                assert!(
+                    !(got.starts_with('<') && got.ends_with('>')),
+                    "{label}: {name} must not be a <TYPE> placeholder"
+                );
+            }
+
+            let placeholder_base = offset + expected_exact.len();
+            for (i, name) in expected_placeholder.iter().enumerate() {
+                let cell = &row[placeholder_base + i];
+                if null_row {
+                    assert!(
+                        cell.is_null(),
+                        "{label}: {name} should be NULL, got {cell:?}"
+                    );
+                    continue;
+                }
+                let got = cell.display().into_owned();
+                assert!(
+                    got.starts_with('<') && got.ends_with('>') && got.len() > 2,
+                    "{label}: {name} must fail safe as <TYPE>, got {got:?} ({cell:?})"
+                );
+                assert_no_control_chars(label, name, &got);
+            }
+        };
+
+        let preview = preview_table(
+            &session,
+            &schema,
+            "sela_text_fallback",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(preview_rows) = preview else {
+            panic!("expected preview rows");
+        };
+        assert_eq!(preview_rows.page.rows.len(), 2);
+        let (filled, nulls) = if preview_rows.page.rows[0][0] == Value::Int(1) {
+            (&preview_rows.page.rows[0], &preview_rows.page.rows[1])
+        } else {
+            (&preview_rows.page.rows[1], &preview_rows.page.rows[0])
+        };
+        assert_payload("preview", filled, false);
+        assert_payload("preview-null", nulls, true);
+
+        let queried = run_user_sql(
+            &session,
+            "SELECT ints, texts, mood, addr, net, mac, cash, flags, pt, span, search, wrapped,
+                    poly, window_tz, pair, query
+             FROM sela_text_fallback
+             ORDER BY id",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(query_rows) = queried else {
+            panic!("expected query rows");
+        };
+        assert_eq!(query_rows.page.rows.len(), 2);
+        assert_payload("select", &query_rows.page.rows[0], false);
+        assert_payload("select-null", &query_rows.page.rows[1], true);
+
+        session
+            .execute("DROP TABLE IF EXISTS sela_text_fallback")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TYPE IF EXISTS sela_mood")
+            .await
+            .unwrap();
+        session
+            .execute("DROP TYPE IF EXISTS sela_pair")
+            .await
+            .unwrap();
+        session
+            .execute("DROP DOMAIN IF EXISTS sela_inet_dom")
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn postgres_cancel_sleep_within_one_second() {
         let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {

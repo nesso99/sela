@@ -10,6 +10,7 @@
 mod decode;
 mod error_map;
 mod mysql;
+mod pg_decode;
 mod postgres;
 mod runtime;
 mod sqlite;
