@@ -9,7 +9,7 @@ Open-source, native desktop database client (PostgreSQL, MySQL, SQLite) built wi
 **Engines:** PostgreSQL, MySQL, SQLite.  
 **Stack:** Rust 1.85+, gpui-kit 0.10.0 (gpui-pre 0.3.12 + gpui-component), sqlx 0.8, tokio, keyring 3.
 
-See also: [SPECS.md](./SPECS.md), [roadmap.md](./roadmap.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), [benchmarks.md](../dev/benchmarks.md).
+See also: [SPECS.md](./SPECS.md), [roadmap.md](./roadmap.md), [UX specs](./ux/README.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), [benchmarks.md](../dev/benchmarks.md).
 
 ---
 

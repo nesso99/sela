@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; color: #e8e8e8; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 14px 18px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; letter-spacing: 0.04em; }
+.win {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  background: #161616; border: 1px solid #3a3a3a;
+}
+.titlebar {
+  height: 22px; flex: none; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #bdbdbd; border-bottom: 1px solid #3a3a3a; background: #1c1c1c;
+}
+.body { flex: 1; min-height: 0; display: flex; }
+.side {
+  width: 232px; flex: none; background: #1e1e1e; border-right: 1px solid #3a3a3a;
+  display: flex; flex-direction: column; position: relative;
+}
+.side .brand { padding: 10px 10px 4px; font-size: 15px; font-weight: 600; }
+.side .sub { padding: 0 10px 8px; font-size: 10px; color: #8d8d8d; }
+.row { display: flex; gap: 6px; align-items: center; }
+.pad { padding: 0 10px 8px; }
+.btn {
+  height: 20px; padding: 0 8px; border: 1px solid #555; background: #2a2a2a;
+  color: #e8e8e8; font: 11px/18px Inter, sans-serif; display: inline-flex;
+  align-items: center;
+}
+.btn.primary { background: #e8e8e8; color: #161616; border-color: #e8e8e8; font-weight: 600; }
+.btn.ghost { background: transparent; border-color: transparent; color: #bdbdbd; padding: 0 4px; }
+.btn.on { background: #dcdcdc; color: #161616; border-color: #dcdcdc; }
+.btn:disabled, .btn.off { color: #666; border-color: #333; background: #222; }
+.tree { flex: 1; min-height: 0; padding: 2px 0 8px; font-size: 12px; }
+.tree .item { height: 22px; display: flex; align-items: center; padding: 0 10px; gap: 6px; color: #d0d0d0; }
+.tree .item.l2 { padding-left: 26px; }
+.tree .item.l3 { padding-left: 42px; }
+.tree .item.sel { background: #2e2e2e; }
+.tree .item.dim { color: #7a7a7a; }
+.tree .k { color: #8d8d8d; width: 14px; }
+.sidefoot {
+  height: 28px; flex: none; border-top: 1px solid #3a3a3a;
+  display: flex; align-items: center; padding: 0 6px; gap: 2px;
+}
+.empty-note { padding: 8px 10px 0; font-size: 11px; color: #8d8d8d; line-height: 1.35; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+.tabs {
+  height: 28px; flex: none; display: flex; align-items: stretch;
+  background: #1c1c1c; border-bottom: 1px solid #3a3a3a;
+}
+.tab {
+  display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  border-right: 1px solid #333; font-size: 12px; color: #9a9a9a;
+}
+.tab.on { color: #f2f2f2; background: #161616; box-shadow: inset 0 -1px 0 #f2f2f2; }
+.tab .x { color: #777; font-size: 11px; }
+.tabs .plus { width: 28px; display: flex; align-items: center; justify-content: center; color: #aaa; }
+.toolbar {
+  height: 40px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; border-bottom: 1px solid #3a3a3a;
+}
+.tb-title { font-size: 12px; }
+.tb-sub { font-size: 10px; color: #8d8d8d; }
+.banner {
+  flex: none; background: #3a3a3a; color: #f4f4f4; font-size: 11px;
+  padding: 6px 10px; border-bottom: 1px solid #555; line-height: 1.35;
+}
+.banner b { font-weight: 650; letter-spacing: 0.04em; }
+.gridwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+table.grid { width: 100%; border-collapse: collapse; font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 11px; }
+table.grid th, table.grid td {
+  border-bottom: 1px solid #2e2e2e; border-right: 1px solid #2a2a2a;
+  height: 22px; padding: 0 8px; text-align: left; white-space: nowrap; font-weight: 400;
+}
+table.grid th { background: #242424; color: #cfcfcf; height: 24px; font-size: 10px; }
+table.grid td { color: #e8e8e8; }
+table.grid tr.alt td { background: #1a1a1a; }
+td.null, td.load { color: #8d8d8d; font-style: italic; }
+td.err { color: #f2f2f2; background: #2a2a2a; }
+td.mark { box-shadow: inset 0 -1px 0 #f2f2f2; }
+.empty-grid {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  color: #8d8d8d; font-size: 12px; padding: 16px; text-align: center;
+}
+.footer-row {
+  height: 24px; flex: none; margin-top: auto; border-top: 1px solid #3a3a3a; display: flex;
+  align-items: center; padding: 0 8px; gap: 8px; font-size: 11px; color: #d0d0d0;
+  background: #1c1c1c;
+}
+.split {
+  height: 7px; flex: none; background: #1a1a1a; border-top: 1px solid #5a5a5a;
+  border-bottom: 1px solid #2a2a2a; display: flex; align-items: center; justify-content: center;
+  font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: #8d8d8d;
+}
+.editor { height: 168px; flex: none; display: flex; flex-direction: column; background: #141414; position: relative; }
+.editor.slim { height: 132px; }
+.editor.collapsed { height: 28px; }
+.ed-head {
+  height: 28px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px 0 10px; color: #8d8d8d; font-size: 10px; letter-spacing: 0.08em;
+}
+.ed-body { flex: 1; min-height: 0; display: flex; padding: 0 0 6px; position: relative; }
+.gutter {
+  width: 28px; flex: none; text-align: right; padding-right: 6px;
+  font: 11px/18px "JetBrains Mono", monospace; color: #666;
+}
+.gutter div { height: 18px; position: relative; }
+.gutter .bad::before, .gutter .run::before {
+  content: ""; position: absolute; left: 4px; top: 2px; bottom: 2px; width: 2px; background: #f2f2f2;
+}
+.gutter .run::before { background: #8d8d8d; }
+.code { flex: 1; font: 11px/18px "JetBrains Mono", monospace; color: #e8e8e8; white-space: pre; }
+.code .cm { color: #7d7d7d; }
+.code .kw { color: #f2f2f2; }
+.code u { text-decoration: none; border-bottom: 1px solid #f2f2f2; }
+.popup {
+  position: absolute; left: 120px; bottom: calc(100% + 6px); width: 280px;
+  background: #1c1c1c; border: 1px solid #6a6a6a; z-index: 3;
+  font: 11px/22px "JetBrains Mono", monospace;
+}
+.popup .p { height: 22px; display: flex; justify-content: space-between; padding: 0 8px; color: #ddd; }
+.popup .p.on { background: #2e2e2e; }
+.popup .p span { color: #8d8d8d; font-family: Inter, sans-serif; font-size: 10px; }
+.status {
+  height: 28px; flex: none; background: #242424; border-top: 1px solid #3a3a3a;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; font-size: 11px; color: #d0d0d0;
+}
+.status .right { color: #8d8d8d; }
+.filters { flex: none; border-bottom: 1px solid #3a3a3a; background: #191919; }
+.frow { height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 8px; }
+.field {
+  height: 18px; border: 1px solid #555; background: #141414; color: #e8e8e8;
+  font: 11px/16px "JetBrains Mono", monospace; padding: 0 6px; display: inline-flex; align-items: center;
+}
+.field.op { width: 52px; font-family: Inter, sans-serif; }
+.field.col { width: 92px; }
+.field.val { width: 120px; }
+.sqlsnip {
+  height: 20px; padding: 0 8px; font: 10px/20px "JetBrains Mono", monospace; color: #8d8d8d;
+  white-space: nowrap; overflow: hidden;
+}
+.tip {
+  position: absolute; z-index: 4; background: #111; border: 1px solid #8a8a8a;
+  color: #f2f2f2; font-size: 11px; line-height: 1.35; padding: 6px 8px; width: 240px;
+}
+.tip b { display: block; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #bbb; margin-bottom: 2px; }
+.caption { font-size: 12px; color: #bdbdbd; line-height: 1.3; max-height: 32px; overflow: hidden; }
+.caption b { color: #d0d0d0; font-weight: 600; }
+.handle {
+  position: absolute; top: 0; right: -1px; width: 3px; bottom: 0; background: #8a8a8a;
+}
+.dim {
+  position: absolute; font-size: 10px; color: #cfcfcf; background: #111; border: 1px solid #555;
+  padding: 1px 4px; z-index: 5; letter-spacing: 0.02em;
+}
+.progress { height: 2px; flex: none; background: linear-gradient(90deg, #f2f2f2 0 30%, #333 30% 100%); }
+.resultstrip {
+  height: 22px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px; border-bottom: 1px solid #3a3a3a; font-size: 11px; color: #cfcfcf; background: #1a1a1a;
+}
+</style></head>
+<body>
+  <div class="kicker"><b>Sela</b><span>State · decode-error cell</span></div>
+  <div class="win"><div class="titlebar">Sela</div><div class="body">
+        
+    <aside class="side">
+      <div class="brand">Sela</div>
+      <div class="sub">PostgreSQL, MySQL, and SQLite</div>
+      <div class="row pad"><span class="btn primary">New</span><span class="btn">Sample library</span></div>
+      <div class="tree">
+          <div class="item"><span class="k">▾</span>● SQ &nbsp; sample</div>
+          <div class="item l2"><span class="k">▾</span>main</div>
+          <div class="item l3">authors</div>
+          <div class="item l3 sel">books</div>
+          <div class="item l3">books_in_print · view</div>
+        </div>
+      
+      <div class="sidefoot">
+          <span class="btn ghost">Edit</span>
+          <span class="btn ghost">Delete</span>
+          <span class="btn ghost">Refresh</span>
+          <span class="btn ghost">Disconnect</span></div>
+    </aside>
+        <div class="main">
+          <div class='tabs'><div class='tab on'>main.books<span class='x'>×</span></div><div class='plus'>+</div></div>
+          <div class="toolbar">
+      <div><div class="tb-title">main.books</div><div class="tb-sub">PostgreSQL · localhost:5432/sample</div></div>
+      <div class="row"><span class='btn on'>Data</span><span class='btn'>Structure</span></div>
+    </div>
+          <div class="gridwrap" style="position:relative">
+            <table class="grid"><thead><tr>
+              <th>id  INTEGER</th><th>note  TEXT</th><th>tags  TEXT[]</th><th>payload  JSONB</th>
+            </tr></thead><tbody>
+              <tr><td>1</td><td class="null">NULL</td><td>{1,2,3}</td><td>{"ok":true}</td></tr>
+              <tr class="alt"><td>2</td><td>shipped</td><td class="null">NULL</td><td class="err mark">! &lt;decode error: JSONB&gt;</td></tr>
+              <tr><td>3</td><td></td><td>mystery</td><td class="err">! &lt;JSONB&gt;</td></tr>
+            </tbody></table>
+            <div class="tip" style="top:118px;left:16px">
+              <b>Decode error · not NULL</b>
+              Could not decode this value as JSONB. Copy uses the marker text, never NULL. Space opens the full value.
+            </div>
+          </div>
+          <div class='editor slim'><div class='ed-head'><span>SQL</span><div class='row'><span class='btn off'>Stop</span> <span class='btn primary'>Run</span></div></div><div class='ed-body'><div class='gutter'><div class=''>1</div></div><div class='code'></div></div></div>
+          <div class='status'><div>~12,400 rows · 18 ms</div><div class='right'>main.books</div></div>
+        </div></div></div>
+  <div class="caption">NULL is italic and muted. Only a hard decode failure and the empty &lt;TYPE&gt; placeholder use the bright error cell. An array, enum, or inet shown as text is a normal cell.</div>
+</body></html>

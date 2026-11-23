@@ -10,6 +10,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 
 ### Added
 
+- UX specs for the main window, a review of filter/sort, and the SQL editor (`docs/design/ux/`).
 - Cargo workspace with `sela-core`, `sela-drivers`, `sela-config`, and `sela-app` (binary `sela`) (#2).
 - Drivers for PostgreSQL, MySQL, and SQLite via sqlx; typed `Value` decode for NUMERIC, UUID, JSON, timestamptz, and related types (#3, #5).
 - Saved connections with passwords in the OS keychain (`keyring`); never written to `connections.json`.
