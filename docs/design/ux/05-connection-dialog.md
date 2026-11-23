@@ -2,7 +2,7 @@
 
 The dialog that creates and edits a saved connection. It already ships as a 460px modal from `open_form` in `crates/sela-app/src/ui/workspace/state.rs`, rendered by `ConnectionForm` in `ui/form.rs`. The sections below keep that dialog and extend it. TLS modes are M1-8. Test connection is an acceptance check on US-01 and has no UI today. Query-history recording is the switch from [04-query-history.md](./04-query-history.md).
 
-Shortcut notation is in [README-batch2.md](./README-batch2.md). `secondary` is Command on macOS and Control on Linux and Windows. The dialog traps focus until it closes, which the main-window spec already requires.
+Shortcut notation is in [README.md](./README.md). `secondary` is Command on macOS and Control on Linux and Windows. The dialog traps focus until it closes, which the main-window spec already requires.
 
 What the form does today, so the spec does not invent it as new:
 

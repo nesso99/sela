@@ -2,7 +2,7 @@
 
 M1-5. US-10: the user finds a past query, and can reopen it in a new tab. Nothing in the app records history today. There is no `history.sqlite`, no history panel, and no history types. The status line already has the facts a row needs: outcome, row count, duration, and the error text. [SPECS.md](../SPECS.md) places the store at `history.sqlite` with FTS5, a default cap of about 10,000 entries, and an optional switch to turn recording off per connection.
 
-Shortcut notation is in [README-batch2.md](./README-batch2.md). `secondary` is Command on macOS and Control on Linux and Windows.
+Shortcut notation is in [README.md](./README.md). `secondary` is Command on macOS and Control on Linux and Windows.
 
 ![Query history open under the editor](images/history.png)
 
@@ -156,7 +156,7 @@ Deleting a connection does not delete its rows. Clear history and Delete are how
 
 ## Keyboard
 
-Bindings use a history focus context. The full group is in [README-batch2.md](./README-batch2.md).
+Bindings use a history focus context. The full group is in [README.md](./README.md).
 
 | Action | Shortcut |
 | --- | --- |
