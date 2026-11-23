@@ -14,7 +14,7 @@ mod postgres;
 mod runtime;
 mod sqlite;
 
-pub(crate) use decode::{column_meta, read_cell};
+pub(crate) use decode::{column_meta, read_mysql_cell, read_postgres_cell, read_sqlite_cell};
 pub(crate) use error_map::sqlx_err;
 pub use runtime::drive;
 

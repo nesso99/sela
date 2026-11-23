@@ -99,7 +99,7 @@ impl DatabaseSession for PostgresSession {
     }
 
     async fn query(&self, sql: &str) -> Result<QueryPage, DbError> {
-        crate::query_page!(&self.pool, sql)
+        crate::query_page!(&self.pool, sql, crate::read_postgres_cell)
     }
 
     async fn execute(&self, sql: &str) -> Result<u64, DbError> {
@@ -114,7 +114,11 @@ impl DatabaseSession for PostgresSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sela_core::{preview_table, run_user_sql, StatementOutcome, PAGE_SIZE};
+    use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
+    use rust_decimal::Decimal;
+    use sela_core::{preview_table, run_user_sql, Interval, StatementOutcome, Value, PAGE_SIZE};
+    use std::str::FromStr;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn postgres_round_trip_when_configured() {
@@ -175,5 +179,135 @@ mod tests {
         assert!(rows.page.rows[0][0].is_null());
 
         session.execute("DROP TABLE sela_probe").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_typed_value_round_trip_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres typed values: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+        session
+            .execute("DROP TABLE IF EXISTS sela_types")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_types (
+                    flag boolean,
+                    small int2,
+                    mid int4,
+                    big int8,
+                    real4 float4,
+                    real8 float8,
+                    amount numeric(12,4),
+                    label text,
+                    payload bytea,
+                    id uuid,
+                    doc json,
+                    docb jsonb,
+                    born date,
+                    punched time,
+                    seen timestamp,
+                    seen_tz timestamptz,
+                    gap interval,
+                    missing text
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "INSERT INTO sela_types VALUES (
+                    true,
+                    1,
+                    -42,
+                    9223372036854775807,
+                    1.25,
+                    2.5,
+                    1234.5678,
+                    'hello',
+                    decode('6869', 'hex'),
+                    '550e8400-e29b-41d4-a716-446655440000',
+                    '{\"a\":1}',
+                    '{\"b\":true}',
+                    DATE '2024-01-02',
+                    TIME '03:04:05',
+                    TIMESTAMP '2024-01-02 03:04:05',
+                    TIMESTAMPTZ '2024-01-02 03:04:05+00',
+                    INTERVAL '1 month 2 days 01:00:00',
+                    NULL
+                )",
+            )
+            .await
+            .unwrap();
+
+        let outcome = run_user_sql(
+            &session,
+            "SELECT flag, small, mid, big, real4, real8, amount, label, payload, id,
+                    doc, docb, born, punched, seen, seen_tz, gap, missing
+             FROM sela_types",
+            10,
+            0,
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = outcome else {
+            panic!("rows");
+        };
+        let row = &rows.page.rows[0];
+        assert_eq!(row[0], Value::Bool(true));
+        assert_eq!(row[1], Value::Int(1));
+        assert_eq!(row[2], Value::Int(-42));
+        assert_eq!(row[3], Value::Int(i64::MAX));
+        assert!(matches!(row[4], Value::Float(v) if (v - 1.25).abs() < f64::EPSILON));
+        assert_eq!(row[5], Value::Float(2.5));
+        assert_eq!(
+            row[6],
+            Value::Decimal(Decimal::from_str("1234.5678").unwrap())
+        );
+        assert_eq!(row[7], Value::Text("hello".into()));
+        assert_eq!(row[8], Value::Bytes(b"hi".to_vec()));
+        assert_eq!(
+            row[9],
+            Value::Uuid(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
+        );
+        assert_eq!(row[10], Value::Json(serde_json::json!({"a": 1})));
+        assert_eq!(row[11], Value::Json(serde_json::json!({"b": true})));
+        assert_eq!(
+            row[12],
+            Value::Date(NaiveDate::from_ymd_opt(2024, 1, 2).unwrap())
+        );
+        assert_eq!(
+            row[13],
+            Value::Time(NaiveTime::from_hms_opt(3, 4, 5).unwrap())
+        );
+        assert_eq!(
+            row[14],
+            Value::Timestamp(
+                NaiveDateTime::parse_from_str("2024-01-02 03:04:05", "%Y-%m-%d %H:%M:%S").unwrap()
+            )
+        );
+        let expected_tz = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+            .unwrap();
+        assert_eq!(row[15], Value::TimestampTz(expected_tz));
+        assert_eq!(
+            row[16],
+            Value::Interval(Interval {
+                months: 1,
+                days: 2,
+                microseconds: 3_600_000_000,
+            })
+        );
+        assert!(row[17].is_null());
+        assert_eq!(row[10].display(), "{\"a\":1}");
+        assert_eq!(row[15].display(), "2024-01-02T03:04:05Z");
+
+        session.execute("DROP TABLE sela_types").await.unwrap();
     }
 }

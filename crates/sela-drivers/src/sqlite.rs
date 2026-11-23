@@ -78,7 +78,7 @@ impl DatabaseSession for SqliteSession {
     }
 
     async fn query(&self, sql: &str) -> Result<QueryPage, DbError> {
-        crate::query_page!(&self.pool, sql)
+        crate::query_page!(&self.pool, sql, crate::read_sqlite_cell)
     }
 
     async fn execute(&self, sql: &str) -> Result<u64, DbError> {
@@ -94,7 +94,7 @@ impl DatabaseSession for SqliteSession {
 mod tests {
     use super::*;
     use sela_core::{
-        preview_table, run_user_sql, split_statements, Cell, StatementOutcome, PAGE_SIZE,
+        preview_table, run_user_sql, split_statements, StatementOutcome, Value, PAGE_SIZE,
     };
 
     async fn seeded() -> (tempfile::TempDir, SqliteSession) {
@@ -197,7 +197,7 @@ mod tests {
             .iter()
             .position(|column| column.name == "pages")
             .unwrap();
-        assert_eq!(first.page.rows[0][pages_ix], Cell::Text("1".into()));
+        assert_eq!(first.page.rows[0][pages_ix], Value::Int(1));
 
         let second = preview_table(&session, "main", "readings", PAGE_SIZE, 100)
             .await
@@ -213,7 +213,7 @@ mod tests {
         let StatementOutcome::Rows(blob) = blob else {
             panic!("rows");
         };
-        assert_eq!(blob.page.rows[0][0], Cell::Text("x'6869'".into()));
+        assert_eq!(blob.page.rows[0][0], Value::Bytes(b"hi".to_vec()));
 
         let commented = run_user_sql(
             &session,
@@ -263,5 +263,80 @@ mod tests {
         };
         let message = err.to_string();
         assert!(!message.is_empty());
+    }
+
+    #[tokio::test]
+    async fn typed_value_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SqliteSession::open(&dir.path().join("types.sqlite"), true)
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_types (
+                    id INTEGER PRIMARY KEY,
+                    flag BOOLEAN,
+                    whole INTEGER,
+                    real_num REAL,
+                    label TEXT,
+                    payload BLOB,
+                    born DATE,
+                    punched TIME,
+                    seen DATETIME,
+                    missing TEXT
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "INSERT INTO sela_types (
+                    id, flag, whole, real_num, label, payload, born, punched, seen, missing
+                 ) VALUES (
+                    1, 1, -42, 1.5, 'hello', X'6869',
+                    '2024-01-02', '03:04:05', '2024-01-02 03:04:05', NULL
+                 )",
+            )
+            .await
+            .unwrap();
+
+        let outcome = run_user_sql(
+            &session,
+            "SELECT flag, whole, real_num, label, payload, born, punched, seen, missing
+             FROM sela_types WHERE id = 1",
+            10,
+            0,
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = outcome else {
+            panic!("rows");
+        };
+        let row = &rows.page.rows[0];
+        assert_eq!(row[0], Value::Bool(true));
+        assert_eq!(row[1], Value::Int(-42));
+        assert_eq!(row[2], Value::Float(1.5));
+        assert_eq!(row[3], Value::Text("hello".into()));
+        assert_eq!(row[4], Value::Bytes(b"hi".to_vec()));
+        assert_eq!(
+            row[5],
+            Value::Date(chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap())
+        );
+        assert_eq!(
+            row[6],
+            Value::Time(chrono::NaiveTime::from_hms_opt(3, 4, 5).unwrap())
+        );
+        assert_eq!(
+            row[7],
+            Value::Timestamp(
+                chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
+                    .unwrap()
+                    .and_hms_opt(3, 4, 5)
+                    .unwrap()
+            )
+        );
+        assert!(row[8].is_null());
+        assert_eq!(row[3].display(), "hello");
+        assert_eq!(row[8].display(), "NULL");
     }
 }
