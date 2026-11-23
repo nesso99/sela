@@ -44,7 +44,7 @@ Protocol:
 
 | | |
 | --- | --- |
-| Host | Cloud Agent VM (`Linux 6.12`, x86_64) |
+| Host | Cloud VM (`Linux 6.12`, x86_64) |
 | CPU | Intel Xeon (hypervisor), **4** cores @ 2400 MHz |
 | RAM | **15 GiB** |
 | Display | **Xvfb** 1280×800×24 |
