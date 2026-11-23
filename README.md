@@ -4,6 +4,8 @@
 
 Sela is a native desktop database client for PostgreSQL, MySQL, and SQLite. It is an early slice of a TablePlus-style app: save a connection, browse schemas and tables, page through rows, and run SQL.
 
+Docs: [PRD](docs/PRD.md) · [SPECS](docs/SPECS.md) · [CONTRIBUTING](docs/CONTRIBUTING.md).
+
 The window is [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), pinned through [GPUI Kit](https://github.com/longbridge/gpui-kit) **0.10.0**. That release depends on `gpui-pre` **0.3.12** (the published GPUI snapshot GPUI Kit was built against). Tables, inputs, and the sidebar tree come from `gpui-component` in the same release.
 
 The first window, with no connections yet, and the sample library opened to `main.bookmarks`:
@@ -148,21 +150,24 @@ scripts/             seed SQL for SQLite, Postgres, and MySQL
 
 `DatabaseSession` is the extension point for another engine. The UI only sees schemas, tables, and `StatementOutcome`.
 
-Generated SQL quotes identifiers (`"name"` or `` `name` ``) and rejects an empty identifier or a null byte. The editor accepts one statement. `SELECT`, `WITH`, and `VALUES` are wrapped so the server applies `LIMIT` and `OFFSET`. `SHOW`, `EXPLAIN`, and `PRAGMA` are run as-is and capped in the client. Anything else is executed, and the status bar shows the affected-row count.
+Generated SQL quotes identifiers (`"name"` or `` `name` ``) and rejects an empty identifier or a null byte. The editor accepts one statement. Table previews page with `LIMIT`/`OFFSET` and estimated counts; arbitrary SQL streams without wrapping, up to a 1 000-row cap with load-more for safe read-only statements. Anything else is executed, and the status bar shows the affected-row count. Structure view (columns, indexes, FKs, DDL) is read-only for all three engines.
 
 ## Roadmap toward TablePlus
 
-The pieces below are intentionally not in this version. The module split is there so they can land without rewriting the drivers.
+The pieces below are intentionally not in this version. The module split is there so they can land without rewriting the drivers. See [docs/PRD.md](docs/PRD.md) for the ordered M1 plan.
 
 - Multiple result tabs, and a tab per open table.
 - Inline cell editing and inserting or deleting rows.
 - Filters, sorts, and a where-bar that composes SQL instead of replacing it.
-- Inline structure editing (create/alter/drop from the Structure view).
 - SQL syntax highlighting, history, and multiple statements.
 - Export to CSV or JSON, and import.
-- SSH tunnels, SSL certificates, and connection groups.
-- More engines (MariaDB is close to the MySQL driver; SQL Server and Redis are not).
+- SSH tunnels, TLS certificate modes, and connection groups.
+- Structure editing (DDL with preview); more engines (MariaDB is close to the MySQL driver; SQL Server and Redis are not).
 
 ## Keychain limitation
 
 Sela never writes a password into `connections.json`. On Linux that depends on a running Secret Service. A headless session, or a session with no unlocked keyring, cannot persist the password. Sela keeps it in process memory, tells you in the status bar, and asks again the next time you launch the app.
+
+## License
+
+Sela is licensed under **GPL-3.0-or-later**. See [`LICENSE`](LICENSE).

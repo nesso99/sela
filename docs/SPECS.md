@@ -1,0 +1,338 @@
+> Source of truth: this file; canvas is a snapshot.
+
+# Technical specs — Sela
+
+Architecture, APIs, data model, execution, config, testing, and per-feature specs. Product intent and milestones live in [PRD.md](./PRD.md). Contribution process: [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+**License:** GPL-3.0-or-later (see root `LICENSE`).  
+**Name:** Sela (Birch retired). Crates: `sela-core`, `sela-drivers`, `sela-config`, `sela-app` (binary `sela`). Keychain service `app.sela.database`. Config under `~/.config/sela/` (macOS Application Support / Windows `%APPDATA%\Sela\`), override `SELA_CONFIG_DIR`.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+  ui["sela-app (GPUI)<br/>Workspace, tabs, grid, editor, dialogs"]
+  state["App state / models<br/>Entity per tab, ChangeSet, SchemaCache"]
+  bridge["Runtime bridge<br/>drive() + CancellationToken"]
+  core["sela-core<br/>DatabaseSession, Value, ResultWindow, SQL helpers"]
+  drivers["sela-drivers<br/>postgres, mysql, sqlite (sqlx)"]
+  ssh["sela-ssh (planned)<br/>Tunnel local port-forward"]
+  cfg["sela-config<br/>connections.json, history.sqlite, keychain"]
+
+  ui --> state
+  state -->|"spawn"| bridge
+  bridge -->|"tokio"| core
+  core --> drivers
+  core --> ssh
+  state --> cfg
+```
+
+UI never talks to sqlx directly. Library crates stay free of GPUI so CI can test them without a GPU.
+
+### Crates layout
+
+```text
+crates/
+  sela-core/     # DatabaseSession, Value, ResultWindow, SQL builder, structure types
+  sela-drivers/  # postgres.rs, mysql.rs, sqlite.rs, stream, decode, runtime
+  sela-config/   # connections.json, SecretStore / keyring
+  sela-app/      # GPUI binary `sela`: workspace/, grid/, form/, examples/grid_bench
+  # planned:
+  sela-ssh/      # SSH tunnel (russh), known_hosts
+  sela-testkit/  # fixtures, docker helpers, golden SQL
+```
+
+---
+
+## Driver / session API
+
+Current trait (`sela-core::DatabaseSession`):
+
+```rust
+#[async_trait]
+pub trait DatabaseSession: Send + Sync {
+    fn dialect(&self) -> Dialect;
+
+    async fn list_schemas(&self) -> Result<Vec<SchemaInfo>, DbError>;
+    async fn list_tables(&self, schema: &str) -> Result<Vec<TableInfo>, DbError>;
+
+    async fn query(&self, sql: &str) -> Result<QueryPage, DbError>;
+    async fn execute(&self, sql: &str) -> Result<u64, DbError>;
+    async fn count_query(&self, sql: &str) -> Result<u64, DbError>;
+
+    async fn estimate_table_rows(&self, schema: &str, table: &str)
+        -> Result<Option<u64>, DbError>;
+    async fn describe_table(&self, schema: &str, table: &str)
+        -> Result<TableStructure, DbError>;
+    async fn table_ddl(&self, schema: &str, table: &str) -> Result<String, DbError>;
+
+    async fn stream_query(
+        &self,
+        sql: &str,
+        batch_size: usize,
+        row_cap: Option<Arc<AtomicUsize>>,
+        finish_at_cap: bool,
+        cancel: CancellationToken,
+        sink: async_channel::Sender<StreamBatch>,
+    ) -> Result<StreamOutcome, DbError>;
+}
+```
+
+Helpers: `run_user_sql`, `preview_table`, `exact_table_rows`, `is_safe_to_rerun_for_load_more`.
+
+**Direction (M2+):** evolve toward a richer `Session` with `Capabilities`, `apply_changes`, and an optional `CancelHandle`, while keeping drivers behind this boundary.
+
+### Async bridge
+
+- Global Tokio runtime (multi-worker) for DB work.
+- UI uses `cx.spawn`; inside, `drive(work)` runs on Tokio and awaits a `JoinHandle`, then `this.update` if the request id still matches.
+- Each task gets a `CancellationToken`; Stop / Cmd+. / closing a tab cancels the token and triggers server-side cancel when supported.
+- Panics in DB tasks map to `DbError::Internal` (app must not crash).
+- Request ids are scoped per tab once tabs land (M1-1).
+
+### Connection manager (target)
+
+- Small pool for metadata (`max_connections` ~5) plus a dedicated connection per query tab (so cancel / transactions attach correctly) — shared pool today; per-tab connection is a follow-up.
+- States: Disconnected → Connecting → Connected → Reconnecting → Failed.
+- Connect timeout 12 s; keepalive and reconnect for tabs without an open transaction (planned).
+- SSH (M3): open tunnel first, driver connects to `127.0.0.1:<ephemeral>`; closing the connection closes the tunnel.
+
+---
+
+## Data model (`Value`)
+
+```rust
+pub enum Value {
+    Null,
+    Bool(bool),
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    Decimal(Decimal),       // exact NUMERIC/DECIMAL
+    Text(Arc<str>),
+    Bytes(Vec<u8>),
+    Uuid(Uuid),
+    Json(Arc<str>),         // raw JSON text; parse lazily
+    Date(NaiveDate),
+    Time(NaiveTime),
+    Timestamp(NaiveDateTime),
+    TimestampTz(DateTime<FixedOffset>),
+    Interval(Interval),
+    Other { type_name: String, text: Arc<str> }, // unsupported or decode-error marker
+}
+```
+
+Rules:
+
+- Decode errors become `Other` / `DbError::Decode` paths — **never** silent `Null`.
+- Grid display uses `truncate_one_line` (~200 Unicode scalars, newlines → `⏎`) with a per-cell cache (`CELL_DISPLAY_MAX_CHARS`).
+- Copy / export uses full `Value::display()`.
+
+### `ResultWindow` (M1-2a)
+
+- Keeps at most `ROW_WINDOW_MAX_PAGES` (16) pages of `PAGE_SIZE` (100) rows; raising the cap allows a larger materialized window.
+- Pages load on demand as the viewport moves; streaming inserts via `insert_page`.
+- Wide Json RSS is bounded by the window, not by retaining 100k owned trees.
+
+See [benchmarks/grid.md](./benchmarks/grid.md).
+
+---
+
+## Errors (`DbError`)
+
+```rust
+pub enum DbError {
+    Connection { message, sqlstate, vendor_code },
+    Auth { message, sqlstate, vendor_code },
+    Query { message, sqlstate, vendor_code },
+    Timeout { message, sqlstate, vendor_code },
+    Cancelled { message, sqlstate, vendor_code },
+    Decode { message, sqlstate, vendor_code },
+    Config { message, sqlstate, vendor_code },
+    Internal { message, sqlstate, vendor_code },
+}
+```
+
+- Drivers map vendor / sqlx failures and preserve SQLSTATE / MySQL errno when available.
+- UI shows `Display` text; never log passwords or connection strings that embed passwords.
+- Errors must not silently become NULL, empty success, or a wrong success path (see [CONTRIBUTING.md](./CONTRIBUTING.md) checklist).
+
+Future variants considered in the original canvas (Tls, Ssh, Syntax { position }, Constraint, Permission) can be added as needs arise without collapsing classification.
+
+---
+
+## Execution, cancel, streaming, paging
+
+| Concern | Behavior |
+| --- | --- |
+| Table preview | `LIMIT`/`OFFSET` pages via `pending_pages`; estimate (`pg_class.reltuples` / `information_schema.tables.TABLE_ROWS` / SQLite `None`); Exact count button |
+| Arbitrary SQL | **Not wrapped** in `SELECT * FROM (…) LIMIT`; stream up to `DEFAULT_SQL_ROW_CAP` (1000) with load-more |
+| Load-more | Raises live `AtomicUsize` cap on an open stream; if stream is gone, re-run only when `is_safe_to_rerun_for_load_more` (read-only `SELECT`/`VALUES`, `WITH` without DML, `SHOW`, `EXPLAIN` without `ANALYZE`); else “Result capped at N rows” |
+| Streaming | `sqlx` `fetch()` → batches (`STREAM_BATCH_SIZE`) over `async_channel` → `ResultWindow`; columns from first row (describe when 0 rows) |
+| Cancel | `CancellationToken`; Stop + Cmd+./Ctrl+.; PG `pg_cancel_backend(pid)` / MySQL `KILL QUERY` from a **second** pool connection; then close the cancelled connection so the next checkout is clean |
+| SQLite cancel | Drop the fetch stream only (sqlx has no interrupt) — documented limitation |
+| Multi-statement | Currently one statement in the editor; split via `split_statements` when M1-4 lands |
+
+**Known limitation:** text classifier treats `SELECT my_func()` as safe for load-more re-run even if the function has side effects.
+
+**Follow-ups:** idle timeout for streams paused at the cap; bound/LRU structure cache; real-GPU re-measure.
+
+---
+
+## Config and secrets
+
+Paths:
+
+| OS | Path |
+| --- | --- |
+| Linux | `$XDG_CONFIG_HOME/sela/connections.json` or `~/.config/sela/connections.json` |
+| macOS | `~/Library/Application Support/Sela/connections.json` |
+| Windows | `%APPDATA%\Sela\connections.json` |
+
+`SELA_CONFIG_DIR` overrides the directory. File mode `0600` on Unix. Atomic write (temp + rename).
+
+Keychain: service `app.sela.database` via `keyring`. Fallback: keep password in process memory and tell the user on the status bar (`MemorySecretStore` / `CachingSecrets`).
+
+### Config schema v2 (M1-8)
+
+Bump `schema_version` to **2**. **No migration code** — there are no users yet; old shapes can be dropped.
+
+Target shape (illustrative):
+
+```json
+{
+  "schema_version": 2,
+  "groups": [{ "id": "g1", "name": "Work" }],
+  "connections": [{
+    "id": "uuid",
+    "name": "prod-orders",
+    "engine": "postgres",
+    "group": "g1",
+    "color": "red",
+    "tag": "production",
+    "safe_mode": "confirm_writes",
+    "host": "10.0.0.5",
+    "port": 5432,
+    "username": "app",
+    "database": "orders",
+    "tls": { "mode": "verify-full", "ca_path": "~/certs/ca.pem" },
+    "ssh": {
+      "host": "bastion.example.com",
+      "port": 22,
+      "user": "ops",
+      "auth": "agent",
+      "key_path": null
+    },
+    "password_policy": "keychain"
+  }]
+}
+```
+
+History / saved queries: `history.sqlite` with FTS5 (M1-5), default cap ~10 000 entries; optional disable for production connections.
+
+Env for integration tests: `SELA_POSTGRES_URL`, `SELA_MYSQL_URL` (optional schema overrides `SELA_POSTGRES_SCHEMA`, `SELA_MYSQL_SCHEMA`).
+
+---
+
+## Testing
+
+| Layer | Content | Where |
+| --- | --- | --- |
+| Unit | SQL builder, classify / split / load-more safety, `ResultWindow`, config, fake `SecretStore` | Every PR, 3 OS (Windows gated) |
+| Integration SQLite | Introspection, types, paging/stream, cancel behavior | Every PR, no service |
+| Integration PG/MySQL | Same suite via docker-compose / CI services; cancel + streaming | CI Linux `db-integration`; local `docker compose up` |
+| SSH | openssh-server bastion in front of PG | CI Linux (M3) |
+| UI | GPUI headless state tests; Xvfb + lavapipe smoke | CI Linux; manual macOS/Windows each release |
+| Perf | `grid_bench`, `value_display` bench; flag >10% regressions | Nightly / when grid code changes |
+| Licenses | `cargo deny check licenses bans sources` (see `deny.toml`; project is GPL-3.0-or-later) | Every PR + push (`cargo-deny` CI job) |
+
+Rule: tests assert **observable behavior**; every bugfix gets a regression test.
+
+---
+
+## Grid
+
+- **Decision:** keep gpui-component `DataTable` (row + column virtualization). Do not rewrite for virtualization; memory was the risk ([benchmarks/grid.md](./benchmarks/grid.md)).
+- Selection / copy / themes: M1-7.
+- Pending-change overlay: M2.
+- Column width: auto-fit from first ~100 rows; remember per table (planned).
+
+---
+
+## SQL editor
+
+- Today: multi-line `Textarea`, one statement, Cmd/Ctrl+Enter.
+- M1-4: code editor with highlight, statement-at-cursor, multi-statement (via `split_statements`), format (`sqlformat`).
+- M3-2: autocomplete from `SchemaCache` + dialect keywords.
+
+---
+
+## Schema introspection
+
+| Engine | Metadata source | Notes |
+| --- | --- | --- |
+| PostgreSQL | Prefer `pg_catalog` (`pg_class`, `pg_attribute`, `pg_index`, `pg_constraint`, `pg_get_indexdef`, `pg_get_constraintdef`) | Structure view (M1-6) uses catalog paths; estimates via `reltuples` |
+| MySQL | `information_schema` + `SHOW CREATE TABLE` | Schema = database; estimate via `TABLE_ROWS` |
+| SQLite | `sqlite_schema` / `sqlite_master`, `pragma_table_info`, index/FK pragmas | DDL from `sql` column |
+
+`TableStructure`: columns (name, type, nullable, default, comment), indexes, foreign keys, full DDL string.
+
+---
+
+## Pending edits and safe mode (M2)
+
+```rust
+pub struct ChangeSet {
+    pub table: TableRef,
+    pub key: RowKey, // PK or unique NOT NULL
+    pub edits: IndexMap<RowId, RowEdit>,
+}
+pub enum RowEdit {
+    Update { original: Vec<Value>, changed: BTreeMap<ColIdx, Value> },
+    Insert { values: BTreeMap<ColIdx, Value> },
+    Delete { original: Vec<Value> },
+}
+```
+
+- Edit only with PK/unique key; otherwise read-only with reason.
+- Always bound parameters; reuse `quote_ident` / `qualify`.
+- Commit: BEGIN → Delete, Update, Insert → COMMIT; on error ROLLBACK and keep `ChangeSet`.
+- Optional optimistic WHERE with old values.
+- Golden tests per dialect for generated SQL.
+
+Safe mode per connection: Off / Confirm writes / Read-only. Classify with `classify` + `sqlparser` for no-WHERE writes and writes inside CTEs. Apply to editor and grid commit; production-tagged connections default to Confirm writes.
+
+---
+
+## Packaging (M4)
+
+- macOS: universal `.app` + `.dmg`, Developer ID + notarize.
+- Linux: AppImage and `.deb` (then Flatpak); document Vulkan deps.
+- Windows: MSI/NSIS, code-signed; Credential Manager.
+- `cargo-packager` (or similar) on tag; checksums + changelog.
+- Auto-update after v1 (GitHub Releases, user confirms).
+
+---
+
+## Per-feature status (M1 slice)
+
+| Feature | Spec pointer | Status |
+| --- | --- | --- |
+| M1-2a Result model | `ResultWindow`, lazy Json, display cache | Done (#9) |
+| M1-2b Cancel / stream / estimates / SQL cap | This file § Execution | Done (#10) |
+| M1-1 Tabs | Per-tab state, cancel-on-close, `tabs.json` | PR #12 |
+| M1-6 Structure view | `describe_table` / `TableStructure` | Done (#11) |
+| M1-3 Filter / sort | Generated SQL + bind params | Backlog |
+| M1-4 Editor | Highlight, multi-statement | Backlog |
+| M1-5 History | `history.sqlite` FTS | Backlog |
+| M1-7 Selection / copy / themes | Grid selection model | Backlog |
+| M1-8 TLS + config v2 | No migration; schema_version 2 | Backlog |
+| M1-9 PG text-cast fallback | Own PR | Backlog |
+
+---
+
+## Process
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md): PM agent review, squash-merge after approval + green CI, ≤3 open PRs, Auto model for cloud agents, self-review checklist on every PR body.
