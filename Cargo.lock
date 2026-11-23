@@ -5890,10 +5890,14 @@ dependencies = [
 name = "sela-app"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "gpui-kit",
+ "rust_decimal",
  "sela-config",
  "sela-core",
  "sela-drivers",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
