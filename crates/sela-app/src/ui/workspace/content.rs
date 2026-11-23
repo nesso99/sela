@@ -1,4 +1,6 @@
-//! Tab / content area: toolbar, results grid, and SQL editor.
+//! Content area: toolbar, results grid, and SQL editor.
+//!
+//! Tab chrome lives in `tabs.rs`. Structure pane UI (M1-6) is per active tab.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Textarea;
@@ -7,7 +9,7 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, IntoElement};
 
-use super::Workspace;
+use super::{TablePane, Workspace};
 
 impl Workspace {
     pub(super) fn toolbar(
@@ -20,6 +22,15 @@ impl Workspace {
         connected: bool,
     ) -> impl IntoElement {
         let this = cx.entity();
+        let busy = self.active_view().map(|view| view.busy).unwrap_or(false);
+        let table_pane = self
+            .active_view()
+            .map(|view| view.table_pane)
+            .unwrap_or(TablePane::Data);
+        let label = self
+            .active_view()
+            .map(|view| view.source_label())
+            .unwrap_or_else(|| "No table open".into());
         h_flex()
             .h(px(44.))
             .px_3()
@@ -28,7 +39,7 @@ impl Workspace {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
-                v_flex().child(self.source_label()).child(
+                v_flex().child(label).child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
@@ -43,8 +54,8 @@ impl Workspace {
                         let this_data = this.clone();
                         let this_structure = this.clone();
                         let this_refresh = this.clone();
-                        let on_data = matches!(self.table_pane, super::TablePane::Data);
-                        let on_structure = matches!(self.table_pane, super::TablePane::Structure);
+                        let on_data = matches!(table_pane, TablePane::Data);
+                        let on_structure = matches!(table_pane, TablePane::Structure);
                         row.child(
                             h_flex()
                                 .gap_1()
@@ -81,7 +92,7 @@ impl Workspace {
                                         Button::new("pane-structure-refresh")
                                             .xsmall()
                                             .label("Refresh")
-                                            .disabled(!connected || self.busy)
+                                            .disabled(!connected || busy)
                                             .tooltip("Reload structure for this table")
                                             .on_click(move |_, _, cx| {
                                                 this_refresh.update(cx, |workspace, cx| {
@@ -92,7 +103,7 @@ impl Workspace {
                                 }),
                         )
                     })
-                    .when(matches!(self.table_pane, super::TablePane::Data), |row| {
+                    .when(matches!(table_pane, TablePane::Data), |row| {
                         let this_prev = this.clone();
                         let this_next = this;
                         row.child(
@@ -105,7 +116,7 @@ impl Workspace {
                             Button::new("page-prev")
                                 .xsmall()
                                 .label("Previous")
-                                .disabled(!can_prev || self.busy || !connected)
+                                .disabled(!can_prev || busy || !connected)
                                 .on_click(move |_, _, cx| {
                                     this_prev
                                         .update(cx, |workspace, cx| workspace.step_page(-1, cx));
@@ -115,7 +126,7 @@ impl Workspace {
                             Button::new("page-next")
                                 .xsmall()
                                 .label("Next")
-                                .disabled(!can_next || self.busy || !connected)
+                                .disabled(!can_next || busy || !connected)
                                 .on_click(move |_, _, cx| {
                                     this_next
                                         .update(cx, |workspace, cx| workspace.step_page(1, cx));
@@ -136,15 +147,30 @@ impl Workspace {
     }
 
     pub(super) fn results_area(&self) -> impl IntoElement {
+        let grid = self.active_view().map(|view| view.grid.clone());
         div()
             .flex_1()
             .min_h(px(0.))
             .overflow_hidden()
-            .child(DataTable::new(&self.grid).stripe(true).bordered(true))
+            .when_some(grid, |area, grid| {
+                area.child(DataTable::new(&grid).stripe(true).bordered(true))
+            })
     }
 
     pub(super) fn sql_editor(&self, cx: &Context<Self>, connected: bool) -> impl IntoElement {
         let this = cx.entity();
+        let view = self.active_view();
+        let busy = view.map(|v| v.busy).unwrap_or(false);
+        let truncated = view.map(|v| v.truncated).unwrap_or(false);
+        let can_load_more = view.map(|v| v.can_load_more).unwrap_or(false);
+        let is_table = view
+            .map(|v| matches!(v.source, super::GridSource::Table { .. }))
+            .unwrap_or(false);
+        let row_count_kind = view
+            .map(|v| v.row_count_kind)
+            .unwrap_or(sela_core::RowCountKind::Unknown);
+        let sql = view.map(|v| v.sql.clone());
+
         v_flex()
             .h(px(176.))
             .border_t_1()
@@ -169,8 +195,8 @@ impl Workspace {
                                 Button::new("run-query")
                                     .small()
                                     .primary()
-                                    .label(if self.busy { "Running…" } else { "Run" })
-                                    .disabled(self.busy || !connected)
+                                    .label(if busy { "Running…" } else { "Run" })
+                                    .disabled(busy || !connected || sql.is_none())
                                     .tooltip("Run the statement (Ctrl+Enter / ⌘+Enter)")
                                     .on_click(move |_, _, cx| {
                                         this.update(cx, |workspace, cx| workspace.run_editor(cx));
@@ -181,13 +207,13 @@ impl Workspace {
                                 Button::new("stop-query")
                                     .small()
                                     .label("Stop")
-                                    .disabled(!self.busy || !connected)
+                                    .disabled(!busy || !connected)
                                     .tooltip("Cancel the running query (Ctrl+. / ⌘+.)")
                                     .on_click(move |_, _, cx| {
                                         this.update(cx, |workspace, cx| workspace.stop_query(cx));
                                     })
                             })
-                            .when(self.truncated && self.can_load_more && !self.busy, |row| {
+                            .when(truncated && can_load_more && !busy, |row| {
                                 let this = this.clone();
                                 row.child(
                                     Button::new("load-more")
@@ -202,13 +228,13 @@ impl Workspace {
                                 )
                             })
                             .when(
-                                matches!(self.source, super::GridSource::Table { .. })
+                                is_table
                                     && matches!(
-                                        self.row_count_kind,
+                                        row_count_kind,
                                         sela_core::RowCountKind::Estimated
                                             | sela_core::RowCountKind::Unknown
                                     )
-                                    && !self.busy,
+                                    && !busy,
                                 |row| {
                                     let this = this;
                                     row.child(
@@ -226,10 +252,12 @@ impl Workspace {
                             ),
                     ),
             )
-            .child(
-                div().flex_1().px_2().pb_2().child(
-                    Textarea::new(&self.sql).font_family(cx.theme().mono_font_family.clone()),
-                ),
-            )
+            .when_some(sql, |column, sql| {
+                column.child(
+                    div().flex_1().px_2().pb_2().child(
+                        Textarea::new(&sql).font_family(cx.theme().mono_font_family.clone()),
+                    ),
+                )
+            })
     }
 }

@@ -9,6 +9,7 @@ mod result_window;
 mod session;
 mod sql;
 mod structure;
+mod tabs;
 mod types;
 
 pub use connection::SavedConnection;
@@ -23,6 +24,7 @@ pub use sql::{
     select_all, split_statements, strip_comments, wrap_count, wrap_page, SqlError, StatementKind,
 };
 pub use structure::{ColumnStructure, ForeignKeyInfo, IndexInfo, TableStructure};
+pub use tabs::{PersistedTab, PersistedTabs, Tab, TabId, TabKind, TabList};
 pub use types::{
     truncate_one_line, ColumnMeta, Dialect, Engine, ExecOutcome, Interval, QueryPage, RelationKind,
     RowCountKind, RowSet, SchemaInfo, StatementOutcome, StreamBatch, StreamOutcome, TableInfo,

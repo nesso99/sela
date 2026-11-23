@@ -15,8 +15,15 @@ use super::super::form::{ConnectionDraft, ConnectionForm, FormEvent};
 use super::tree::{conn_key, parse_node, schema_key, NodeId};
 use super::{GridSource, Workspace};
 
+// `open_table` lives in tabs.rs as `open_table_tab`.
+
 impl Workspace {
-    pub(super) fn on_selection(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn on_selection(
+        &mut self,
+        id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if id == self.last_selection {
             return;
         }
@@ -26,7 +33,7 @@ impl Workspace {
         };
         match parse_node(&id) {
             Some(NodeId::Connection(connection_id)) => self.connect_id(connection_id, cx),
-            Some(NodeId::Table { schema, table }) => self.open_table(schema, table, cx),
+            Some(NodeId::Table { schema, table }) => self.open_table_tab(schema, table, window, cx),
             None => {}
         }
     }
@@ -41,10 +48,13 @@ impl Workspace {
         let password = match self.secrets.get(&saved.id) {
             Ok(password) => password,
             Err(err) => {
-                self.error = Some(format!(
-                    "Could not read the password from the OS keychain: {err}"
-                ));
-                self.status = "Connection failed".into();
+                let message = format!("Could not read the password from the OS keychain: {err}");
+                if let Some(view) = self.active_view_mut() {
+                    view.error = Some(message);
+                    view.status = "Connection failed".into();
+                } else {
+                    self.boot_error = Some(message);
+                }
                 cx.notify();
                 return;
             }
@@ -54,13 +64,16 @@ impl Workspace {
         self.active_id = Some(saved_id.clone());
         self.session = None;
         self.catalog.clear();
-        self.source = GridSource::Idle;
-        self.error = None;
-        self.status = format!("Connecting to {saved_name}…");
+        if let Some(view) = self.active_view_mut() {
+            view.error = None;
+            view.status = format!("Connecting to {saved_name}…");
+        }
         self.rebuild_tree(cx);
+        let tab_id = self.tabs.active().map(|tab| tab.id);
         self.spawn_work(
+            tab_id,
             cx,
-            async move { open_session(saved, password).await },
+            |_| async move { open_session(saved, password).await },
             move |this, result, cx| match result {
                 Ok((session, catalog)) => {
                     this.session = Some(session);
@@ -70,15 +83,23 @@ impl Workspace {
                         this.expanded.insert(schema_key(&saved_id, &schema.name));
                     }
                     let count: usize = this.catalog.iter().map(|schema| schema.tables.len()).sum();
-                    this.status = format!("Connected to {saved_name} · {count} tables");
-                    this.error = None;
+                    if let Some(view) = this.active_view_mut() {
+                        view.status = format!("Connected to {saved_name} · {count} tables");
+                        view.error = None;
+                    }
                     this.rebuild_tree(cx);
+                    // Load the active table tab now that the session is ready.
+                    this.on_tab_activated(cx);
                 }
                 Err(err) => {
                     this.session = None;
                     this.catalog.clear();
-                    this.status = "Connection failed".into();
-                    this.error = Some(err.to_string());
+                    if let Some(view) = this.active_view_mut() {
+                        view.status = "Connection failed".into();
+                        view.error = Some(err.to_string());
+                    } else {
+                        this.boot_error = Some(err.to_string());
+                    }
                     this.rebuild_tree(cx);
                 }
             },
@@ -132,15 +153,22 @@ impl Workspace {
         } else {
             self.connections.push(draft.connection);
         }
-        self.note = match persistence {
+        let note = match persistence {
             PasswordPersistence::Keychain => Some("Password saved in the OS keychain.".into()),
             PasswordPersistence::MemoryOnly(message) => Some(format!(
                 "The OS keychain is unavailable, so the password is kept for this session only. {message}"
             )),
             PasswordPersistence::Empty => None,
         };
+        if let Some(view) = self.active_view_mut() {
+            view.note = note;
+        }
         if let Err(err) = self.store.save(&self.connections) {
-            self.error = Some(err.to_string());
+            if let Some(view) = self.active_view_mut() {
+                view.error = Some(err.to_string());
+            } else {
+                self.boot_error = Some(err.to_string());
+            }
         }
         self.session = None;
         self.rebuild_tree(cx);
@@ -176,11 +204,28 @@ impl Workspace {
     pub(super) fn delete_connection(&mut self, id: &str, cx: &mut Context<Self>) {
         self.secrets.delete(id);
         self.connections.retain(|item| item.id != id);
+        // Close tabs that pointed at the deleted connection.
+        let doomed: Vec<_> = self
+            .tabs
+            .tabs()
+            .iter()
+            .filter(|tab| tab.connection_id == id)
+            .map(|tab| tab.id)
+            .collect();
+        for tab_id in doomed {
+            self.tabs.close(tab_id);
+            self.views.remove(&tab_id);
+        }
+        self.persist_tabs(cx);
         if self.active_id.as_deref() == Some(id) {
             self.disconnect(cx);
         }
         if let Err(err) = self.store.save(&self.connections) {
-            self.error = Some(err.to_string());
+            if let Some(view) = self.active_view_mut() {
+                view.error = Some(err.to_string());
+            } else {
+                self.boot_error = Some(err.to_string());
+            }
         }
         self.rebuild_tree(cx);
         cx.notify();
@@ -189,19 +234,21 @@ impl Workspace {
     pub(super) fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.session = None;
         self.catalog.clear();
-        self.source = GridSource::Idle;
-        self.table_pane = super::TablePane::Data;
-        self.clear_structure_cache();
-        self.page_offset = 0;
-        self.page_len = 0;
-        self.total_rows = None;
-        self.status = "Disconnected".into();
-        self.grid.update(cx, |state, cx| {
-            state
-                .delegate_mut()
-                .show_message("Open a table, or run a query.");
-            state.refresh(cx);
-        });
+        self.clear_all_structure_caches();
+        if let Some(view) = self.active_view_mut() {
+            view.source = GridSource::Idle;
+            view.table_pane = super::TablePane::Data;
+            view.page_offset = 0;
+            view.page_len = 0;
+            view.total_rows = None;
+            view.status = "Disconnected".into();
+            view.grid.update(cx, |state, cx| {
+                state
+                    .delegate_mut()
+                    .show_message("Open a table, or run a query.");
+                state.refresh(cx);
+            });
+        }
     }
 
     pub(super) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
@@ -209,23 +256,31 @@ impl Workspace {
             return;
         };
         let active = self.active_id.clone();
-        self.clear_structure_cache();
-        self.status = "Refreshing tables…".into();
+        self.clear_all_structure_caches();
+        if let Some(view) = self.active_view_mut() {
+            view.status = "Refreshing tables…".into();
+        }
+        let tab_id = self.tabs.active().map(|tab| tab.id);
         self.spawn_work(
+            tab_id,
             cx,
-            async move { load_catalog(session.as_ref()).await },
+            |_| async move { load_catalog(session.as_ref()).await },
             move |this, result, cx| match result {
                 Ok(catalog) => {
                     this.catalog = catalog;
                     if let Some(id) = active {
                         this.expanded.insert(conn_key(&id));
                     }
-                    this.status = "Tables refreshed".into();
+                    if let Some(view) = this.active_view_mut() {
+                        view.status = "Tables refreshed".into();
+                    }
                     this.rebuild_tree(cx);
                 }
                 Err(err) => {
-                    this.error = Some(err.to_string());
-                    this.status = "Refresh failed".into();
+                    if let Some(view) = this.active_view_mut() {
+                        view.error = Some(err.to_string());
+                        view.status = "Refresh failed".into();
+                    }
                     cx.notify();
                 }
             },
@@ -234,11 +289,15 @@ impl Workspace {
 
     pub(super) fn create_sample(&mut self, cx: &mut Context<Self>) {
         let path = sample_database_path(&self.store);
-        self.status = "Creating the sample library…".into();
-        self.error = None;
+        if let Some(view) = self.active_view_mut() {
+            view.status = "Creating the sample library…".into();
+            view.error = None;
+        }
+        let tab_id = self.tabs.active().map(|tab| tab.id);
         self.spawn_work(
+            tab_id,
             cx,
-            async move { ensure_sample(&path).await },
+            |_| async move { ensure_sample(&path).await },
             |this, result, cx| match result {
                 Ok(path) => {
                     let path_text = path.display().to_string();
@@ -258,14 +317,22 @@ impl Workspace {
                     let id = connection.id.clone();
                     this.connections.push(connection);
                     if let Err(err) = this.store.save(&this.connections) {
-                        this.error = Some(err.to_string());
+                        if let Some(view) = this.active_view_mut() {
+                            view.error = Some(err.to_string());
+                        } else {
+                            this.boot_error = Some(err.to_string());
+                        }
                     }
                     this.rebuild_tree(cx);
                     this.connect_id(id, cx);
                 }
                 Err(err) => {
-                    this.error = Some(err.to_string());
-                    this.status = "Could not create the sample library".into();
+                    if let Some(view) = this.active_view_mut() {
+                        view.error = Some(err.to_string());
+                        view.status = "Could not create the sample library".into();
+                    } else {
+                        this.boot_error = Some(err.to_string());
+                    }
                     cx.notify();
                 }
             },
