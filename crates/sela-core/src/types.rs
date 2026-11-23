@@ -7,8 +7,14 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Rows fetched for one page of a grid.
+/// Rows fetched for one page of a grid / table preview.
 pub const PAGE_SIZE: u32 = 100;
+
+/// Default cap for arbitrary user SQL streams (not table preview).
+pub const DEFAULT_SQL_ROW_CAP: u32 = 1_000;
+
+/// Rows per channel batch when streaming a query.
+pub const STREAM_BATCH_SIZE: usize = 100;
 
 /// Max Unicode scalars shown in a grid cell (one line; newlines become ⏎).
 pub const CELL_DISPLAY_MAX_CHARS: usize = 200;
@@ -344,14 +350,51 @@ pub struct QueryPage {
     pub duration: Duration,
 }
 
+/// How [`RowSet::total_rows`] / the grid row count should be interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowCountKind {
+    /// Exact `COUNT(*)` (or a fully consumed stream with no cap).
+    Exact,
+    /// Engine estimate (e.g. `pg_class.reltuples`, MySQL `table_rows`).
+    Estimated,
+    /// At least this many rows were seen; more may exist past a cap (`1000+`).
+    AtLeast,
+    /// No estimate available (typical for SQLite table preview).
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub struct RowSet {
     pub page: QueryPage,
     pub total_rows: Option<u64>,
+    pub row_count_kind: RowCountKind,
     pub duration: Duration,
-    /// False when the statement could not be wrapped in `LIMIT`/`OFFSET`.
+    /// True when table preview uses server `LIMIT`/`OFFSET` paging.
     pub paged: bool,
+    /// True when a stream stopped at a row cap and more rows may exist.
+    pub truncated: bool,
     pub note: Option<String>,
+}
+
+/// One batch from a streaming query (columns on the first batch only).
+#[derive(Debug, Clone)]
+pub struct StreamBatch {
+    pub columns: Option<Vec<ColumnMeta>>,
+    pub rows: Vec<Vec<Value>>,
+    pub start_index: usize,
+    /// Stream reached the current row cap and is waiting for the cap to rise (Load more).
+    pub paused_at_cap: bool,
+}
+
+/// Summary returned when a stream completes, hits a cap, or is cancelled.
+#[derive(Debug, Clone)]
+pub struct StreamOutcome {
+    pub columns: Vec<ColumnMeta>,
+    pub rows_delivered: usize,
+    pub truncated: bool,
+    pub cancelled: bool,
+    pub duration: Duration,
 }
 
 #[derive(Debug, Clone)]

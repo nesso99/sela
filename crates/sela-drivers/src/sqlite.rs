@@ -4,10 +4,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
+use tokio_util::sync::CancellationToken;
+
 use sqlx::Row;
 
 use sela_core::{
-    quote_ident, DatabaseSession, DbError, Dialect, QueryPage, RelationKind, SchemaInfo, TableInfo,
+    quote_ident, DatabaseSession, DbError, Dialect, QueryPage, RelationKind, SchemaInfo,
+    StreamBatch, StreamOutcome, TableInfo,
 };
 
 pub const SAMPLE_SQL: &str = include_str!("../../../scripts/seed-sqlite.sql");
@@ -88,6 +91,36 @@ impl DatabaseSession for SqliteSession {
     async fn count_query(&self, sql: &str) -> Result<u64, DbError> {
         crate::count_sql!(&self.pool, sql)
     }
+
+    async fn estimate_table_rows(
+        &self,
+        _schema: &str,
+        _table: &str,
+    ) -> Result<Option<u64>, DbError> {
+        // SQLite has no cheap planner estimate comparable to reltuples / table_rows.
+        Ok(None)
+    }
+
+    async fn stream_query(
+        &self,
+        sql: &str,
+        batch_size: usize,
+        row_cap: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+        finish_at_cap: bool,
+        cancel: CancellationToken,
+        sink: async_channel::Sender<StreamBatch>,
+    ) -> Result<StreamOutcome, DbError> {
+        crate::stream::stream_sqlite(
+            &self.pool,
+            sql,
+            batch_size,
+            row_cap,
+            finish_at_cap,
+            cancel,
+            sink,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -120,9 +153,16 @@ mod tests {
             .iter()
             .any(|table| table.name == "books_in_print" && table.kind == RelationKind::View));
 
-        let outcome = preview_table(&session, "main", "books", PAGE_SIZE, 0)
-            .await
-            .unwrap();
+        let outcome = preview_table(
+            &session,
+            "main",
+            "books",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let StatementOutcome::Rows(rows) = outcome else {
             panic!("expected rows");
         };
@@ -141,7 +181,12 @@ mod tests {
                 .contains("TEXT")
                 || !rows.page.columns[title].type_name.is_empty()
         );
-        assert!(rows.total_rows.unwrap() >= rows.page.rows.len() as u64);
+        // SQLite has no planner estimate; exact count is on demand.
+        assert!(rows.total_rows.is_none());
+        let exact = sela_core::exact_table_rows(&session, "main", "books")
+            .await
+            .unwrap();
+        assert!(exact >= rows.page.rows.len() as u64);
 
         let notes = rows
             .page
@@ -183,14 +228,27 @@ mod tests {
             .await
             .unwrap();
 
-        let first = preview_table(&session, "main", "readings", PAGE_SIZE, 0)
-            .await
-            .unwrap();
+        let first = preview_table(
+            &session,
+            "main",
+            "readings",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let StatementOutcome::Rows(first) = first else {
             panic!("rows");
         };
         assert_eq!(first.page.rows.len(), 100);
-        assert_eq!(first.total_rows, Some(120));
+        assert!(first.total_rows.is_none());
+        assert_eq!(
+            sela_core::exact_table_rows(&session, "main", "readings")
+                .await
+                .unwrap(),
+            120
+        );
         let pages_ix = first
             .page
             .columns
@@ -199,17 +257,29 @@ mod tests {
             .unwrap();
         assert_eq!(first.page.rows[0][pages_ix], Value::Int(1));
 
-        let second = preview_table(&session, "main", "readings", PAGE_SIZE, 100)
-            .await
-            .unwrap();
+        let second = preview_table(
+            &session,
+            "main",
+            "readings",
+            PAGE_SIZE,
+            100,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let StatementOutcome::Rows(second) = second else {
             panic!("rows");
         };
         assert_eq!(second.page.rows.len(), 20);
 
-        let blob = run_user_sql(&session, "SELECT cover FROM readings WHERE id = 1", 10, 0)
-            .await
-            .unwrap();
+        let blob = run_user_sql(
+            &session,
+            "SELECT cover FROM readings WHERE id = 1",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let StatementOutcome::Rows(blob) = blob else {
             panic!("rows");
         };
@@ -219,7 +289,7 @@ mod tests {
             &session,
             "select count(*) as n from readings -- tail",
             10,
-            0,
+            CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -228,14 +298,20 @@ mod tests {
         };
         assert_eq!(commented.page.rows.len(), 1);
 
-        let failed = run_user_sql(&session, "SELECT * FROM missing_table", 10, 0).await;
+        let failed = run_user_sql(
+            &session,
+            "SELECT * FROM missing_table",
+            10,
+            CancellationToken::new(),
+        )
+        .await;
         assert!(failed.is_err());
 
         let executed = run_user_sql(
             &session,
             "INSERT INTO readings (id, pages, rating) VALUES (121, 3, 2.0)",
             10,
-            0,
+            CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -244,9 +320,14 @@ mod tests {
         };
         assert_eq!(executed.rows_affected, 1);
 
-        let empty = run_user_sql(&session, "SELECT id, note FROM readings WHERE 0", 10, 0)
-            .await
-            .unwrap();
+        let empty = run_user_sql(
+            &session,
+            "SELECT id, note FROM readings WHERE 0",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let StatementOutcome::Rows(empty) = empty else {
             panic!("rows");
         };
@@ -305,7 +386,7 @@ mod tests {
             "SELECT flag, whole, real_num, label, payload, born, punched, seen, missing
              FROM sela_types WHERE id = 1",
             10,
-            0,
+            CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -366,7 +447,7 @@ mod tests {
             &session,
             "SELECT padded, zip, note FROM codes WHERE id = 1",
             10,
-            0,
+            CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -379,5 +460,92 @@ mod tests {
         assert_eq!(row[2], Value::Text("ok".into()));
         assert_eq!(row[0].display(), "007");
         assert_eq!(row[1].display(), "02134");
+    }
+
+    #[tokio::test]
+    async fn sqlite_sql_cap_and_load_more() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SqliteSession::open(&dir.path().join("cap.sqlite"), true)
+            .await
+            .unwrap();
+        session
+            .execute("CREATE TABLE nums (id INTEGER PRIMARY KEY)")
+            .await
+            .unwrap();
+        for id in 1..=1500 {
+            session
+                .execute(&format!("INSERT INTO nums (id) VALUES ({id})"))
+                .await
+                .unwrap();
+        }
+
+        let capped = run_user_sql(
+            &session,
+            "SELECT id FROM nums ORDER BY id",
+            1000,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(capped) = capped else {
+            panic!("rows");
+        };
+        assert_eq!(capped.page.rows.len(), 1000);
+        assert!(capped.truncated);
+        assert_eq!(capped.row_count_kind, sela_core::RowCountKind::AtLeast);
+
+        // Load more via a higher cap (collect helper finishes at cap each call).
+        let more = run_user_sql(
+            &session,
+            "SELECT id FROM nums ORDER BY id",
+            1500,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(more) = more else {
+            panic!("rows");
+        };
+        assert_eq!(more.page.rows.len(), 1500);
+        assert!(!more.truncated);
+
+        // Live stream pause + raise-cap path.
+        let cap = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1000));
+        let (tx, rx) = async_channel::bounded(8);
+        let cancel = CancellationToken::new();
+        let produce = {
+            let cap = cap.clone();
+            let cancel = cancel.clone();
+            async move {
+                session
+                    .stream_query(
+                        "SELECT id FROM nums ORDER BY id",
+                        100,
+                        Some(cap),
+                        false,
+                        cancel,
+                        tx,
+                    )
+                    .await
+            }
+        };
+        let mut saw_pause = false;
+        let mut rows = 0usize;
+        let collector = async {
+            while let Ok(batch) = rx.recv().await {
+                if batch.paused_at_cap {
+                    saw_pause = true;
+                    cap.store(1500, std::sync::atomic::Ordering::SeqCst);
+                    continue;
+                }
+                rows += batch.rows.len();
+            }
+            rows
+        };
+        let (outcome, collected) = tokio::join!(produce, collector);
+        let outcome = outcome.unwrap();
+        assert!(saw_pause, "expected pause at cap");
+        assert_eq!(outcome.rows_delivered, 1500);
+        assert_eq!(collected, 1500);
     }
 }

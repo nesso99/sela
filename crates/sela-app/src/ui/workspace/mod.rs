@@ -8,7 +8,9 @@ mod status;
 mod tree;
 
 use std::collections::HashSet;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::component::table::TableState;
@@ -16,12 +18,13 @@ use gpui_kit::component::tree::{TreeEvent, TreeState};
 use gpui_kit::component::{v_flex, ActiveTheme};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, Entity, IntoElement, Render, Subscription, Window};
+use tokio_util::sync::CancellationToken;
 
 use sela_config::{CachingSecrets, ConfigStore, KeyringStore, SavedConnection};
-use sela_core::{DatabaseSession, LoadedSchema};
+use sela_core::{DatabaseSession, LoadedSchema, RowCountKind, DEFAULT_SQL_ROW_CAP};
 
 use super::grid::GridDelegate;
-use super::RunQuery;
+use super::{CancelQuery, RunQuery};
 
 pub struct Workspace {
     store: ConfigStore,
@@ -38,12 +41,18 @@ pub struct Workspace {
     page_offset: u64,
     page_len: usize,
     total_rows: Option<u64>,
+    row_count_kind: RowCountKind,
     paged: bool,
+    truncated: bool,
+    sql_row_cap: u32,
+    live_row_cap: Option<Arc<AtomicUsize>>,
     status: String,
     error: Option<String>,
     note: Option<String>,
     busy: bool,
     request: u64,
+    cancel: Option<CancellationToken>,
+    query_started: Option<Instant>,
     last_selection: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -91,6 +100,11 @@ impl Workspace {
                 .map(|item| item.id.to_string());
             this.on_selection(selected, cx);
         });
+        let grid_pages = cx.observe(&grid, |this, grid, cx| {
+            if !grid.read(cx).delegate().pending_pages.is_empty() {
+                this.fetch_pending_pages(cx);
+            }
+        });
         let mut workspace = Self {
             store,
             secrets: CachingSecrets::new(KeyringStore),
@@ -106,14 +120,20 @@ impl Workspace {
             page_offset: 0,
             page_len: 0,
             total_rows: None,
+            row_count_kind: RowCountKind::Unknown,
             paged: false,
+            truncated: false,
+            sql_row_cap: DEFAULT_SQL_ROW_CAP,
+            live_row_cap: None,
             status: "No database connected".into(),
             error,
             note: None,
             busy: false,
             request: 0,
+            cancel: None,
+            query_started: None,
             last_selection: None,
-            _subscriptions: vec![tree_events, tree_selection],
+            _subscriptions: vec![tree_events, tree_selection, grid_pages],
         };
         workspace.rebuild_tree(cx);
         workspace
@@ -170,6 +190,12 @@ impl Render for Workspace {
                 let this = this.clone();
                 move |_: &RunQuery, _, cx| {
                     this.update(cx, |workspace, cx| workspace.run_editor(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CancelQuery, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.stop_query(cx));
                 }
             })
             .child(self.sidebar(cx))

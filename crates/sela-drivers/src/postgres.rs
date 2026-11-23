@@ -4,9 +4,11 @@ use async_trait::async_trait;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::PgPool;
 
+use tokio_util::sync::CancellationToken;
+
 use sela_core::{
     DatabaseSession, DbError, Dialect, QueryPage, RelationKind, SavedConnection, SchemaInfo,
-    TableInfo,
+    StreamBatch, StreamOutcome, TableInfo,
 };
 
 use sqlx::Row;
@@ -109,6 +111,52 @@ impl DatabaseSession for PostgresSession {
     async fn count_query(&self, sql: &str) -> Result<u64, DbError> {
         crate::count_sql!(&self.pool, sql)
     }
+
+    async fn estimate_table_rows(&self, schema: &str, table: &str) -> Result<Option<u64>, DbError> {
+        let row = sqlx::query(
+            "SELECT c.reltuples::bigint AS estimate
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND c.relname = $2
+               AND c.relkind IN ('r', 'p', 'm', 'v', 'f')
+             LIMIT 1",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(crate::sqlx_err)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let estimate: i64 = row.try_get("estimate").map_err(crate::sqlx_err)?;
+        if estimate < 0 {
+            Ok(None)
+        } else {
+            Ok(Some(estimate as u64))
+        }
+    }
+
+    async fn stream_query(
+        &self,
+        sql: &str,
+        batch_size: usize,
+        row_cap: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+        finish_at_cap: bool,
+        cancel: CancellationToken,
+        sink: async_channel::Sender<StreamBatch>,
+    ) -> Result<StreamOutcome, DbError> {
+        crate::stream::stream_postgres(
+            &self.pool,
+            sql,
+            batch_size,
+            row_cap,
+            finish_at_cap,
+            cancel,
+            sink,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -160,19 +208,35 @@ mod tests {
         let tables = session.list_tables(&schema).await.unwrap();
         assert!(tables.iter().any(|item| item.name == "sela_probe"));
 
-        let outcome = preview_table(&session, &schema, "sela_probe", PAGE_SIZE, 0)
-            .await
-            .unwrap();
+        let outcome = preview_table(
+            &session,
+            &schema,
+            "sela_probe",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let StatementOutcome::Rows(rows) = outcome else {
             panic!("expected rows");
         };
         assert_eq!(rows.page.rows.len(), 2);
         assert!(rows.page.columns.iter().any(|column| column.name == "name"));
-        assert_eq!(rows.total_rows, Some(2));
-
-        let queried = run_user_sql(&session, "SELECT name FROM sela_probe WHERE id = 2", 10, 0)
+        // Estimate may be stale until ANALYZE; exact count is on demand.
+        let exact = sela_core::exact_table_rows(&session, &schema, "sela_probe")
             .await
             .unwrap();
+        assert_eq!(exact, 2);
+
+        let queried = run_user_sql(
+            &session,
+            "SELECT name FROM sela_probe WHERE id = 2",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let StatementOutcome::Rows(rows) = queried else {
             panic!("expected rows");
         };
@@ -251,7 +315,7 @@ mod tests {
                     doc, docb, born, punched, seen, seen_tz, gap, missing
              FROM sela_types",
             10,
-            0,
+            CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -312,5 +376,85 @@ mod tests {
         assert_eq!(row[15].display(), "2024-01-02T03:04:05Z");
 
         session.execute("DROP TABLE sela_types").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_cancel_sleep_within_one_second() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres cancel: set SELA_POSTGRES_URL");
+            return;
+        };
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+        let cancel = CancellationToken::new();
+        let cancel_later = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            cancel_later.cancel();
+        });
+        let started = std::time::Instant::now();
+        let err = run_user_sql(&session, "SELECT pg_sleep(10)", 10, cancel)
+            .await
+            .expect_err("expected cancel");
+        assert!(
+            matches!(err, DbError::Cancelled { .. }),
+            "expected Cancelled, got {err:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "cancel took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_stream_first_batch_before_finish() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres stream: set SELA_POSTGRES_URL");
+            return;
+        };
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+        session
+            .execute("DROP TABLE IF EXISTS sela_stream")
+            .await
+            .unwrap();
+        session
+            .execute("CREATE TABLE sela_stream (id int primary key)")
+            .await
+            .unwrap();
+        for i in 0..250 {
+            session
+                .execute(&format!("INSERT INTO sela_stream VALUES ({i})"))
+                .await
+                .unwrap();
+        }
+        let (tx, rx) = async_channel::bounded(4);
+        let cancel = CancellationToken::new();
+        let produce = session.stream_query(
+            "SELECT id FROM sela_stream ORDER BY id",
+            50,
+            Some(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
+                1000,
+            ))),
+            true,
+            cancel,
+            tx,
+        );
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("first batch timed out")
+            .expect("channel closed");
+        assert!(
+            !first.rows.is_empty() || first.columns.is_some(),
+            "first batch should arrive before the query finishes"
+        );
+        let outcome = produce.await.expect("stream ok");
+        assert!(outcome.rows_delivered >= first.rows.len());
+        // Drain remaining.
+        while rx.recv().await.is_ok() {}
+        session.execute("DROP TABLE sela_stream").await.unwrap();
     }
 }

@@ -15,7 +15,9 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+async-channel = "2"
 async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 gpui-kit = "=0.10.0"
 keyring = "3"
@@ -34,7 +36,8 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 sela-core = { path = "crates/sela-core" }

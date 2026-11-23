@@ -12,7 +12,7 @@ use gpui_kit::{
 
 pub use workspace::Workspace;
 
-actions!(sela, [RunQuery, Quit]);
+actions!(sela, [RunQuery, CancelQuery, Quit]);
 
 pub fn run() {
     gpui_kit::application()
@@ -24,6 +24,8 @@ pub fn run() {
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-enter", RunQuery, None),
                 KeyBinding::new("ctrl-enter", RunQuery, None),
+                KeyBinding::new("cmd-.", CancelQuery, None),
+                KeyBinding::new("ctrl-.", CancelQuery, None),
             ]);
             cx.on_action(|_: &Quit, cx| cx.quit());
 
