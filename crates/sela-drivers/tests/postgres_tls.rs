@@ -96,13 +96,13 @@ async fn postgres_tls_verify_full_hostname_mismatch_is_tls() {
         ca_path: ca,
         ..TlsSettings::default()
     };
-    let err = connect(&connection, &password)
-        .await
-        .expect_err("verify-full against 127.0.0.1 should fail hostname check");
-    assert!(
-        matches!(err, DbError::Tls { .. }),
-        "expected DbError::Tls, got {err:?}"
-    );
+    match connect(&connection, &password).await {
+        Ok(_) => panic!("verify-full against 127.0.0.1 should fail hostname check"),
+        Err(err) => assert!(
+            matches!(err, DbError::Tls { .. }),
+            "expected DbError::Tls, got {err:?}"
+        ),
+    }
 }
 
 #[tokio::test]
@@ -116,15 +116,20 @@ async fn postgres_tls_disable_fails_without_tls_variant() {
         mode: TlsMode::Disable,
         ..TlsSettings::default()
     };
-    let err = connect(&connection, &password)
-        .await
-        .expect_err("disable against hostssl-only server should fail");
-    assert!(
-        !matches!(err, DbError::Tls { .. }),
-        "plain/hostssl rejection must not be classified as Tls, got {err:?}"
-    );
-    assert!(
-        matches!(err, DbError::Connection { .. } | DbError::Auth { .. } | DbError::Config { .. }),
-        "expected Connection/Auth/Config, got {err:?}"
-    );
+    match connect(&connection, &password).await {
+        Ok(_) => panic!("disable against hostssl-only server should fail"),
+        Err(err) => {
+            assert!(
+                !matches!(err, DbError::Tls { .. }),
+                "plain/hostssl rejection must not be classified as Tls, got {err:?}"
+            );
+            assert!(
+                matches!(
+                    err,
+                    DbError::Connection { .. } | DbError::Auth { .. } | DbError::Config { .. }
+                ),
+                "expected Connection/Auth/Config, got {err:?}"
+            );
+        }
+    }
 }
