@@ -264,7 +264,7 @@ Rule: tests assert **observable behavior**; every bugfix gets a regression test.
 ## SQL editor
 
 - Today: multi-line `Textarea`, one statement, Cmd/Ctrl+Enter.
-- M1-4: code editor with highlight, statement-at-cursor, multi-statement (via `split_statements`), format (`sqlformat`).
+- M1-4: code editor with highlight, statement-at-cursor, multi-statement (via `split_statements`). Format (`sqlformat`) is backlog, not M1-4. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md).
 - M3-2: autocomplete from `SchemaCache` + dialect keywords.
 
 ---

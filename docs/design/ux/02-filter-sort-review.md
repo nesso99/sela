@@ -1,6 +1,6 @@
 # Filter and sort — review of the M1-3 plan
 
-US-04 asks for a filter bar (column, operator, value, AND), header-click sort, and visible generated SQL. None of that UI exists. The grid, the status line, and the Exact count button do exist, and they will mis-report a filtered table if M1-3 is dropped on top of them unchanged.
+US-04 asks for a filter bar (column, operator, value, AND), header-click sort, and visible generated SQL. M1-3 is AND-only: no OR and no groups. Header sort applies to table Data only. None of that UI exists. The grid, the status line, and the Exact count button do exist, and they will mis-report a filtered table if M1-3 is dropped on top of them unchanged.
 
 This is a review of those seams. It is not a new filter design. The bar is still one row per predicate: column, operator, value. Shortcuts use the notation in [README.md](./README.md). The status bar’s other strings are in [01-main-window.md](./01-main-window.md).
 
@@ -61,7 +61,11 @@ The button labeled `Exact count` sits in the SQL header, next to Run and Stop (`
 
 `request_exact_count` must count the statement the grid is showing. `exact_table_rows` ignores the filter and would display the unfiltered total as if it were exact.
 
-Build the count with the existing `wrap_count` around the filtered `SELECT` (no LIMIT). On success set `row_count_kind` to `Exact`, set `total_rows`, and let the formatter drop the button. While it runs, status is `Counting…` and the button is disabled. `spawn_work` already sets `busy`.
+Build the count with the existing `wrap_count` around the filtered `SELECT` (no LIMIT). On success set `row_count_kind` to `Exact`, set `total_rows`, and let the formatter drop the button.
+
+There is no confirm dialog. Production tagging does not exist yet, and Count is a read.
+
+Count is cancellable. It uses the tab’s `CancellationToken`, the same one as Stop and `secondary-.`. `spawn_work` already sets `busy`, which enables Stop. While it runs, the status ticks about four times a second: `Counting… · 1.2 s`. The button is disabled for the duration. Cancel leaves the grid and the previous `RowCountKind` in place and sets the status to `Count cancelled`. Do not show the query-cancelled line, and do not clear rows.
 
 On failure, do not set `view.error`. A count failure is not a failed data query, and the banner would sit on top of a good page. Status: `Count failed · {message}`. Leave the grid and the previous kind alone.
 
@@ -187,7 +191,7 @@ Apply validates every row. If any row is invalid, nothing is sent, the previous 
 
 | Case | Result |
 | --- | --- |
-| Text `=` or `!=` with an empty value | Valid. Binds an empty string. `title = ''` is a real filter. |
+| Text `=` or `!=` with an empty value | Valid. Binds `''`. While the field is empty, its placeholder is `empty matches '' · IS NULL for nulls`. The placeholder is not the submitted value. Nulls use `IS NULL` / `IS NOT NULL`, not an empty box. |
 | `LIKE` or `NOT LIKE` with an empty value | Invalid. `Enter a pattern`. Do not rewrite it to `%`. |
 | `IN` with an empty value, or an empty item between commas | Invalid. `IN needs a value` or `Item 2 is empty`. |
 | Number, date, time, timestamp, interval, uuid left empty | Invalid. `Enter a value`. |
@@ -202,7 +206,7 @@ Apply validates every row. If any row is invalid, nothing is sent, the previous 
 | Bytes, other than IS NULL / IS NOT NULL | Those are the only operators in the menu. |
 | Predicate on a view | Same as a table. Views are already in the tree. |
 
-`LIKE` does not add `%` for the user. `%` and `_` are wildcards because the engine treats them that way. Say that in the value field’s tooltip, not as placeholder text that looks like a default.
+`LIKE` does not add `%` for the user. `%` and `_` are wildcards because the engine treats them that way. Say that in the value field’s tooltip. The empty-text hint above is the only placeholder, and only for `=` / `!=` on text.
 
 Client-side parse errors never become a `DbError` banner.
 
@@ -228,14 +232,14 @@ An empty applied filter omits WHERE and ORDER BY and is the `select_all` path `p
 - Filter and sort state live on `TabView`, beside `source`, not inside `GridDelegate` and not in the textarea. Reloading a page keeps them.
 - `GridDelegate::column` reads the sort list to build the header string. Clicks do not go through `DataTable`’s sorter. If `Column` in gpui-component 0.10 has a click callback that does not reorder rows, use it. If the only click path is `sortable(true)`, do not enable it; track Shift yourself and handle the click without letting the table sort.
 - `refresh_status_from_state` gains the `unknown rows · N on this page` branch and stops appending `note` when the formatter already includes that sentence.
-- `request_exact_count` takes the filtered statement. The `GridSource::Table` guard stays (Count is not offered for SQL). The error arm must not assign `view.error`.
+- `request_exact_count` takes the filtered statement. The `GridSource::Table` guard stays (Count is not offered for SQL). The error arm must not assign `view.error`. Wire Count through the same cancel token as other tab work. Tick `Counting… · {elapsed}` in the status bar. Stop and `secondary-.` cancel it without a confirm dialog and without touching the grid.
 - `render`’s page label is already correct once `total_rows` is cleared. Add a test or a UI-state assertion if one exists for the label; otherwise a `sela-core` test is the wrong layer, and a short comment next to the label is enough only if there is no harness. Prefer a focused test on the status formatter if that formatter is extracted out of the GPUI impl.
 - Scope the `RunQuery` binding to the editor context so Enter-family keys in the filter bar cannot call `run_editor`.
 - The filter bar is a column of kit controls: a select for the column, a select for the operator, a single-line input for the value, `xsmall` buttons for remove, add, Apply, and Clear. Row height 26px. Do not build a card around it.
 
-## Open questions
+## Decisions
 
-1. AND-only for M1-3, with OR and groups deferred? This spec is AND-only.
-2. Header sort on SQL results? This spec says no until someone designs wrapping user SQL. Table Data only.
-3. Empty text for `=` is a real empty-string filter. If product would rather treat an empty box as “row not finished”, say so before implementation. `LIKE` is already rejected when empty.
-4. Count is a read. Should a connection that will be tagged production in M2 confirm before Count, or is Count always allowed?
+1. **M1-3 filters are AND-only.** OR and groups come later. The bar has no combiner control.
+2. **Header sort is for table Data only.** SQL result grids stay `sortable(false)`. Do not wrap user SQL in `ORDER BY` in M1-3.
+3. **`=` with an empty text value matches a real `''`.** Use `IS NULL` for nulls. The empty value field shows the hint `empty matches '' · IS NULL for nulls`. `LIKE` with an empty pattern stays invalid.
+4. **Count has no confirmation.** There is no production tagging yet. Count must be cancellable (Stop and `secondary-.`) and must show elapsed time in the status bar (`Counting… · 1.2 s`).

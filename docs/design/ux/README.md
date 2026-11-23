@@ -55,6 +55,7 @@ The user-facing shortcut page should keep saying “⌘ on macOS, Ctrl on Linux 
 | `secondary-s` | Reserved for M2 commit (PRD) |
 | `secondary-shift-z` | Reserved for M2 discard (PRD) |
 | `secondary-,` | Reserved for a future settings window. Unassigned. |
+| `secondary-shift-f` | Reserved for format (`sqlformat`). Backlog, not M1-4. Do not bind it yet. |
 
 `secondary-alt-left` and `secondary-alt-right` are used only when focus is not in a text field, so they do not fight word navigation.
 
@@ -67,7 +68,6 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 | `secondary-enter` | Run statement at caret, or the selection | Do not run. Apply the filter. | Do not run. |
 | `secondary-shift-enter` | Run every statement in the buffer | Add a filter row | No action |
 | `secondary-f` | Find in the editor | Focus the first column field | Toggle the filter bar |
-| `secondary-shift-f` | Format the buffer or the selection | No action | No action |
 | `Enter` | New line in the editor. Accepts autocomplete when the popup is open. | Apply the filter | Open cell inspect until M2, then edit (see the main-window spec) |
 | `Escape` | Close find, then close autocomplete | Close the open menu, then leave the bar | Close inspect |
 
@@ -110,7 +110,7 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 | Cancel | `secondary-.` or Stop | done |
 | Find | `secondary-f` | M1-4 |
 | Find next / previous | `secondary-g` / `secondary-shift-g` | M1-4 |
-| Format | `secondary-shift-f` | M1-4 |
+| Format | `secondary-shift-f` | Reserved. Backlog, not M1-4. |
 | Accept autocomplete | `Enter` while the popup is open | M3-2 |
 | Dismiss autocomplete or find | `Escape` | M1-4 / M3-2 |
 
@@ -129,7 +129,18 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 - Do not invent components the kit already has. The window uses `gpui-component` `DataTable`, `TabBar`, `Tree`, `Button`, and `Textarea` from gpui-kit 0.10. Specs name those.
 - Wireframe PNGs are generated from the HTML files beside them. They are documentation, not fixtures.
 
-## Open questions
+## Decisions
 
-1. Persist sidebar width and editor height across launches, or keep them in memory until config v2 (M1-8)?
-2. [roadmap.md](../roadmap.md), [PRD.md](../PRD.md), and [SPECS.md](../SPECS.md) still list M1-9 (Postgres text fallback) as backlog. `crates/sela-drivers/src/pg_decode.rs` is on `main`. The decode-error spec assumes that code. Should the status rows be marked done?
+Recorded from review. The screen specs repeat the items that change their behavior.
+
+1. Do not persist sidebar width or editor height yet. Later, an optional config field with a serde default and no migration. See [01-main-window.md](./01-main-window.md).
+2. Keep the error banner (full message) and the editor gutter. The gutter is drawn only when the engine reports a position. See [03-sql-editor.md](./03-sql-editor.md).
+3. M1-9 is done (#13). This batch does not edit `roadmap.md` for that. Engineering updates the status rows in the M1-3 pull request.
+4. M1-3 filters are AND-only. OR and groups come later. See [02-filter-sort-review.md](./02-filter-sort-review.md).
+5. Header sort is for table Data only.
+6. `=` with an empty text value matches a real `''`. Use `IS NULL` for nulls. The empty value field shows that hint.
+7. Count has no confirmation. It must be cancellable and must show progress in the status bar (`Counting… · 1.2 s`).
+8. Autocomplete stays in M3-2, out of M1-4. The popup spec stays marked M3-2.
+9. Run-all stops at the first error, names the failing statement, and keeps earlier results.
+10. Cap stored result sets at 8 and evict the oldest.
+11. No `sqlformat` in M1-4. Format is backlog. `secondary-shift-f` is reserved and is not an M1-4 binding. The shortcut tables mark it reserved.

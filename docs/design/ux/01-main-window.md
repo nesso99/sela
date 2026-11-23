@@ -26,7 +26,7 @@ At 1180×760 the sidebar is about a quarter of the width. The grid gets whatever
 
 Sidebar collapse is `secondary-b`. The column width goes to 0 and the 5px drag handle stays, so the sidebar can be pulled back. Editor collapse is the chevron in the SQL header or `secondary-shift-e`. Collapsed height is 28px. Run and Stop stay on that strip.
 
-Sizes live on the workspace for the session. Do not write them into `connections.json` in this batch.
+Sidebar width and editor height live in memory for the session only. Do not persist them yet. A later change may store them as an optional config field with a serde default, and that change must not include a migration.
 
 Column widths stay as they are: `GridDelegate::column` sizes from the header text, clamped to 140–340px, and `Column` is `resizable(true)`. Remembering widths per table is already marked planned in SPECS. Do not add it here.
 
@@ -121,7 +121,7 @@ Grid:
 - If this run has delivered no rows, clear the grid and set the empty message to `Query failed — see the error above.` A failed re-run must not leave the previous result looking current. `apply_outcome`’s error arm currently only sets `loading` to false, so the previous table page stays. Clear it when the failed request delivered nothing.
 - If rows were streamed and then the server failed, keep those rows. Status: `Query failed · 340 rows received · SQLSTATE 42601`. The banner still has the full message.
 
-The editor underline and gutter marker are specified in [03-sql-editor.md](./03-sql-editor.md). Both surfaces stay: the banner is how the window already reports errors, and the gutter is where the position is.
+The banner always shows the full message. The editor gutter and underline are specified in [03-sql-editor.md](./03-sql-editor.md) and appear only when the engine reports a position. An error with no position is the banner and the status line, with no marker in the gutter.
 
 ### Decode-error cells
 
@@ -196,7 +196,7 @@ Filter and editor chords are in the other two specs. They must be context-scoped
 | --- | --- |
 | Table, engine estimate | `~12,400 rows · 18 ms` and a `Count` button |
 | Table, no estimate, or any active filter | `unknown rows · 100 on this page · 18 ms` and a `Count` button |
-| Count in flight | `Counting…` |
+| Count in flight | `Counting… · 1.2 s`. Stop and `secondary-.` cancel it. No confirm dialog. |
 | Count finished | `1,284 rows · 40 ms` and no button |
 | SQL, complete, under the cap | `340 rows · 18 ms` |
 | SQL, capped, Load more allowed | `1,000+ rows · 840 ms · Showing the first 1,000 rows` and `Load more` |
@@ -210,8 +210,8 @@ Filter and editor chords are in the other two specs. They must be context-scoped
 
 ## Implementation notes for engineering
 
-- Sidebar width is a field on `Workspace`, default 292. The drag handle is the existing `border_r_1`, with a 5px hit target. Double-click sets it back to 292. `secondary-b` toggles 0 vs the last width.
-- Editor height is a field on `TabView` (each tab remembers its split). Default 176, matching `sql_editor`’s `h(px(176.))`. The splitter is the top border of that column. Collapsed is a bool that forces height 28 and hides the `Textarea`.
+- Sidebar width is a field on `Workspace`, default 292, not written to disk. The drag handle is the existing `border_r_1`, with a 5px hit target. Double-click sets it back to 292. `secondary-b` toggles 0 vs the last width.
+- Editor height is a field on `TabView` (each tab remembers its split until quit), not written to disk. Default 176, matching `sql_editor`’s `h(px(176.))`. The splitter is the top border of that column. Collapsed is a bool that forces height 28 and hides the `Textarea`.
 - `render_empty` branches on `self.loading` and on a small empty-reason enum (`Idle`, `Running`, `Failed`, `Cancelled`) instead of overloading `empty_message` from every call site. `show_message` remains the path for `N rows affected`.
 - `apply_outcome` error arm: if the grid’s row count for this request is 0, call `show_message("Query failed — see the error above.")`. If rows were delivered, leave them and only clear `loading`.
 - `apply_cancelled`: set the status string in the table above. Do not include `err.to_string()` unless it differs from the generic cancel text.
@@ -221,8 +221,8 @@ Filter and editor chords are in the other two specs. They must be context-scoped
 - Load more footer: a sibling under the `DataTable` inside `results_area`, visible only when `GridSource::Sql` and `truncated`. It is not a row in `ResultWindow`.
 - Do not turn on `TableState::sortable(true)`. Header sort is specified in the filter spec and is server-side.
 
-## Open questions
+## Decisions
 
-1. Should sidebar width and editor height persist across launches, or stay in memory until config v2?
-2. The banner and the editor gutter will both show a SQL error. Is that duplication acceptable through M1-4? This spec keeps both.
-3. M1-9 is implemented in `pg_decode.rs` and still marked backlog in the roadmap, PRD, and SPECS. The cell rules above depend on that code. Please confirm the status rows should be updated.
+1. **Do not persist sidebar width or editor height yet.** Keep both in memory for the session. A later optional config field may store them with a serde default. That change has no migration.
+2. **Keep both error surfaces.** The banner always shows the full message. The gutter marker and underline are drawn only when the engine reports a position.
+3. **M1-9 is done** (#13, `pg_decode.rs`). Text fallbacks are normal cells, as in the decode-error section. Do not edit `roadmap.md` for that status here. Engineering updates the roadmap, PRD, and SPECS status rows in the M1-3 pull request.

@@ -1,6 +1,6 @@
 # SQL editor
 
-The editor is the bottom of the content column. M1-4 replaces the single-statement textarea behavior with statement-at-caret, multi-statement runs, a gutter, and format. Autocomplete is M3-2 (US-08). Both are specified here so the chords and the split are chosen once. Shortcut notation is in [README.md](./README.md). The running, cancelled, capped, and error states of the window are in [01-main-window.md](./01-main-window.md).
+The editor is the bottom of the content column. M1-4 replaces the single-statement textarea behavior with statement-at-caret, multi-statement runs, and a gutter. Format (`sqlformat`) is backlog, not M1-4. Autocomplete is M3-2 (US-08) and is specified here so its chords are not taken by M1-4. Shortcut notation is in [README.md](./README.md). The running, cancelled, capped, and error states of the window are in [01-main-window.md](./01-main-window.md).
 
 ![Editor split, statement gutter, autocomplete above the caret, and a result-set strip](images/sql-editor.png)
 
@@ -99,19 +99,14 @@ There is no manual chord. `secondary-space` is Spotlight on macOS. `ctrl-space` 
 
 ## Errors
 
-Three places, all fed from the same failure:
+The banner and the gutter are both kept. They are not substitutes.
 
-1. **Gutter.** A 2px `danger` bar on the line, full line height. This is separate from the muted bar that marks the statement to run.
-2. **Underline.** A 1px `danger` underline on the reported span.
-3. **Banner and status.** The existing `error_banner` above the grid, capped around 60px, plus the status line from the main-window spec (`Query failed · SQLSTATE 42601`).
+1. **Banner and status.** Always. `error_banner` above the grid shows the full `DbError` message, capped around 60px, plus the status line from the main-window spec (`Query failed · SQLSTATE 42601`). On a multi-statement run, the status names the statement: `Query failed · statement 2 · SQLSTATE 42601`.
+2. **Gutter and underline.** Only when the engine reports a position. A 2px `danger` bar on that line, and a 1px `danger` underline on the reported span. This is separate from the muted bar that marks the statement `secondary-enter` will run. If the engine reports a line and no column, underline the whole line. If it reports no position, draw nothing in the gutter and do not guess a line.
 
-`DbError` has no position field. Use one when a later API adds it. Until then:
+`DbError` has no position field today. Parse a position only from what the engine actually returns (Postgres `LINE n` and a caret line, or a future position field). A parse that fails means there is no position.
 
-- Postgres messages often include `LINE n` and a caret line. Parse that. Underline the token the caret points at. If only the line is known, underline the whole line.
-- MySQL and SQLite often have no offset. Mark the first line of the statement that just ran, and put the full text in the banner. Do not invent a column.
-- A failure from `split_statements` (empty, unclosed quote) is local: gutter plus banner, no round trip.
-
-The banner stays. The gutter is where the position is visible. Neither replaces the other.
+A local failure from `split_statements` (empty buffer, unclosed quote) is not an engine error. The banner still shows it. The unclosed-quote gutter is allowed because `split_statements` knows the opening quote’s offset. That is not a guessed engine position.
 
 ## Multiple result sets
 
@@ -119,17 +114,19 @@ One grid per tab. Do not stack grids.
 
 A 22px strip between the grid and the splitter: `Result 2 of 3 · statement 2`, with Prev and Next. The strip is a tab stop. Do not bind Alt+arrows for it; window managers and word navigation already use those keys. Tab switching stays on `secondary-alt-left` / `secondary-alt-right` when focus is outside a text field.
 
-Each finished statement keeps its own `ResultWindow`. Cap stored sets at 8. Beyond that, drop the oldest and set the status note `Showing the latest 8 results`. A statement that returns no row set (`Executed`) is still a result: the grid shows the existing `show_message` text (`3 rows affected · 4 ms`).
+Each finished statement keeps its own `ResultWindow`. Store at most 8. When a 9th finishes, evict the oldest and set the status note `Showing the latest 8 results`. A statement that returns no row set (`Executed`) is still a result: the grid shows the existing `show_message` text (`3 rows affected · 4 ms`).
 
-A failure stops the sequence. Earlier results remain switchable. The strip selects the failed statement, the banner shows the error, and the gutter marks that statement.
+Run-all stops at the first error. Do not start the next statement. Results that already finished stay switchable. The strip selects the failed statement and names it (`Statement 2 failed`). The banner has the full message. The gutter marks that statement only when the engine reported a position. Status: `Query failed · statement 2 · SQLSTATE 42601`.
 
 Memory stays bounded: 8 windows, each already capped by `ResultWindow` and the SQL row cap. Do not materialize every result without the cap.
 
-## Find and format
+## Find
 
 `secondary-f` in the editor opens a one-line find bar in the SQL header, not the filter bar. Type, Enter jumps to the next match, `secondary-g` / `secondary-shift-g` are next and previous, Escape closes find. No replace in M1-4. Matches use the editor’s current selection. This exists so filter and find do not share one global chord.
 
-`secondary-shift-f` in the editor formats the selection if there is one, otherwise the whole buffer, using `sqlformat` as SPECS already names for M1-4. It does not run the statement. Format is undoable with the editor’s own undo (`secondary-z`).
+## Format (backlog)
+
+`sqlformat` is not part of M1-4. Do not add a format command or a format binding in that milestone. `secondary-shift-f` is reserved for a later format action and must not be assigned to anything else. When format is built, it formats the selection if there is one, otherwise the buffer, and it does not run the statement.
 
 ## Highlight
 
@@ -144,7 +141,7 @@ M1-4. Stay inside the theme: comments in `muted_foreground`, strings in `foregro
 | Cancel | `secondary-.` or Stop | done |
 | Find | `secondary-f` | M1-4 |
 | Find next / previous | `secondary-g` / `secondary-shift-g` | M1-4 |
-| Format | `secondary-shift-f` | M1-4 |
+| Format | `secondary-shift-f` | Reserved. Backlog, not M1-4. Do not bind it yet. |
 | Collapse editor | `secondary-shift-e` | M1-4 |
 | Accept completion | `Enter` while the popup is open | M3-2 |
 | Dismiss popup or find | `Escape` | M1-4 / M3-2 |
@@ -154,17 +151,17 @@ M1-4. Stay inside the theme: comments in `muted_foreground`, strings in `foregro
 ## Implementation notes for engineering
 
 - Change `split_statements` to return ranges (start and end byte offsets into the original string) and add `SqlError::UnclosedQuote`. Keep `normalize_sql` as “exactly one statement” for callers that still want that. Update its tests in `sql.rs`.
-- Store the editor height and the collapsed flag on `TabView`. Default height 176.
+- Store the editor height and the collapsed flag on `TabView`, in memory only. Default height 176. Do not persist them.
 - Replace the `RunQuery` window binding with an editor-context binding. `Workspace::run_editor` reads the caret and the selection from the editor state instead of always taking `value()`.
 - Run statements sequentially on the existing per-tab request id. A new run bumps the request id so a late batch from statement 1 cannot paint into statement 2. Cancel cancels the token and does not schedule the rest.
 - Keep a `Vec` of at most 8 result snapshots on the tab. Showing one calls the same grid update `apply_outcome` uses. Do not allocate a second `DataTable`.
-- Gutter and underline read an optional position. Parse Postgres `LINE n` only in one function with tests taken from real driver messages. If the parse fails, mark the first line of the statement that ran.
+- Gutter and underline read an optional position. Parse Postgres `LINE n` only in one function with tests taken from real driver messages. If that parse fails, draw no gutter and no underline. The banner still shows the full message.
 - IME: while a composition is active, the autocomplete popup stays closed and Enter is not treated as “accept completion”.
 - Do not enable `TableState::sortable(true)` on SQL results as a stand-in for ORDER BY.
 
-## Open questions
+## Decisions
 
-1. Autocomplete stays in M3-2 and out of the M1-4 pull request. Confirm.
-2. Run-all stops at the first error. Confirm that later statements should not continue.
-3. Eight stored result sets is the cap. Confirm, or pick another bound.
-4. SPECS puts `sqlformat` in M1-4. This spec assigns `secondary-shift-f` for it. Confirm format ships in that milestone.
+1. **Autocomplete stays in M3-2**, out of the M1-4 pull request. The popup section above is the M3-2 spec. M1-4 does not implement it.
+2. **Run-all stops at the first error.** Name that statement in the strip and the status (`Query failed · statement 2`). Keep every result that already finished. Do not start the rest.
+3. **Store at most 8 result sets.** Evict the oldest when a new one arrives.
+4. **No `sqlformat` in M1-4.** Format is backlog. `secondary-shift-f` is reserved for that later work and is not in the M1-4 binding set.
