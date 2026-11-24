@@ -67,7 +67,7 @@ impl Workspace {
 
     pub(super) fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
-        let has_active = self.active_id.is_some();
+        let has_edit_target = self.selected_or_active_connection().is_some();
         v_flex()
             .w(px(292.))
             .h_full()
@@ -134,10 +134,10 @@ impl Workspace {
                             .xsmall()
                             .ghost()
                             .label("Edit")
-                            .disabled(!has_active)
+                            .disabled(!has_edit_target)
                             .on_click(move |_, window, cx| {
                                 this.update(cx, |workspace, cx| {
-                                    let existing = workspace.active_connection().cloned();
+                                    let existing = workspace.selected_or_active_connection().cloned();
                                     if let Some(existing) = existing {
                                         workspace.open_form(Some(existing), window, cx);
                                     }
@@ -150,7 +150,7 @@ impl Workspace {
                             .xsmall()
                             .ghost()
                             .label("Delete")
-                            .disabled(!has_active)
+                            .disabled(!has_edit_target)
                             .on_click(move |_, window, cx| {
                                 this.update(cx, |workspace, cx| workspace.confirm_delete(window, cx));
                             })
@@ -173,10 +173,9 @@ impl Workspace {
                             .ghost()
                             .label("Disconnect")
                             .disabled(self.session.is_none())
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 this.update(cx, |workspace, cx| {
-                                    workspace.disconnect(cx);
-                                    workspace.rebuild_tree(cx);
+                                    workspace.request_disconnect(window, cx);
                                 });
                             })
                     }),

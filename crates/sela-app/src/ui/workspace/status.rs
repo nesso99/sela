@@ -27,7 +27,14 @@ impl Workspace {
     pub(super) fn status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
         let this = cx.entity();
         let view = self.active_view();
-        let status = view.map(|v| v.status.clone()).unwrap_or_default();
+        let view_status = view.map(|v| v.status.clone()).unwrap_or_default();
+        // Prefer an explicit status; when tabs are gone after Disconnect, still
+        // surface a session-only keychain warning so the user sees it.
+        let status = if !view_status.is_empty() {
+            view_status
+        } else {
+            self.keychain_session_warning.clone().unwrap_or_default()
+        };
         let label = view
             .map(|v| v.source_label())
             .unwrap_or_else(|| "No table open".into());

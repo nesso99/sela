@@ -75,11 +75,16 @@ The field is `InputContentType::Password` with the existing reveal toggle. The r
 | New connection | Empty. Placeholder `Password`. | Empty writes nothing and deletes any keychain item for that id (`PasswordPersistence::Empty`). |
 | Edit, keychain read succeeded | Prefilled and masked. Reveal shows the secret. | A new value replaces the keychain item. Empty deletes it. |
 | Edit, keychain read failed | Empty. The existing warning stays: `The saved password could not be read: {err}`. | Empty does **not** call delete. The stored item is left alone because the form never loaded it. |
-| Keychain write failed | The dialog still closes on save. | The existing memory-only path. The status bar (the left status text, not only `TabView.note`) shows `The OS keychain is unavailable, so the password is kept for this session only. {message}`. |
+| Keychain write failed | The dialog still closes on save. | The existing memory-only path. The status bar (the left status text, not only `TabView.note`) shows `The OS keychain is unavailable, so the password is kept for this session only. {message}`. The same sentence is kept for the session and appended after `Connected to …` so a later connect does not hide it. |
+| Keychain unavailable on open | Dialog opens; password field works. | A danger warning: `The OS keychain is unavailable, so the password will not be saved after you quit. {message}`. The helper under the form switches to the memory-only copy (below). |
 
 The helper under the field replaces the current sentence. The current sentence says an empty password is kept for the session. `CachingSecrets::set` deletes the item when the secret is empty.
 
 > The password is stored in the OS keychain (app.sela.database), not in the connections file. Leave the field empty to save the connection without a password.
+
+When the keychain probe fails (no Secret Service / keychain), the helper is:
+
+> The OS keychain is unavailable, so the password will not be saved after you quit. It is kept in memory for this session only and is never written to the connections file. …
 
 When the read failed, add a second line in `text.muted`: `The saved password could not be loaded, so an empty field will not remove it.`
 
@@ -246,7 +251,7 @@ Focus order is the field order above, then Cancel, Test, Save, Save & connect. T
 - `connect` is the function Test and Save & connect both use, so SQLite keeps `create_if_missing: false` and the 12 second timeout. Test should call it and drop the `DatabaseSession`. It should not assign `Workspace.session`.
 - Save is a new path next to `save_draft`. It writes secrets and `store.save` and does not set `session = None` and does not call `connect_id`. Save & connect keeps the current `save_draft` sequence.
 - A failed keychain read must not take the empty-secret branch of `CachingSecrets::set`. That branch deletes the item. Thread a "password was loaded" flag through the draft.
-- The memory-only warning has to be visible. Today it is stored on `TabView.note`, and the status bar renders `view.status` only. Put that sentence in the status text.
+- The memory-only warning has to be visible. Put that sentence in `view.status` (the status bar left text) and keep it on `Workspace.keychain_session_warning` for the session. Probe the keychain when opening the dialog so the warning appears before save, not only after a silent failure.
 - Field names are `ca_path`, `client_cert_path`, and `client_key_path` on `TlsSettings` (#15).
 - The history checkbox writes `record_history`. It does not open the history panel.
 - Do not add a client-key passphrase control. rustls needs an unencrypted PEM. The follow-up is on the M1 backlog in [roadmap.md](../roadmap.md).

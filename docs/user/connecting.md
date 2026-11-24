@@ -14,7 +14,13 @@ Create, edit, and delete connections from the sidebar. Fields (host, port, user,
 | Linux | Secret Service (gnome-keyring, KWallet, …) over D-Bus |
 | Windows | Credential Manager |
 
-If no secret service is available (common on headless Linux), Sela keeps the password in process memory for the session, shows a status-bar note, and asks again on the next launch. It still does not write the password into JSON.
+If no secret service is available (common on headless Linux or minimal desktop sessions), Sela keeps the password in process memory for the session only. The connection dialog shows a clear warning that the password will not be saved after you quit, and the status bar shows: *The OS keychain is unavailable, so the password is kept for this session only.* Connect, reconnect, and switch still work until you quit. Sela asks for the password again on the next launch. It still does not write the password into JSON.
+
+## Switching and disconnecting
+
+Click another saved connection in the sidebar to switch. Sela cancels queries on the previous connection, closes that connection’s tabs, then connects the one you chose. If a tab has typed SQL or a running query, Sela asks first; Cancel keeps the current session. **Edit** opens the connection you selected in the tree, not only the one that is currently connected.
+
+**Disconnect** cancels running queries for the active connection, closes its tabs, and drops the session (with the same confirm when SQL would be lost). Tabs are not left open for a disconnected connection.
 
 ## TLS (PostgreSQL and MySQL)
 

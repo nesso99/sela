@@ -349,7 +349,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.active_id.as_deref() != Some(connection_id) {
-            self.connect_id(connection_id.to_string(), cx);
+            // History Open/Rerun: connect without the Switch confirm (the user
+            // already chose this statement). Boot/sample paths use None too.
+            self.connect_id(connection_id.to_string(), None, cx);
         }
         let id = self.tabs.open_query(connection_id.to_string(), sql);
         self.attach_view(id, sql, window, cx);

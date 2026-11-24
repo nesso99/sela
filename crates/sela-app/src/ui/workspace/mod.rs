@@ -47,6 +47,13 @@ use super::{
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
 
+/// What to do after the user confirms closing tabs that have typed SQL or a busy query.
+#[derive(Clone)]
+pub(super) enum PendingCloseTabs {
+    Connect { to_id: String },
+    Disconnect,
+}
+
 pub struct Workspace {
     store: ConfigStore,
     tab_store: TabStore,
@@ -67,7 +74,12 @@ pub struct Workspace {
     views: HashMap<TabId, TabView>,
     /// Workspace-level load error (e.g. connections.json), shown when no tab error.
     boot_error: Option<String>,
+    /// Shown in the status bar when a password is held in memory only this session.
+    keychain_session_warning: Option<String>,
     last_selection: Option<String>,
+    /// Connection id last chosen in the tree. Survives `rebuild_tree`, which
+    /// clears `last_selection` so Edit / Delete still target the clicked row.
+    selected_connection_id: Option<String>,
     history_open: bool,
     history_height: f32,
     history_scope: HistoryScope,
@@ -83,6 +95,10 @@ pub struct Workspace {
     history_focus_restore: HistoryFocusRestore,
     /// True while the "Quit Sela?" confirm dialog is open (blocks repeat Quit).
     quit_confirm_open: bool,
+    /// True while the Switch/Disconnect close-tabs confirm is open.
+    close_tabs_confirm_open: bool,
+    /// Action to run after the user confirms closing tabs with typed SQL / busy work.
+    pending_close_tabs: Option<PendingCloseTabs>,
     /// Updated each frame from `window.window_decorations()` for the toolbar ×.
     client_decorations: bool,
     #[cfg(not(target_os = "macos"))]
@@ -184,7 +200,9 @@ impl Workspace {
             tabs: TabList::new(),
             views: HashMap::new(),
             boot_error,
+            keychain_session_warning: None,
             last_selection: None,
+            selected_connection_id: None,
             history_open: false,
             history_height: DEFAULT_HISTORY_HEIGHT,
             history_scope: HistoryScope::ThisConnection,
@@ -199,6 +217,8 @@ impl Workspace {
             history_write_failed_once: false,
             history_focus_restore: HistoryFocusRestore::None,
             quit_confirm_open: false,
+            close_tabs_confirm_open: false,
+            pending_close_tabs: None,
             client_decorations: false,
             #[cfg(not(target_os = "macos"))]
             menu_bar: gpui_kit::component::menu::AppMenuBar::new(cx),
@@ -230,7 +250,7 @@ impl Workspace {
             .map(|tab| tab.connection_id.clone())
             .filter(|id| !id.is_empty())
         {
-            workspace.connect_id(connection_id, cx);
+            workspace.connect_id(connection_id, None, cx);
         }
         workspace
     }
@@ -239,6 +259,16 @@ impl Workspace {
         self.active_id
             .as_ref()
             .and_then(|id| self.connections.iter().find(|item| &item.id == id))
+    }
+
+    /// Connection the sidebar Edit / Delete buttons should target: the tree
+    /// selection when it names a connection (or a child under one), else the
+    /// active session connection.
+    fn selected_or_active_connection(&self) -> Option<&SavedConnection> {
+        self.selected_connection_id
+            .as_ref()
+            .and_then(|id| self.connections.iter().find(|item| &item.id == id))
+            .or_else(|| self.active_connection())
     }
 
     /// Dialect for statement splitting / quoting in the SQL editor.
@@ -413,10 +443,10 @@ impl Render for Workspace {
             })
             .on_action({
                 let this = this.clone();
-                move |action: &ActivateTab, _, cx| {
+                move |action: &ActivateTab, window, cx| {
                     let number = action.0;
                     this.update(cx, |workspace, cx| {
-                        workspace.activate_tab_number(number, cx);
+                        workspace.activate_tab_number(number, Some(window), cx);
                     });
                 }
             })

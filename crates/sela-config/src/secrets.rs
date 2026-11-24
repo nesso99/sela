@@ -89,6 +89,20 @@ pub enum PasswordPersistence {
     MemoryOnly(String),
 }
 
+/// Status-bar / dialog sentence when the OS keychain cannot store a password.
+pub fn memory_only_password_warning(backend_message: &str) -> String {
+    format!(
+        "The OS keychain is unavailable, so the password is kept for this session only. {backend_message}"
+    )
+}
+
+/// Dialog helper when a keychain probe fails before save.
+pub fn keychain_unavailable_dialog_warning(backend_message: &str) -> String {
+    format!(
+        "The OS keychain is unavailable, so the password will not be saved after you quit. {backend_message}"
+    )
+}
+
 /// Tries the OS keychain, and remembers a password for this process if that fails.
 pub struct CachingSecrets<S> {
     inner: S,
@@ -105,6 +119,17 @@ impl<S> CachingSecrets<S> {
 }
 
 impl<S: SecretStore> CachingSecrets<S> {
+    /// Probe whether the OS keychain backend responds.
+    ///
+    /// `Ok(())` means the backend answered (including "no entry"). `Err` means
+    /// the service is unavailable for this session.
+    pub fn probe_keychain(&self) -> Result<(), SecretError> {
+        match self.inner.get("__sela_keychain_probe__") {
+            Ok(_) => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
     pub fn get(&self, account: &str) -> Result<String, SecretError> {
         if let Some(value) = self
             .memory
@@ -190,9 +215,23 @@ mod tests {
         match secrets.set("conn", "hunter2") {
             PasswordPersistence::MemoryOnly(message) => {
                 assert!(message.contains("session bus"));
+                let warning = memory_only_password_warning(&message);
+                assert!(warning.contains("kept for this session only"));
+                assert!(warning.contains("session bus"));
+                let dialog = keychain_unavailable_dialog_warning(&message);
+                assert!(dialog.contains("will not be saved after you quit"));
             }
             other => panic!("expected memory fallback, got {other:?}"),
         }
         assert_eq!(secrets.get("conn").unwrap(), "hunter2");
+        // Reconnect / switch in the same process still reads the memory copy.
+        assert_eq!(secrets.get("conn").unwrap(), "hunter2");
+        assert!(secrets.probe_keychain().is_err());
+    }
+
+    #[test]
+    fn probe_keychain_succeeds_when_backend_answers() {
+        let secrets = CachingSecrets::new(MemorySecretStore::default());
+        assert!(secrets.probe_keychain().is_ok());
     }
 }
