@@ -82,8 +82,9 @@ pub fn should_record_history_sql(sql: &str) -> bool {
 /// Comments and string / dollar-quoted literals are blanked first where
 /// practical, so `SELECT password_hash` and a `PASSWORD` mention only inside a
 /// comment still return false. Matches CREATE/ALTER USER|ROLE … PASSWORD,
-/// IDENTIFIED BY, SET PASSWORD, and ALTER USER … WITH PASSWORD. Does not redact;
-/// callers skip recording instead.
+/// adjacent `IDENTIFIED BY`, `IDENTIFIED WITH <plugin> BY` (words may sit
+/// between `IDENTIFIED` and `BY`), SET PASSWORD, and ALTER USER … WITH
+/// PASSWORD. Does not redact; callers skip recording instead.
 pub fn history_sql_contains_password_clause(sql: &str) -> bool {
     let text = blank_comments_and_string_literals(sql);
     let words = history_sql_words(&text);
@@ -91,9 +92,7 @@ pub fn history_sql_contains_password_clause(sql: &str) -> bool {
         return false;
     }
     for i in 0..words.len() {
-        if keyword_eq(&words[i], "identified")
-            && words.get(i + 1).is_some_and(|w| keyword_eq(w, "by"))
-        {
+        if keyword_eq(&words[i], "identified") && identified_clause_sets_password(&words, i) {
             return true;
         }
         if keyword_eq(&words[i], "set")
@@ -120,6 +119,49 @@ pub fn history_sql_contains_password_clause(sql: &str) -> bool {
     false
 }
 
+/// `IDENTIFIED BY` or `IDENTIFIED WITH <plugin…> BY` (MySQL auth plugins).
+///
+/// Non-adjacent `IDENTIFIED` … `BY` only counts when `WITH` introduces the
+/// plugin clause, so ordinary SQL like `SELECT identified FROM t ORDER BY id`
+/// is not treated as password DDL.
+fn identified_clause_sets_password(words: &[String], identified_at: usize) -> bool {
+    let Some(next) = words.get(identified_at + 1) else {
+        return false;
+    };
+    if keyword_eq(next, "by") {
+        return true;
+    }
+    if !keyword_eq(next, "with") {
+        return false;
+    }
+    for word in &words[identified_at + 2..] {
+        if keyword_eq(word, "by") {
+            return true;
+        }
+        if identified_with_clause_terminator(word) {
+            return false;
+        }
+    }
+    false
+}
+
+fn identified_with_clause_terminator(word: &str) -> bool {
+    keyword_eq(word, "as")
+        || keyword_eq(word, "require")
+        || keyword_eq(word, "account")
+        || keyword_eq(word, "identified")
+        || keyword_eq(word, "create")
+        || keyword_eq(word, "alter")
+        || keyword_eq(word, "set")
+        || keyword_eq(word, "select")
+        || keyword_eq(word, "insert")
+        || keyword_eq(word, "update")
+        || keyword_eq(word, "delete")
+        || keyword_eq(word, "grant")
+        || keyword_eq(word, "revoke")
+        || keyword_eq(word, "drop")
+}
+
 fn keyword_eq(word: &str, expected_lower: &str) -> bool {
     word.eq_ignore_ascii_case(expected_lower)
 }
@@ -128,7 +170,9 @@ fn history_sql_words(sql: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();
     for ch in sql.chars() {
-        if ch.is_ascii_alphabetic() || ch == '_' {
+        // Digits stay in the token so names like `caching_sha2_password` are one
+        // word (splitting on `2` used to yield `_password` and miss the clause).
+        if ch.is_ascii_alphanumeric() || ch == '_' {
             current.push(ch);
         } else if !current.is_empty() {
             words.push(std::mem::take(&mut current));
@@ -342,6 +386,14 @@ mod tests {
             "SET PASSWORD FOR 'u'@'%' = 'secret'",
             "create role App WITH PASSWORD 'x'",
             "SET password = PASSWORD('x')",
+            // MySQL IDENTIFIED WITH <plugin> BY (issue #32 / QA proposed test #1).
+            "CREATE USER 'u'@'%' IDENTIFIED WITH mysql_native_password BY 'secret'",
+            "ALTER USER 'u'@'%' IDENTIFIED WITH mysql_native_password BY 'secret'",
+            "CREATE USER 'u'@'%' IDENTIFIED WITH caching_sha2_password BY 'secret'",
+            "CREATE USER 'u'@'%' IDENTIFIED WITH auth_plugin BY 'secret'",
+            "CREATE USER u IDENTIFIED WITH auth_plugin BY 'secret'",
+            // Quoted plugin name: the blanked string leaves `IDENTIFIED WITH BY`.
+            "CREATE USER u IDENTIFIED WITH 'mysql_native_password' BY 'secret'",
         ];
         for sql in positives {
             assert!(
@@ -360,10 +412,18 @@ mod tests {
         let negatives = [
             "SELECT password_hash FROM users",
             "select Password from accounts",
+            "SELECT password FROM users",
             "-- CREATE ROLE x WITH PASSWORD 'secret'\nSELECT 1",
             "/* ALTER USER x WITH PASSWORD 'x' */ SELECT 1",
             "SELECT 'IDENTIFIED BY secret' AS demo",
             "ALTER TABLE users ADD COLUMN password TEXT",
+            "CREATE TABLE t (password text)",
+            // QA proposed test #1 negatives: plugin DDL only inside comment/string.
+            "-- CREATE USER 'u'@'%' IDENTIFIED WITH mysql_native_password BY 'secret'\nSELECT 1",
+            "SELECT 'CREATE USER u IDENTIFIED WITH caching_sha2_password BY ''secret''' AS demo",
+            // IDENTIFIED without BY must not match; ORDER BY must not either.
+            "CREATE USER u IDENTIFIED WITH mysql_native_password AS 'hash'",
+            "SELECT identified FROM t ORDER BY id",
         ];
         for sql in negatives {
             assert!(
@@ -372,6 +432,24 @@ mod tests {
             );
             assert!(should_record_history_sql(sql), "must still record: {sql}");
         }
+    }
+
+    #[test]
+    fn password_clause_ignores_literals_but_not_real_ddl_beside_them() {
+        // Keyword only inside a comment / string must not trigger.
+        assert!(!history_sql_contains_password_clause(
+            "SELECT 1 -- IDENTIFIED WITH mysql_native_password BY 'secret'"
+        ));
+        assert!(!history_sql_contains_password_clause(
+            "SELECT 'IDENTIFIED WITH caching_sha2_password BY secret'"
+        ));
+        // A real clause after a string/comment that mentions the keywords still matches.
+        assert!(history_sql_contains_password_clause(
+            "SELECT 'nope'; CREATE USER 'u'@'%' IDENTIFIED WITH mysql_native_password BY 'secret'"
+        ));
+        assert!(history_sql_contains_password_clause(
+            "/* note */ ALTER USER 'u'@'%' IDENTIFIED WITH auth_plugin BY 'secret'"
+        ));
     }
 
     #[test]
