@@ -53,6 +53,16 @@ pub fn quote_ident(dialect: Dialect, ident: &str) -> Result<String, SqlError> {
     }
 }
 
+/// Dialect bind placeholder for the 0-based parameter index.
+///
+/// Postgres uses `$1`, `$2`, …; MySQL and SQLite use `?`.
+pub fn bind_placeholder(dialect: Dialect, index: usize) -> String {
+    match dialect {
+        Dialect::Postgres => format!("${}", index + 1),
+        Dialect::Mysql | Dialect::Sqlite => "?".into(),
+    }
+}
+
 pub fn qualify(dialect: Dialect, schema: &str, table: &str) -> Result<String, SqlError> {
     Ok(format!(
         "{}.{}",

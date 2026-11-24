@@ -72,6 +72,23 @@ pub enum DbError {
         sqlstate: Option<String>,
         vendor_code: Option<String>,
     },
+    /// An UPDATE/DELETE in a [`crate::ChangePlan`] did not affect exactly one row.
+    ///
+    /// The applying transaction is rolled back. Typical causes: the row was
+    /// deleted or its primary key changed concurrently, or a NULL PK component
+    /// (`IS NULL`) matched more than one row.
+    #[error("{message}")]
+    ChangeConflict {
+        message: String,
+        /// 0-based index into [`crate::ChangePlan::statements`].
+        statement_index: usize,
+        /// Rows reported affected by the engine for that statement.
+        rows_affected: u64,
+        /// Display form of each primary-key value (table PK order).
+        pk: Vec<String>,
+        sqlstate: Option<String>,
+        vendor_code: Option<String>,
+    },
 }
 
 impl DbError {
@@ -147,6 +164,31 @@ impl DbError {
         }
     }
 
+    /// Build a [`Self::ChangeConflict`] for a plan statement that did not hit
+    /// exactly one row. `pk` is the original primary-key identity from the plan.
+    pub fn change_conflict(
+        statement_index: usize,
+        rows_affected: u64,
+        pk: &[crate::types::Value],
+    ) -> Self {
+        let pk_display: Vec<String> = pk
+            .iter()
+            .map(|value| value.display().into_owned())
+            .collect();
+        let pk_joined = pk_display.join(", ");
+        let message = format!(
+            "change plan statement {statement_index} affected {rows_affected} rows (expected exactly 1); primary key: [{pk_joined}]"
+        );
+        Self::ChangeConflict {
+            message,
+            statement_index,
+            rows_affected,
+            pk: pk_display,
+            sqlstate: None,
+            vendor_code: None,
+        }
+    }
+
     /// Original human-readable message (without classification).
     pub fn message_text(&self) -> &str {
         match self {
@@ -158,7 +200,8 @@ impl DbError {
             | Self::Cancelled { message, .. }
             | Self::Decode { message, .. }
             | Self::Config { message, .. }
-            | Self::Internal { message, .. } => message,
+            | Self::Internal { message, .. }
+            | Self::ChangeConflict { message, .. } => message,
         }
     }
 
@@ -172,7 +215,8 @@ impl DbError {
             | Self::Cancelled { sqlstate, .. }
             | Self::Decode { sqlstate, .. }
             | Self::Config { sqlstate, .. }
-            | Self::Internal { sqlstate, .. } => sqlstate.as_deref(),
+            | Self::Internal { sqlstate, .. }
+            | Self::ChangeConflict { sqlstate, .. } => sqlstate.as_deref(),
         }
     }
 
@@ -186,7 +230,37 @@ impl DbError {
             | Self::Cancelled { vendor_code, .. }
             | Self::Decode { vendor_code, .. }
             | Self::Config { vendor_code, .. }
-            | Self::Internal { vendor_code, .. } => vendor_code.as_deref(),
+            | Self::Internal { vendor_code, .. }
+            | Self::ChangeConflict { vendor_code, .. } => vendor_code.as_deref(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Value;
+
+    #[test]
+    fn change_conflict_names_index_and_pk() {
+        let err = DbError::change_conflict(2, 0, &[Value::Int(9), Value::text("k")]);
+        match &err {
+            DbError::ChangeConflict {
+                statement_index,
+                rows_affected,
+                pk,
+                ..
+            } => {
+                assert_eq!(*statement_index, 2);
+                assert_eq!(*rows_affected, 0);
+                assert_eq!(pk, &["9".to_string(), "k".to_string()]);
+            }
+            other => panic!("expected ChangeConflict, got {other:?}"),
+        }
+        let text = err.to_string();
+        assert!(text.contains("statement 2"));
+        assert!(text.contains("0 rows"));
+        assert!(text.contains("expected exactly 1"));
+        assert!(text.contains("[9, k]"));
     }
 }

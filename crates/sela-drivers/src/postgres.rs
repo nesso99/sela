@@ -7,9 +7,9 @@ use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    quote_ident, ColumnStructure, DatabaseSession, DbError, Dialect, ForeignKeyInfo, IndexInfo,
-    QueryPage, RelationKind, SavedConnection, SchemaInfo, StreamBatch, StreamOutcome, TableInfo,
-    TableStructure, Value,
+    quote_ident, ApplyChangesResult, ChangePlan, ColumnStructure, DatabaseSession, DbError,
+    Dialect, ForeignKeyInfo, IndexInfo, QueryPage, RelationKind, SavedConnection, SchemaInfo,
+    StreamBatch, StreamOutcome, TableInfo, TableStructure, Value,
 };
 
 use sqlx::Row;
@@ -401,6 +401,10 @@ impl DatabaseSession for PostgresSession {
         crate::count_sql!(&self.pool, sql, params)
     }
 
+    async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyChangesResult, DbError> {
+        crate::change_exec::apply_change_plan!(&self.pool, plan, Dialect::Postgres)
+    }
+
     async fn estimate_table_rows(&self, schema: &str, table: &str) -> Result<Option<u64>, DbError> {
         let row = sqlx::query(
             "SELECT c.reltuples::bigint AS estimate
@@ -494,8 +498,10 @@ mod tests {
     use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
     use rust_decimal::Decimal;
     use sela_core::{
-        preview_table, run_user_sql, Interval, StatementOutcome, TablePreview, Value, PAGE_SIZE,
+        preview_table, run_user_sql, ChangePlan, ChangeSet, Interval, StatementOutcome,
+        TablePreview, TableRef, Value, PAGE_SIZE,
     };
+    use std::collections::BTreeMap;
     use std::str::FromStr;
     use uuid::Uuid;
 
@@ -1531,6 +1537,219 @@ mod tests {
         assert_eq!(rows.page.rows[0][0], Value::Int(1));
         session
             .execute("DROP FUNCTION IF EXISTS sela_plpgsql_probe()")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_apply_change_plan_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres change plan: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| {
+                panic!("SELA_POSTGRES_URL is set but Postgres is unreachable: {err}")
+            });
+        let qschema = quote_ident(Dialect::Postgres, &schema).unwrap();
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_changes"))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "CREATE TABLE {qschema}.sela_changes (
+                    id INT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    note TEXT
+                )"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_changes (id, name, note) VALUES (1, 'a', NULL), (2, 'b', 'keep')"
+            ))
+            .await
+            .unwrap();
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_changes"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("alpha"),
+        )
+        .unwrap();
+        cs.delete_row(&[Value::Int(2)]).unwrap();
+        let mut values = BTreeMap::new();
+        values.insert("id".into(), Value::Int(3));
+        values.insert("name".into(), Value::text("c"));
+        values.insert("note".into(), Value::Null);
+        cs.insert_row(values).unwrap();
+
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let result = session.apply_changes(&plan).await.unwrap();
+        assert_eq!(result.statements_executed, 3);
+
+        let page = session
+            .query(&format!(
+                "SELECT id, name FROM {qschema}.sela_changes ORDER BY id"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0][1], Value::text("alpha"));
+        assert_eq!(page.rows[1][0], Value::Int(3));
+
+        let mut bad = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_changes"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        bad.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("alpha"),
+            Value::text("should_rollback"),
+        )
+        .unwrap();
+        let mut dup = BTreeMap::new();
+        dup.insert("id".into(), Value::Int(3));
+        dup.insert("name".into(), Value::text("dup"));
+        bad.insert_row(dup).unwrap();
+        let bad_plan = ChangePlan::build(&bad, Dialect::Postgres).unwrap();
+        assert!(session.apply_changes(&bad_plan).await.is_err());
+
+        let page = session
+            .query(&format!(
+                "SELECT name FROM {qschema}.sela_changes WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("alpha"));
+
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_changes"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_apply_change_plan_exact_one_row_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres change guard: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| {
+                panic!("SELA_POSTGRES_URL is set but Postgres is unreachable: {err}")
+            });
+        let qschema = quote_ident(Dialect::Postgres, &schema).unwrap();
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_guard"))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "CREATE TABLE {qschema}.sela_guard (
+                    id INT PRIMARY KEY,
+                    name TEXT NOT NULL
+                )"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_guard (id, name) VALUES (1, 'a'), (2, 'b')"
+            ))
+            .await
+            .unwrap();
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_guard"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("changed"),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(999)],
+            "name",
+            Value::text("ghost"),
+            Value::text("nope"),
+        )
+        .unwrap();
+        let err = session
+            .apply_changes(&ChangePlan::build(&cs, Dialect::Postgres).unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::ChangeConflict {
+                    statement_index: 1,
+                    rows_affected: 0,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let page = session
+            .query(&format!(
+                "SELECT name FROM {qschema}.sela_guard WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("a"));
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_guard"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into()],
+        )
+        .unwrap();
+        cs.delete_row(&[Value::Int(2)]).unwrap();
+        cs.delete_row(&[Value::Int(999)]).unwrap();
+        let err = session
+            .apply_changes(&ChangePlan::build(&cs, Dialect::Postgres).unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::ChangeConflict {
+                    statement_index: 1,
+                    rows_affected: 0,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let page = session
+            .query(&format!("SELECT id FROM {qschema}.sela_guard WHERE id = 2"))
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 1);
+
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_guard"))
             .await
             .unwrap();
     }
