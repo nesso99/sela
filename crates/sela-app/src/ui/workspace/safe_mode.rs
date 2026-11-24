@@ -27,6 +27,14 @@ impl Workspace {
             .unwrap_or(SafeMode::Off)
     }
 
+    /// Push the connection's safe-mode level onto the active tab's edit session.
+    pub(super) fn sync_active_edit_safe_mode(&mut self) {
+        let mode = self.active_safe_mode();
+        if let Some(edit) = self.active_view_mut().and_then(|v| v.edit.as_mut()) {
+            edit.apply_connection_safe_mode(mode);
+        }
+    }
+
     /// Classify each statement and decide whether to run, refuse, or confirm.
     pub(super) fn gate_statements(
         &self,

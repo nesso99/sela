@@ -57,7 +57,9 @@ impl PostgresSession {
                     format_type(a.atttypid, a.atttypmod) AS type_name,
                     NOT a.attnotnull AS nullable,
                     pg_get_expr(ad.adbin, ad.adrelid) AS default_expr,
-                    col_description(c.oid, a.attnum) AS comment
+                    col_description(c.oid, a.attnum) AS comment,
+                    a.attidentity::text AS identity,
+                    a.attgenerated::text AS generated
              FROM pg_catalog.pg_attribute a
              JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -76,12 +78,16 @@ impl PostgresSession {
         .map_err(crate::sqlx_err)?;
         let mut columns = Vec::with_capacity(rows.len());
         for row in rows {
+            let identity: String = row.try_get("identity").map_err(crate::sqlx_err)?;
+            let generated_attr: String = row.try_get("generated").map_err(crate::sqlx_err)?;
+            let generated = identity == "a" || identity == "d" || !generated_attr.is_empty();
             columns.push(ColumnStructure {
                 name: row.try_get("name").map_err(crate::sqlx_err)?,
                 type_name: row.try_get("type_name").map_err(crate::sqlx_err)?,
                 nullable: row.try_get("nullable").map_err(crate::sqlx_err)?,
                 default: row.try_get("default_expr").map_err(crate::sqlx_err)?,
                 comment: row.try_get("comment").map_err(crate::sqlx_err)?,
+                generated,
             });
         }
         Ok(columns)
@@ -1750,6 +1756,178 @@ mod tests {
 
         session
             .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_guard"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_apply_changes_uuid_and_typed_columns_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres typed changes: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| {
+                panic!("SELA_POSTGRES_URL is set but Postgres is unreachable: {err}")
+            });
+        let qschema = quote_ident(Dialect::Postgres, &schema).unwrap();
+        session
+            .execute(&format!(
+                "DROP TABLE IF EXISTS {qschema}.sela_typed_changes"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "CREATE TABLE {qschema}.sela_typed_changes (
+                    id uuid PRIMARY KEY,
+                    d date NOT NULL,
+                    amt numeric(10,2) NOT NULL,
+                    doc jsonb NOT NULL,
+                    ts timestamptz NOT NULL
+                )"
+            ))
+            .await
+            .unwrap();
+
+        let id1 = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let id2 = Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap();
+        let id3 = Uuid::parse_str("6ba7b811-9dad-11d1-80b4-00c04fd430c8").unwrap();
+        let tz = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+            .unwrap();
+        let tz2 = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .unwrap();
+
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_typed_changes (id, d, amt, doc, ts)
+                 VALUES (
+                   '{id1}'::uuid,
+                   DATE '2024-01-01',
+                   1.25,
+                   '{{\"n\":1}}'::jsonb,
+                   TIMESTAMPTZ '2024-01-02 03:04:05+00'
+                 )"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_typed_changes (id, d, amt, doc, ts)
+                 VALUES (
+                   '{id2}'::uuid,
+                   DATE '2024-02-01',
+                   9.99,
+                   '{{\"n\":2}}'::jsonb,
+                   TIMESTAMPTZ '2024-02-02 03:04:05+00'
+                 )"
+            ))
+            .await
+            .unwrap();
+
+        let mut types = BTreeMap::new();
+        types.insert("id".into(), "uuid".into());
+        types.insert("d".into(), "date".into());
+        types.insert("amt".into(), "numeric".into());
+        types.insert("doc".into(), "jsonb".into());
+        types.insert("ts".into(), "timestamp with time zone".into());
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new(&schema, "sela_typed_changes"),
+            vec!["id".into()],
+            vec![
+                "id".into(),
+                "d".into(),
+                "amt".into(),
+                "doc".into(),
+                "ts".into(),
+            ],
+            types,
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Uuid(id1)],
+            "d",
+            Value::Date(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()),
+            Value::Date(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Uuid(id1)],
+            "amt",
+            Value::Decimal(Decimal::from_str("1.25").unwrap()),
+            Value::Decimal(Decimal::from_str("2.50").unwrap()),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Uuid(id1)],
+            "doc",
+            Value::json_raw(r#"{"n":1}"#),
+            Value::json_raw(r#"{"n":3,"ok":true}"#),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Uuid(id1)],
+            "ts",
+            Value::TimestampTz(tz),
+            Value::TimestampTz(tz2),
+        )
+        .unwrap();
+        cs.delete_row(&[Value::Uuid(id2)]).unwrap();
+        let mut insert = BTreeMap::new();
+        insert.insert("id".into(), Value::Uuid(id3));
+        insert.insert(
+            "d".into(),
+            Value::Date(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()),
+        );
+        insert.insert(
+            "amt".into(),
+            Value::Decimal(Decimal::from_str("0.00").unwrap()),
+        );
+        insert.insert("doc".into(), Value::json_raw("[]"));
+        insert.insert("ts".into(), Value::TimestampTz(tz2));
+        cs.insert_row(insert).unwrap();
+
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        assert!(plan.statements.iter().any(|s| s.sql.contains("::uuid")));
+        assert!(plan.statements.iter().any(|s| s.sql.contains("::date")));
+        assert!(plan.statements.iter().any(|s| s.sql.contains("::numeric")));
+        assert!(plan.statements.iter().any(|s| s.sql.contains("::jsonb")));
+        assert!(plan
+            .statements
+            .iter()
+            .any(|s| s.sql.contains("::timestamptz")));
+
+        let result = session.apply_changes(&plan).await.unwrap();
+        assert_eq!(result.statements_executed, 3);
+
+        let page = session
+            .query(&format!(
+                "SELECT id, d, amt, doc::text, ts FROM {qschema}.sela_typed_changes ORDER BY d"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0][0], Value::Uuid(id1));
+        assert_eq!(
+            page.rows[0][1],
+            Value::Date(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap())
+        );
+        assert_eq!(
+            page.rows[0][2],
+            Value::Decimal(Decimal::from_str("2.50").unwrap())
+        );
+        assert_eq!(page.rows[1][0], Value::Uuid(id3));
+
+        session
+            .execute(&format!(
+                "DROP TABLE IF EXISTS {qschema}.sela_typed_changes"
+            ))
             .await
             .unwrap();
     }

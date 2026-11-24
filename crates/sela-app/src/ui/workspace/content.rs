@@ -166,6 +166,72 @@ impl Workspace {
                                     }),
                             )
                         })
+                        .when(self.table_open(), |row| {
+                            let this_ins = this.clone();
+                            let this_dup = this.clone();
+                            let this_del = this.clone();
+                            let safe_mode = self.active_safe_mode();
+                            let edit_ro = self
+                                .active_view()
+                                .and_then(|v| v.edit.as_ref())
+                                .is_none_or(|e| !e.is_editable_for(safe_mode));
+                            let ro_tip = self
+                                .active_view()
+                                .and_then(|v| v.edit.as_ref())
+                                .and_then(|e| e.strip_line_for(safe_mode))
+                                .unwrap_or("This table is read-only.");
+                            row.child(
+                                Button::new("edit-insert")
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Insert")
+                                    .disabled(!connected || edit_ro || busy)
+                                    .tooltip(if edit_ro {
+                                        ro_tip
+                                    } else {
+                                        "Insert row (Ctrl/⌘+I)"
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        this_ins.update(cx, |workspace, cx| {
+                                            workspace.insert_edit_row(cx)
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("edit-duplicate")
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Duplicate")
+                                    .disabled(!connected || edit_ro || busy)
+                                    .tooltip(if edit_ro {
+                                        ro_tip
+                                    } else {
+                                        "Duplicate row (Ctrl/⌘+D)"
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        this_dup.update(cx, |workspace, cx| {
+                                            workspace.duplicate_edit_row(cx)
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("edit-delete")
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Delete")
+                                    .disabled(!connected || edit_ro || busy)
+                                    .tooltip(if edit_ro {
+                                        ro_tip
+                                    } else {
+                                        "Delete / restore row (Ctrl/⌘+Backspace)"
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        this_del.update(cx, |workspace, cx| {
+                                            workspace.delete_edit_row(cx)
+                                        });
+                                    }),
+                            )
+                        })
                         .child(
                             div()
                                 .text_xs()

@@ -22,6 +22,10 @@ pub struct SelaPalette {
     pub status_error_wash: Hsla,
     pub cell_decode_text: Hsla,
     pub cell_decode_bg: Hsla,
+    /// Inserted / duplicated row wash (`row.insert.bg`).
+    pub row_insert_bg: Hsla,
+    /// Dirty-cell triangle (`cell.dirty.mark`).
+    pub cell_dirty_mark: Hsla,
 }
 
 impl SelaPalette {
@@ -43,6 +47,8 @@ impl SelaPalette {
             status_error_wash: color("#FEF2F2"),
             cell_decode_text: color("#B91C1C"),
             cell_decode_bg: color("#FEF2F2"),
+            row_insert_bg: color("#F0FDF4"),
+            cell_dirty_mark: color("#854D0E"),
         }
     }
 
@@ -56,6 +62,8 @@ impl SelaPalette {
             status_error_wash: color("#3F1212"),
             cell_decode_text: color("#F87171"),
             cell_decode_bg: color("#3F1212"),
+            row_insert_bg: color("#052E16"),
+            cell_dirty_mark: color("#FACC15"),
         }
     }
 }

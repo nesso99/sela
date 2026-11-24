@@ -85,7 +85,7 @@ impl Workspace {
         };
         let dialect = self.active_dialect();
         let table_name = self.views.get(&tab_id).and_then(|view| match &view.source {
-            GridSource::Table { schema, table } => Some(format!("{schema}.{table}")),
+            GridSource::Table { schema, table, .. } => Some(format!("{schema}.{table}")),
             _ => None,
         });
         let Some(view) = self.views.get(&tab_id) else {
