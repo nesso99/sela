@@ -1,7 +1,9 @@
 //! Identifier quoting, statement splitting, and paging SQL.
 //!
 //! Sela generates these strings. User SQL is passed through after it has been
-//! checked for a single statement.
+//! checked for a single statement (or split for multi-statement runs).
+
+use std::ops::Range;
 
 use crate::types::Dialect;
 
@@ -11,10 +13,31 @@ pub enum SqlError {
     Empty,
     #[error("run one statement at a time")]
     Multiple,
+    /// A quote was still open at end of input. `offset` is the byte index of
+    /// the opening quote in the original buffer.
+    #[error("Unclosed quote")]
+    UnclosedQuote { offset: usize },
     #[error("identifier is empty")]
     EmptyIdent,
     #[error("identifier contains a null byte")]
     NullByte,
+}
+
+/// One statement from [`split_statements`], with its span in the original buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlStatement {
+    /// Trimmed statement text without a trailing semicolon.
+    pub text: String,
+    /// Byte range in the original buffer covering this statement’s region:
+    /// from after the previous semicolon (or buffer start) through the last
+    /// non-semicolon character of this statement (before a trailing `;`).
+    pub range: Range<usize>,
+}
+
+impl SqlStatement {
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
 }
 
 pub fn quote_ident(dialect: Dialect, ident: &str) -> Result<String, SqlError> {
@@ -218,94 +241,131 @@ pub fn normalize_sql(sql: &str) -> Result<String, SqlError> {
     if statements.len() != 1 {
         return Err(SqlError::Multiple);
     }
-    Ok(statement.clone())
+    Ok(statement.text.clone())
+}
+
+/// Index of the statement that [`secondary-enter`](crate) would run at `offset`.
+///
+/// The caret belongs to a statement when it sits inside that statement’s
+/// [`SqlStatement::range`], or in the whitespace and comments between the
+/// previous statement and this one. A caret in the leading comments belongs to
+/// the first statement. Returns `None` when `statements` is empty.
+pub fn statement_index_at(statements: &[SqlStatement], offset: usize) -> Option<usize> {
+    if statements.is_empty() {
+        return None;
+    }
+    for (ix, stmt) in statements.iter().enumerate() {
+        let region_end = statements
+            .get(ix + 1)
+            .map(|next| next.range.start)
+            .unwrap_or(usize::MAX);
+        if offset < region_end {
+            // Before this statement’s region ends (or into the gap before the next).
+            if offset >= stmt.range.start || ix == 0 {
+                return Some(ix);
+            }
+        }
+    }
+    Some(statements.len() - 1)
 }
 
 /// Split SQL into statements, ignoring semicolons inside quotes and comments.
-pub fn split_statements(sql: &str) -> Result<Vec<String>, SqlError> {
+///
+/// Each item carries the trimmed statement text and its byte range in `sql`.
+/// An unclosed quote yields [`SqlError::UnclosedQuote`] with the opening offset.
+pub fn split_statements(sql: &str) -> Result<Vec<SqlStatement>, SqlError> {
+    let bytes = sql.as_bytes();
     let mut statements = Vec::new();
-    let mut current = String::new();
-    let chars: Vec<char> = sql.chars().collect();
-    let mut i = 0;
-    let mut quote: Option<char> = None;
-    while i < chars.len() {
-        let ch = chars[i];
-        if let Some(q) = quote {
-            current.push(ch);
+    let mut region_start = 0usize;
+    let mut i = 0usize;
+    let mut quote: Option<(u8, usize)> = None;
+
+    while i < bytes.len() {
+        if let Some((q, open_at)) = quote {
+            let ch = bytes[i];
             if ch == q {
-                if q != '\'' && q != '"' && q != '`' {
+                if q != b'\'' && q != b'"' && q != b'`' {
                     quote = None;
-                } else if i + 1 < chars.len() && chars[i + 1] == q {
-                    current.push(chars[i + 1]);
+                    i += 1;
+                    continue;
+                } else if i + 1 < bytes.len() && bytes[i + 1] == q {
                     i += 2;
                     continue;
                 } else {
                     quote = None;
+                    i += 1;
+                    continue;
                 }
-            } else if q == '\'' && ch == '\\' && i + 1 < chars.len() {
-                current.push(chars[i + 1]);
+            } else if q == b'\'' && ch == b'\\' && i + 1 < bytes.len() {
                 i += 2;
                 continue;
             }
+            let _ = open_at;
             i += 1;
             continue;
         }
 
-        if ch == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
-            current.push(ch);
-            current.push(chars[i + 1]);
+        let ch = bytes[i];
+        if ch == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'-' {
             i += 2;
-            while i < chars.len() && chars[i] != '\n' {
-                current.push(chars[i]);
+            while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
             continue;
         }
-        if ch == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            current.push(ch);
-            current.push(chars[i + 1]);
+        if ch == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
             i += 2;
-            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                current.push(chars[i]);
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
                 i += 1;
             }
-            if i + 1 < chars.len() {
-                current.push(chars[i]);
-                current.push(chars[i + 1]);
-                i += 2;
-            }
+            i = (i + 2).min(bytes.len());
             continue;
         }
-        if ch == '\'' || ch == '"' || ch == '`' {
-            quote = Some(ch);
-            current.push(ch);
+        if ch == b'\'' || ch == b'"' || ch == b'`' {
+            quote = Some((ch, i));
             i += 1;
             continue;
         }
-        if ch == ';' {
-            push_statement(&mut statements, &mut current);
+        if ch == b';' {
+            push_statement(sql, &mut statements, region_start, i)?;
             i += 1;
+            region_start = i;
             continue;
         }
-        current.push(ch);
         i += 1;
     }
-    if quote.is_some() {
-        return Err(SqlError::Multiple);
+
+    if let Some((_, open_at)) = quote {
+        return Err(SqlError::UnclosedQuote { offset: open_at });
     }
-    push_statement(&mut statements, &mut current);
+    push_statement(sql, &mut statements, region_start, sql.len())?;
     if statements.is_empty() {
         return Err(SqlError::Empty);
     }
     Ok(statements)
 }
 
-fn push_statement(statements: &mut Vec<String>, current: &mut String) {
-    let meaningful = strip_comments(current);
-    if !meaningful.trim().is_empty() {
-        statements.push(trim_statement(current));
+fn push_statement(
+    sql: &str,
+    statements: &mut Vec<SqlStatement>,
+    region_start: usize,
+    region_end: usize,
+) -> Result<(), SqlError> {
+    let slice = &sql[region_start..region_end];
+    let meaningful = strip_comments(slice);
+    if meaningful.trim().is_empty() {
+        return Ok(());
     }
-    current.clear();
+    let text = trim_statement(slice);
+    // Map trimmed text back into the original buffer for the tight range.
+    let trimmed_start = slice.find(&text).unwrap_or(0);
+    let start = region_start + trimmed_start;
+    let end = start + text.len();
+    statements.push(SqlStatement {
+        text,
+        range: start..end,
+    });
+    Ok(())
 }
 
 fn trim_statement(sql: &str) -> String {
@@ -356,6 +416,108 @@ pub fn strip_comments(sql: &str) -> String {
     out
 }
 
+/// Parse a Postgres-style `LINE n` position from an engine error message.
+///
+/// Returns `(line_1_based, optional_column_1_based)` when the message contains
+/// a `LINE n:` marker. Column is taken from a following caret (`^`) line when
+/// present, measured from the start of the SQL fragment after `LINE n: `.
+/// Returns `None` when no position can be parsed — callers must not guess a
+/// gutter line.
+pub fn parse_postgres_error_position(message: &str) -> Option<(usize, Option<usize>)> {
+    let mut line: Option<usize> = None;
+    let mut sql_column_origin: Option<usize> = None;
+    for raw in message.lines() {
+        let trimmed = raw.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("LINE ") {
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = digits.parse::<usize>() {
+                if n > 0 {
+                    line = Some(n);
+                    // Postgres aligns the caret under the fragment that follows
+                    // "LINE n: " on this same line (including the space after `:`).
+                    let prefix = format!("LINE {n}:");
+                    sql_column_origin = trimmed.find(&prefix).map(|at| {
+                        // Past "LINE n:" and the usual single space.
+                        at + prefix.len() + 1
+                    });
+                    continue;
+                }
+            }
+        }
+        if let Some(origin) = sql_column_origin.take() {
+            // Caret line keeps leading spaces so it lines up under LINE n: ….
+            if let Some(caret_at) = raw.find('^') {
+                let only_caret = raw
+                    .chars()
+                    .all(|c| c == ' ' || c == '\t' || c == '^' || c == '\r');
+                if only_caret && caret_at >= origin {
+                    let col = caret_at - origin + 1;
+                    return Some((line?, Some(col)));
+                }
+            }
+        }
+    }
+    line.map(|n| (n, None))
+}
+
+/// Convert a 1-based line (and optional 1-based column) into a byte range in `sql`.
+///
+/// When column is `None`, the range covers the whole line (excluding the newline).
+/// Returns `None` when the line is out of range.
+pub fn line_col_to_byte_range(
+    sql: &str,
+    line_1based: usize,
+    column_1based: Option<usize>,
+) -> Option<Range<usize>> {
+    if line_1based == 0 {
+        return None;
+    }
+    let mut start = 0usize;
+    let mut current = 1usize;
+    for (idx, ch) in sql.char_indices() {
+        if current == line_1based {
+            start = idx;
+            break;
+        }
+        if ch == '\n' {
+            current += 1;
+            start = idx + 1;
+        }
+    }
+    if current != line_1based {
+        return None;
+    }
+    let line_end = sql[start..]
+        .find('\n')
+        .map(|rel| start + rel)
+        .unwrap_or(sql.len());
+    if let Some(col) = column_1based {
+        if col == 0 {
+            return Some(start..line_end);
+        }
+        let mut byte = start;
+        let mut col_ix = 1usize;
+        for (idx, _) in sql[start..line_end].char_indices() {
+            if col_ix == col {
+                byte = start + idx;
+                break;
+            }
+            col_ix += 1;
+            byte = start + idx + sql[start + idx..].chars().next()?.len_utf8();
+        }
+        // Underline at least one character when possible.
+        let end = if byte < line_end {
+            let ch_len = sql[byte..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            (byte + ch_len).min(line_end)
+        } else {
+            line_end
+        };
+        Some(byte..end.max(byte))
+    } else {
+        Some(start..line_end)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +554,46 @@ mod tests {
             normalize_sql("-- note\nselect 1").unwrap(),
             "-- note\nselect 1"
         );
+    }
+
+    #[test]
+    fn unclosed_quote_is_distinct_error() {
+        let err = split_statements("select 'oops").unwrap_err();
+        match err {
+            SqlError::UnclosedQuote { offset } => {
+                assert_eq!(offset, "select ".len());
+            }
+            other => panic!("expected UnclosedQuote, got {other:?}"),
+        }
+        assert_eq!(
+            normalize_sql("select \"x").unwrap_err(),
+            SqlError::UnclosedQuote { offset: 7 }
+        );
+    }
+
+    #[test]
+    fn split_returns_byte_ranges() {
+        let sql = "select 1;  select 2";
+        let parts = split_statements(sql).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].text, "select 1");
+        assert_eq!(&sql[parts[0].range.clone()], "select 1");
+        assert_eq!(parts[1].text, "select 2");
+        assert_eq!(&sql[parts[1].range.clone()], "select 2");
+    }
+
+    #[test]
+    fn statement_at_caret_uses_gaps_and_leading_comments() {
+        let sql = "-- lead\nselect 1;\n  -- mid\nselect 2";
+        let parts = split_statements(sql).unwrap();
+        assert_eq!(parts.len(), 2);
+        // Caret in leading comment → first statement.
+        assert_eq!(statement_index_at(&parts, 0), Some(0));
+        assert_eq!(statement_index_at(&parts, parts[0].range.start), Some(0));
+        // Caret in the gap / mid comment before second → second.
+        let mid = sql.find("-- mid").unwrap();
+        assert_eq!(statement_index_at(&parts, mid), Some(1));
+        assert_eq!(statement_index_at(&parts, parts[1].range.end), Some(1));
     }
 
     #[test]
@@ -472,6 +674,26 @@ mod tests {
         "#;
         let parts = split_statements(sql).unwrap();
         assert_eq!(parts.len(), 2);
-        assert!(parts[1].contains("Ada; Lovelace"));
+        assert!(parts[1].text.contains("Ada; Lovelace"));
+    }
+
+    #[test]
+    fn parse_postgres_line_and_caret() {
+        let msg = "ERROR:  syntax error at or near \"FORM\"\nLINE 1: SELECT * FORM books\n                 ^\n";
+        // Column is 1-based within the SQL fragment after "LINE 1: " (F of FORM).
+        assert_eq!(parse_postgres_error_position(msg), Some((1, Some(10))));
+
+        let line_only = "ERROR: something\nLINE 3: SELECT 1\nDETAIL: more";
+        assert_eq!(parse_postgres_error_position(line_only), Some((3, None)));
+
+        assert_eq!(parse_postgres_error_position("no position here"), None);
+    }
+
+    #[test]
+    fn line_col_maps_to_bytes() {
+        let sql = "select 1\nselect 2";
+        assert_eq!(line_col_to_byte_range(sql, 1, None), Some(0..8));
+        assert_eq!(line_col_to_byte_range(sql, 2, Some(1)), Some(9..10));
+        assert_eq!(line_col_to_byte_range(sql, 9, None), None);
     }
 }

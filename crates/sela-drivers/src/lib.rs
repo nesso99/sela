@@ -109,7 +109,7 @@ pub async fn create_sample_database(path: &std::path::Path) -> Result<(), DbErro
     for statement in sela_core::split_statements(sqlite::SAMPLE_SQL)
         .map_err(|err| DbError::query(err.to_string()))?
     {
-        session.execute(&statement).await?;
+        session.execute(&statement.text).await?;
     }
     Ok(())
 }

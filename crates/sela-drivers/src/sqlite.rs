@@ -375,7 +375,7 @@ mod tests {
         let path = dir.path().join("library.sqlite");
         let session = SqliteSession::open(&path, true).await.unwrap();
         for statement in split_statements(SAMPLE_SQL).unwrap() {
-            session.execute(&statement).await.unwrap();
+            session.execute(&statement.text).await.unwrap();
         }
         (dir, session)
     }
