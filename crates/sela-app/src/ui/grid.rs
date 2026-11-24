@@ -19,7 +19,6 @@ use gpui_kit::{div, px, App, IntoElement, SharedString, Window};
 
 use sela_core::{
     CellPos, CellView, QueryPage, ResultWindow, RowState, SelectionRect, SortDirection, SortSpec,
-    PAGE_SIZE,
 };
 
 use super::theme::SelaPalette;
@@ -82,36 +81,19 @@ impl GridDelegate {
 
     /// Install a finished page and hide the loading skeleton.
     ///
-    /// Table preview is paged: the first page is inserted at `page_offset` and
-    /// later pages fill in through [`ResultWindow::touch`]. SQL results use
-    /// [`Self::show_page`] instead.
+    /// Table Previous/Next and SQL results both materialize the current page at
+    /// row 0 via [`Self::show_page`]. `page_offset` is only the SQL `OFFSET`
+    /// used when fetching; it must not become a grid page index, or page 2+
+    /// lands past the viewport and the grid shows placeholders (then page-1
+    /// rows after a scroll-triggered refetch).
     pub fn install_loaded_page(
         &mut self,
         page: QueryPage,
-        paged: bool,
-        total_rows: Option<usize>,
-        page_offset: u64,
+        _paged: bool,
+        _total_rows: Option<usize>,
+        _page_offset: u64,
     ) {
-        self.loading = false;
-        if !paged {
-            self.show_page(page);
-            return;
-        }
-        let page_len = page.rows.len();
-        if let Some(total) = total_rows {
-            self.result.reset(page.columns, total);
-            let page_index = (page_offset / PAGE_SIZE as u64) as usize;
-            self.result.insert_page(page_index, page.rows);
-        } else {
-            let start = page_offset as usize;
-            let end = start + page_len;
-            self.result.reset(page.columns, end.max(start + 1));
-            let page_index = start / PAGE_SIZE as usize;
-            self.result.insert_page(page_index, page.rows);
-            if page_len as u32 == PAGE_SIZE {
-                self.result.ensure_total_rows(end + PAGE_SIZE as usize);
-            }
-        }
+        self.show_page(page);
     }
 
     pub fn show_message(&mut self, message: impl Into<SharedString>) {
@@ -120,6 +102,19 @@ impl GridDelegate {
         self.loading = false;
         self.clear_selection_range();
         self.empty_message = message.into();
+    }
+
+    /// Clear a stale "Running…" empty state after the engine reports failure.
+    ///
+    /// When this request delivered no rows, replace the grid with the failed
+    /// empty copy. When rows already arrived (stream then error), keep them and
+    /// only clear [`Self::loading`].
+    pub fn note_query_failed(&mut self) {
+        if self.result.total_rows() == 0 {
+            self.show_message("Query failed — see the error above.");
+        } else {
+            self.loading = false;
+        }
     }
 
     pub fn clear_selection_range(&mut self) {
@@ -382,6 +377,61 @@ mod tests {
         match grid.result.row(0) {
             RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "Rust"),
             RowState::Loading => panic!("first row stayed on the loading placeholder"),
+        }
+    }
+
+    #[test]
+    fn paged_table_page_two_shows_at_row_zero_not_absolute_offset() {
+        // Regression #42: page_offset 100 must not insert into ResultWindow page 1
+        // while the DataTable viewport stays at row 0 (placeholders, then page-1
+        // data after a scroll refetch).
+        let mut grid = GridDelegate::empty();
+        grid.loading = true;
+        grid.install_loaded_page(
+            page(vec![
+                vec![Value::Text("row-0101".into())],
+                vec![Value::Text("row-0102".into())],
+            ]),
+            true,
+            Some(2500),
+            100,
+        );
+        assert!(!grid.loading);
+        assert_eq!(grid.result.total_rows(), 2);
+        match grid.result.row(0) {
+            RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "row-0101"),
+            RowState::Loading => panic!("page-2 rows landed past the viewport as placeholders"),
+        }
+        match grid.result.row(1) {
+            RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "row-0102"),
+            RowState::Loading => panic!("second page-2 row missing at index 1"),
+        }
+    }
+
+    #[test]
+    fn note_query_failed_replaces_running_empty_message() {
+        let mut grid = GridDelegate::empty();
+        grid.set_loading_message();
+        grid.loading = true;
+        grid.note_query_failed();
+        assert!(!grid.loading);
+        assert_eq!(
+            grid.empty_message.as_ref(),
+            "Query failed — see the error above."
+        );
+        assert_eq!(grid.result.total_rows(), 0);
+    }
+
+    #[test]
+    fn note_query_failed_keeps_rows_already_delivered() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(page(vec![vec![Value::Text("kept".into())]]));
+        grid.loading = true;
+        grid.note_query_failed();
+        assert!(!grid.loading);
+        match grid.result.row(0) {
+            RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "kept"),
+            RowState::Loading => panic!("delivered rows were cleared on failure"),
         }
     }
 }

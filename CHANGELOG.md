@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- SQL editor results: drain buffered stream batches when the producer finishes first, so the grid shows rows instead of blank stripes while the status bar already reports a row count (#44).
+- Table Previous/Next: install the fetched page at row 0 (pager model) instead of an absolute `page_offset` index, so page 2+ shows the new rows rather than placeholders or page-1 data (#42).
+- Failed queries: replace a stale grid `Running…` empty message with `Query failed — see the error above.`; record streamed SQL statements in query history with the full statement text (#47).
+
 ## [0.1.0] - 2026-11-24
 
 ### Fixed
