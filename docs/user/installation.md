@@ -1,19 +1,84 @@
 # Installation
 
-Sela is built from source today. There are no packaged installers yet.
+## Prebuilt binaries (v0.1.0+)
 
-## Requirements
+Download the asset for your platform from the [GitHub Releases](https://github.com/nesso99/sela/releases) page. Each release includes a `SHA256SUMS` file — verify the download before running it.
+
+| Platform | Asset | Notes |
+| --- | --- | --- |
+| Linux x86_64 | `sela-*-linux-x86_64.tar.gz` or `Sela-*-x86_64.AppImage` | AppImage is self-contained enough to run without installing; still needs system GPU/Vulkan (below). |
+| macOS (Apple Silicon + Intel) | `sela-*-macos-universal.dmg` or `.zip` | Universal binary. **Unsigned** for v0.1.0. |
+| Windows x86_64 | `sela-*-windows-x86_64.zip` | Contains `sela.exe`. **Unsigned** for v0.1.0. |
+
+### Linux
+
+1. **tarball:** extract and run `./sela`.
+2. **AppImage:** `chmod +x Sela-*-x86_64.AppImage && ./Sela-*-x86_64.AppImage`.
+
+**Runtime dependencies.** GPUI renders with Vulkan on Wayland or X11 (a display server is required). You need a working Vulkan ICD (GPU driver or Mesa). On Fedora:
+
+```bash
+sudo dnf install mesa-vulkan-drivers vulkan-loader
+```
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt install mesa-vulkan-drivers libvulkan1
+```
+
+Without a GPU, Mesa lavapipe can stand in for smoke checks:
+
+```bash
+# Debian/Ubuntu path; Fedora uses a similar lavapipe ICD under /usr/share/vulkan/icd.d/
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+```
+
+Also expect the usual desktop stack at runtime: Wayland or X11, fontconfig/Freetype fonts (e.g. DejaVu), and D-Bus. Passwords use the Secret Service API (gnome-keyring or KWallet) over D-Bus. Without it, Sela keeps the password in memory for the session and never writes it to JSON.
+
+Fedora note: an RPM is not published for v0.1.0. Prefer the AppImage or tarball; Flatpak may come later.
+
+### macOS
+
+Open the `.dmg` and drag **Sela** into Applications, or unzip the `.zip` and run `Sela.app`.
+
+**Gatekeeper (unsigned builds).** v0.1.0 is not notarized or Developer ID–signed. The first launch may show *“Sela” cannot be opened because it is from an unidentified developer*. To open it anyway: Right-click (or Control-click) **Sela** → **Open** → confirm **Open**, or remove the quarantine flag after you have verified `SHA256SUMS`:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Sela.app
+```
+
+GPUI renders with Metal. Passwords go to the login Keychain.
+
+### Windows
+
+Unzip and run `sela.exe`.
+
+**SmartScreen (unsigned builds).** v0.1.0 is not Authenticode-signed. SmartScreen may show *Windows protected your PC*. Choose **More info** → **Run anyway** only after verifying `SHA256SUMS`.
+
+GPUI Kit targets Windows (Direct3D via wgpu); `keyring` uses Credential Manager. Treat Windows as less exercised than Linux/macOS until someone dogfoods there.
+
+### Check the binary
+
+```bash
+sela --version   # prints e.g. sela 0.1.0
+sela --help
+```
+
+## Build from source
+
+### Requirements
 
 - Rust **1.85** or newer (`rustup update stable`)
 - A C toolchain and `pkg-config` (GPUI and SQLite link native libraries)
 
-### macOS
+#### macOS
 
-GPUI renders with Metal. Install Xcode once and the macOS platform components. If `cargo build` cannot find SQLite: `brew install sqlite pkg-config`. Passwords go to the login Keychain.
+Install Xcode once and the macOS platform components. If `cargo build` cannot find SQLite: `brew install sqlite pkg-config`.
 
-### Linux
+#### Linux
 
-GPUI renders with Vulkan on Wayland or X11 (a display server is required). On Debian/Ubuntu:
+On Debian/Ubuntu (build-time packages; CI uses the same set):
 
 ```bash
 sudo apt install build-essential pkg-config libsqlite3-dev libssl-dev \
@@ -22,24 +87,29 @@ sudo apt install build-essential pkg-config libsqlite3-dev libssl-dev \
   libasound2-dev fonts-dejavu-core
 ```
 
-A Vulkan driver must be visible to the loader. Without a GPU, Mesa lavapipe can stand in:
+On Fedora:
 
 ```bash
-sudo apt install mesa-vulkan-drivers
-export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+sudo dnf install gcc pkg-config sqlite-devel openssl-devel vulkan-loader-devel \
+  wayland-devel libxkbcommon-devel libxcb-devel libX11-devel libXrandr-devel \
+  libXi-devel fontconfig-devel freetype-devel dbus-devel alsa-lib-devel \
+  dejavu-sans-fonts
 ```
 
-Passwords use the Secret Service API (gnome-keyring or KWallet) over D-Bus. Without it, Sela keeps the password in memory for the session and never writes it to JSON.
+You still need a Vulkan ICD at runtime (see above).
 
-### Windows
+#### Windows
 
-GPUI Kit targets Windows (Direct3D via wgpu); `keyring` uses Credential Manager. Treat Windows as less exercised than Linux/macOS until someone dogfoods there.
+A recent Visual Studio Build Tools / MSVC toolchain is enough for the Rust MSVC target.
 
-## Build and run
+### Build and run
 
 ```bash
 cargo build --workspace
 cargo run -p sela-app
+# release binary:
+cargo build --release -p sela-app
+./target/release/sela
 ```
 
 The binary package is `sela-app`; the binary name is `sela`.

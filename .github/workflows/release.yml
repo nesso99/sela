@@ -1,0 +1,315 @@
+name: Release
+
+# Tag push:
+#   - Exact semver tag vX.Y.Z  → publish a final GitHub Release
+#   - Any other v* tag (e.g. v0.1.0-dryrun.1, v0.1.0-rc.1) → dry run only
+#     (workflow artifacts, no GitHub Release). Useful before this workflow
+#     lands on main, because workflow_dispatch requires the file on default.
+#
+# workflow_dispatch (preferred after merge): same build/packaging; default
+# dry_run=true uploads workflow artifacts only. Re-run from main (or any
+# ref) after Quit / --version / other blockers land to produce QA RC
+# artifacts without tagging v0.1.0.
+#
+# QA RC (after Quit + --version are on main, and this workflow is merged):
+#   GitHub → Actions → Release → Run workflow
+#     Use workflow from: main
+#     version: 0.1.0
+#     dry_run: true
+#   or: gh workflow run release.yml --ref main -f version=0.1.0 -f dry_run=true
+# Artifacts: that run's page → Artifacts → sela-0.1.0-release-bundle
+#   (and per-platform sela-0.1.0-* artifacts). Retention 14 days.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for artifact names and CHANGELOG section (e.g. 0.1.0 or v0.1.0)"
+        required: true
+        default: "0.1.0"
+        type: string
+      dry_run:
+        description: "Dry run / RC: upload workflow artifacts only (do not publish a GitHub Release)"
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  meta:
+    name: meta
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      publish: ${{ steps.meta.outputs.publish }}
+      git_sha: ${{ steps.meta.outputs.git_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version / publish mode
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            raw="${{ inputs.version }}"
+            version="${raw#v}"
+            # Strip any accidental prerelease suffix from the input for
+            # changelog / artifact naming (section is still [0.1.0]).
+            version="${version%%-*}"
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              publish=false
+            else
+              # Explicit non-dry dispatch still publishes as a draft prerelease
+              # so a mistaken click cannot create a final public release.
+              publish=draft
+            fi
+          else
+            tag_name="${GITHUB_REF#refs/tags/}"
+            # v0.1.0 → final publish; v0.1.0-dryrun.N / v0.1.0-rc.N → dry run
+            if [[ "$tag_name" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              version="${BASH_REMATCH[1]}"
+              publish=true
+            elif [[ "$tag_name" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)([.-].+)$ ]]; then
+              version="${BASH_REMATCH[1]}"
+              publish=false
+            else
+              echo "error: unsupported tag '$tag_name' (expected vX.Y.Z or vX.Y.Z-…)" >&2
+              exit 1
+            fi
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: invalid version '$version'" >&2
+            exit 1
+          fi
+          git_sha="$(git rev-parse --short=7 HEAD)"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "tag=v$version" >>"$GITHUB_OUTPUT"
+          echo "publish=$publish" >>"$GITHUB_OUTPUT"
+          echo "git_sha=$git_sha" >>"$GITHUB_OUTPUT"
+          echo "Resolved version=$version tag=v$version publish=$publish sha=$git_sha"
+
+  build:
+    name: build (${{ matrix.name }})
+    needs: meta
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - name: macos-universal
+            os: macos-14
+            target: universal-apple-darwin
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.name == 'macos-universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+
+      - name: Install Linux GPUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libsqlite3-dev libssl-dev \
+            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
+            libasound2-dev fonts-dejavu-core
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.name }}
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        env:
+          SELA_GIT_SHA: ${{ needs.meta.outputs.git_sha }}
+        run: cargo build --release -p sela-app
+
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        env:
+          SELA_GIT_SHA: ${{ needs.meta.outputs.git_sha }}
+        run: |
+          set -euo pipefail
+          cargo build --release -p sela-app --target aarch64-apple-darwin
+          cargo build --release -p sela-app --target x86_64-apple-darwin
+          mkdir -p target/release
+          lipo -create -output target/release/sela \
+            target/aarch64-apple-darwin/release/sela \
+            target/x86_64-apple-darwin/release/sela
+          lipo -info target/release/sela
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        env:
+          SELA_GIT_SHA: ${{ needs.meta.outputs.git_sha }}
+        run: cargo build --release -p sela-app
+
+      - name: Smoke test (--version)
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Requires sela --version from PR #27 (feat/version-flag). Merge that
+          # before tagging v0.1.0; dry-run branches may cherry-pick it.
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            BIN="target/release/sela.exe"
+          else
+            BIN="target/release/sela"
+          fi
+          test -f "$BIN"
+          out="$("$BIN" --version)"
+          echo "smoke: $out"
+          echo "$out" | grep -E "^sela ${VERSION}( |$)"
+          out2="$("$BIN" -V)"
+          echo "smoke -V: $out2"
+          echo "$out2" | grep -E "^sela ${VERSION}( |$)"
+
+      - name: Package Linux (tar.gz + AppImage)
+        if: runner.os == 'Linux'
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          BINARY: target/release/sela
+          OUT_DIR: dist
+          REPO_ROOT: ${{ github.workspace }}
+        run: |
+          chmod +x scripts/package-linux.sh scripts/extract-changelog.sh
+          ./scripts/package-linux.sh
+
+      - name: Package macOS (.dmg + .zip)
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          BINARY: target/release/sela
+          OUT_DIR: dist
+          REPO_ROOT: ${{ github.workspace }}
+          ARCH_LABEL: universal
+        run: |
+          chmod +x scripts/package-macos.sh
+          ./scripts/package-macos.sh
+
+      - name: Package Windows (.zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $base = "sela-$env:VERSION-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP $base
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/sela.exe $stage
+          Copy-Item LICENSE, README.md $stage
+          Compress-Archive -Path $stage -DestinationPath "dist/$base.zip" -Force
+          Get-Item "dist/$base.zip" | Format-List Name, Length
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sela-${{ needs.meta.outputs.version }}-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    name: assemble + checksums + notes
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sela-${{ needs.meta.outputs.version }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: SHA256SUMS + release notes
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/extract-changelog.sh
+          cd dist
+          ls -lah
+          # Hash only release payloads (not nested dirs)
+          find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-notes.md -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sed 's# \./# #' >SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+          ./scripts/extract-changelog.sh "$VERSION" CHANGELOG.md dist/release-notes.md
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "### Artifacts"
+            echo ""
+            echo "See \`SHA256SUMS\` in this release for checksums."
+            echo "Builds are unsigned (macOS Gatekeeper / Windows SmartScreen may warn)."
+            echo ""
+            echo "Binary: \`sela\` (crate \`sela-app\`). Smoke-tested with \`sela --version\`."
+          } >>dist/release-notes.md
+          cat dist/release-notes.md
+
+      - name: Upload combined release bundle (dry-run / RC)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sela-${{ needs.meta.outputs.version }}-release-bundle
+          path: |
+            dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release (tag only)
+        if: needs.meta.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: Sela ${{ needs.meta.outputs.version }}
+          body_path: dist/release-notes.md
+          files: |
+            dist/*
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+
+      - name: Publish draft prerelease (explicit non-dry workflow_dispatch)
+        if: needs.meta.outputs.publish == 'draft'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}-rc.${{ github.run_number }}
+          name: Sela ${{ needs.meta.outputs.version }} RC (draft)
+          body_path: dist/release-notes.md
+          files: |
+            dist/*
+          fail_on_unmatched_files: true
+          draft: true
+          prerelease: true
+          generate_release_notes: false

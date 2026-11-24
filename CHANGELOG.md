@@ -3,14 +3,11 @@
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-once a stable release is tagged. Until then, work lands on `main` under **Unreleased**.
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- `sela --version` / `-V` prints `sela <version> (<short git SHA>)` (SHA from `git rev-parse` at build time, or the `SELA_GIT_SHA` build env; omitted when neither is available) and `--help` / `-h` prints usage; both exit without opening a window.
+## [0.1.0] - 2026-11-24
 
 ### Fixed
 
@@ -19,6 +16,9 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 
 ### Added
 
+- GitHub Actions release workflow (`.github/workflows/release.yml`): tag `v*` publishes a GitHub Release; `workflow_dispatch` supports dry-run / RC builds that upload workflow artifacts without a final release. Artifacts: Linux `tar.gz` + AppImage, macOS Apple Silicon (arm64) `.dmg` + `.zip` (unsigned; **Intel Macs are not supported yet**), Windows `.zip`, plus `SHA256SUMS` and notes from this changelog section. Each binary is smoke-tested with `sela --version`.
+- Prebuilt install docs per platform, including the macOS arm64-only limitation, unsigned-build caveats (macOS Gatekeeper, Windows SmartScreen), and Linux Vulkan / GPU runtime dependencies (`docs/user/installation.md`).
+- `sela --version` / `-V` prints `sela <version> (<short git SHA>)` (SHA from `git rev-parse` at build time, or the `SELA_GIT_SHA` build env; omitted when neither is available) and `--help` / `-h` prints usage; both exit without opening a window.
 - M1-5 query history (US-10): `history.sqlite` with FTS5 (mode `0600`), global 10 000-row retention, per-connection `record_history` (default on), bottom history panel with scope/outcome/search, Open / Insert / Copy / Rerun / Delete / Clear history. Rerun uses `is_safe_to_rerun_for_load_more` and confirms otherwise; Open/Insert never auto-run. Password-setting DDL (`CREATE`/`ALTER` `USER`|`ROLE` … `PASSWORD`, `IDENTIFIED BY`, `SET PASSWORD`) is skipped (not redacted) with status note `not saved to history (contains a password)`. User docs: `docs/user/query-history.md`.
 - M1-7 selection, copy, and themes (US-14 + light/dark): grid cell/row/column and Shift-range selection; typed clipboard path (`CopyCell`) so text `NULL` is not confused with SQL NULL; copy as TSV (Cmd/Ctrl+C), CSV, JSON, or INSERT from the grid context menu (INSERT quotes identifiers per dialect, escapes MySQL backslashes, refuses decode/unsupported cells and unloaded rows with a status message; SQL-result INSERT uses placeholder `table` plus `-- replace table name`); Light / Dark / System via the status-bar menu, persisted in `settings.json` (no secrets); Sela `ThemeConfig` overrides and `SelaPalette` gap colors from `docs/design/ux/06-theme-tokens.md`; SQL result strip is a tab stop with Left/Right Prev/Next. User docs: [copying.md](docs/user/copying.md), [themes.md](docs/user/themes.md).
 - M1-4 SQL editor (GPUI): `Editor` widget with resizable/collapsible column, statement-at-caret and selection run, run-all with sequential execution and up to eight result snapshots, gutter marks, Postgres error underline when position is parseable, and header find bar (`docs/design/ux/03-sql-editor.md`).

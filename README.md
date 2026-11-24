@@ -10,7 +10,9 @@ Sela is a native desktop database client for PostgreSQL, MySQL, and SQLite. Earl
 
 ## Quick start
 
-Rust **1.85+**, a C toolchain, and `pkg-config`. See [installation](docs/user/installation.md) for OS notes (Metal / Vulkan / keychain).
+Prebuilt binaries (Linux AppImage/`tar.gz`, macOS universal DMG/zip, Windows zip) are attached to [GitHub Releases](https://github.com/nesso99/sela/releases). See [installation](docs/user/installation.md) for Gatekeeper / SmartScreen caveats and Linux Vulkan runtime deps.
+
+To build from source: Rust **1.85+**, a C toolchain, and `pkg-config`.
 
 ```bash
 cargo build --workspace
