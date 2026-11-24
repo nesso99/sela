@@ -8,6 +8,7 @@
 //! [`create_sample_database`]. Domain types live in `sela-core`.
 
 mod bind;
+mod change_exec;
 mod decode;
 mod error_map;
 mod mysql;

@@ -44,3 +44,15 @@ pub struct TableStructure {
     /// Full DDL for the table (and related indexes when the engine provides them).
     pub ddl: String,
 }
+
+impl TableStructure {
+    /// Primary-key column names in key order, when the engine reported a PK index.
+    ///
+    /// Returns `None` when there is no primary key (table is not grid-editable).
+    pub fn primary_key_columns(&self) -> Option<Vec<String>> {
+        self.indexes
+            .iter()
+            .find(|idx| idx.primary && !idx.columns.is_empty())
+            .map(|idx| idx.columns.clone())
+    }
+}

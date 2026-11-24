@@ -35,6 +35,7 @@ Specified for a later build, and not bound yet: edit a cell (Enter), preview (Cm
 | Delete history row | Cmd/Ctrl+Backspace (history list) |
 | Close history / clear search | Escape (history panel) |
 | Select all cells | Cmd/Ctrl+A (grid focused) |
+| Extend selection | Shift+Arrow (grid focused) |
 | Copy selection as TSV | Cmd/Ctrl+C (grid focused) |
 | Previous / next SQL result | Left / Right (result strip focused) |
 | Quit | Cmd/Ctrl+Q (File ▸ Quit / Quit Sela; confirms only while a query or Count is running) |
