@@ -53,6 +53,7 @@ actions!(
         CopyAsCsv,
         CopyAsJson,
         CopyAsInsert,
+        SelectAllGrid,
         ResultStripPrev,
         ResultStripNext,
         Quit
@@ -215,6 +216,11 @@ pub fn run() {
                 Box::new(CopySelection),
                 Some("DataTable"),
             );
+            // Select all cells in the result grid (Ctrl/Cmd+A).
+            cx.bind_keys([
+                KeyBinding::new("cmd-a", SelectAllGrid, Some("DataTable")),
+                KeyBinding::new("ctrl-a", SelectAllGrid, Some("DataTable")),
+            ]);
             // Result strip Prev/Next when the strip itself is focused.
             bind_secondary(cx, "left", Box::new(ResultStripPrev), Some("ResultStrip"));
             bind_secondary(cx, "right", Box::new(ResultStripNext), Some("ResultStrip"));

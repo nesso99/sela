@@ -970,6 +970,35 @@ mod tests {
         );
     }
 
+    /// `SELECT pg_sleep(n)` returns void — must be a NULL-style cell with header
+    /// type `void`, never a red `!<VOID>` decode marker (#62).
+    #[tokio::test]
+    async fn postgres_void_pg_sleep_is_null_style_cell() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres void: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+        let outcome = run_user_sql(&session, "SELECT pg_sleep(0)", 10, CancellationToken::new())
+            .await
+            .expect("pg_sleep");
+        let StatementOutcome::Rows(rows) = outcome else {
+            panic!("expected rows from pg_sleep");
+        };
+        assert_eq!(rows.page.columns.len(), 1);
+        assert_eq!(rows.page.columns[0].type_name.to_ascii_lowercase(), "void");
+        assert_eq!(rows.page.rows.len(), 1);
+        assert!(
+            rows.page.rows[0][0].is_null(),
+            "void must render as NULL-style, got {:?}",
+            rows.page.rows[0][0]
+        );
+        assert!(!rows.page.rows[0][0].is_decode_error());
+        assert!(!rows.page.rows[0][0].is_unsupported_placeholder());
+    }
+
     #[tokio::test]
     async fn postgres_cancel_does_not_poison_next_query() {
         let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {

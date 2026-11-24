@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Result grid range selection: Shift+click and Shift+arrow extend `selection_rect` (highlighted), Ctrl/Cmd+A selects all cells, and right-click inside a range still keeps the range for Copy (#59).
+- SQLite: expression column headers show the runtime storage class (INTEGER / REAL / TEXT / BLOB) of the first non-NULL value, or no type when unknown / all NULL — never `NULL` as a type (#60).
+- SQL / result toolbar page label uses the real row count and page (`Page N · {n} rows` or `Page N of M`), not a hardcoded `Page 1 · 100 rows` (#61).
+- Postgres `void` (e.g. `SELECT pg_sleep(n)`) renders as a NULL-style cell with header type `void`, not a red `!<VOID>` decode marker (#62).
 - Saved passwords persist again: enable keyring v3 platform stores (`apple-native`, `windows-native`, `sync-secret-service` + `crypto-rust`) instead of the in-process mock; startup and tests fail loudly if the mock is still the default. When the OS keychain is unavailable at runtime, the #46 memory-only warning still applies (#51).
 - Connection error banner clears when connecting, switching connection, disconnecting, or after a successful connect, so a failed MySQL/Postgres auth message is not left over a working session (#52).
 - Stop / cancel: replace a stale grid `Running…` empty message with `Query cancelled.` when no rows were delivered (same pattern as failed-query empty state) (#53).

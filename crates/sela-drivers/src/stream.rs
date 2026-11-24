@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use sela_core::{ColumnMeta, DbError, StreamBatch, StreamOutcome, Value};
 
-use crate::decode::{column_meta, read_mysql_cell, read_sqlite_cell};
+use crate::decode::{column_meta, read_mysql_cell, read_sqlite_cell, refine_sqlite_column_types};
 use crate::pg_decode::{
     read_postgres_cell_with_strategy, strategies_from_columns, PgDecodeStrategy,
 };
@@ -255,6 +255,9 @@ pub(crate) async fn stream_sqlite(
                 .await
                 .map_err(crate::sqlx_err)?;
             outcome.columns = described.columns().iter().map(column_meta).collect();
+            // Zero-row SQLite describe still reports "NULL" for expressions —
+            // normalize so the header never shows NULL as a type (#60).
+            refine_sqlite_column_types(&mut outcome.columns, &[]);
             let _ = sink_meta
                 .send(StreamBatch {
                     columns: Some(outcome.columns.clone()),
@@ -445,6 +448,9 @@ where
         for index in 0..width {
             cells.push(read_cell(&row, index));
         }
+        // SQLite undeclared types: fill from this row's storage class before the
+        // first batch ships columns to the UI (#60). No-op when types are set.
+        refine_sqlite_column_types(columns, std::slice::from_ref(&cells));
         batch_rows.push(cells);
         rows_delivered += 1;
 

@@ -10,7 +10,7 @@ In the OS keychain when available — never in `connections.json` or `settings.j
 
 ## How do I copy cells from the grid?
 
-Select a cell or Shift-click a range, then Cmd/Ctrl+C for TSV, or use the grid context menu for CSV, JSON, or INSERT. Unloaded rows and decode-error cells for INSERT are refused with a status message. See [Copying](./copying.md).
+Select a cell, Shift-click / Shift+arrow a range, or Cmd/Ctrl+A for all cells, then Cmd/Ctrl+C for TSV, or use the grid context menu for CSV, JSON, or INSERT. Unloaded rows and decode-error cells for INSERT are refused with a status message. See [Copying](./copying.md).
 
 ## How do I switch light and dark themes?
 

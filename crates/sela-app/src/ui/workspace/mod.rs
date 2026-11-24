@@ -41,8 +41,8 @@ use super::{
     CopySelection, EscapeFilterBar, EscapeHistory, FindInSql, FindNext, FindPrevious,
     FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun,
     HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab, Quit, RemoveFilterRow,
-    ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, ShowTableData, ShowTableStructure,
-    ToggleEditor, ToggleFilterBar, ToggleHistory,
+    ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, SelectAllGrid, ShowTableData,
+    ShowTableStructure, ToggleEditor, ToggleFilterBar, ToggleHistory,
 };
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
@@ -320,13 +320,7 @@ impl Render for Workspace {
         let total_rows = self.active_view().and_then(|view| view.total_rows);
         let paged = self.active_view().map(|view| view.paged).unwrap_or(false);
         let page_number = page_offset / sela_core::PAGE_SIZE as u64 + 1;
-        let page_label = match total_rows {
-            Some(total) if paged => {
-                let pages = total.div_ceil(sela_core::PAGE_SIZE as u64).max(1);
-                format!("Page {page_number} of {pages}")
-            }
-            _ => format!("Page {page_number} · {} rows", sela_core::PAGE_SIZE),
-        };
+        let page_label = format_page_label(page_number, page_len, total_rows, paged);
         let endpoint = self
             .active_connection()
             .map(|connection| {
@@ -342,7 +336,6 @@ impl Render for Workspace {
             .active_view()
             .map(|view| view.table_pane)
             .unwrap_or(TablePane::Data);
-        let _ = page_len;
         self.client_decorations = matches!(
             window.window_decorations(),
             gpui_kit::Decorations::Client { .. }
@@ -586,6 +579,12 @@ impl Render for Workspace {
             })
             .on_action({
                 let this = this.clone();
+                move |_: &SelectAllGrid, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.select_all_grid(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
                 move |_: &CopyAsTsv, _, cx| {
                     this.update(cx, |workspace, cx| {
                         workspace.copy_selection(CopyFormat::Tsv, cx)
@@ -694,5 +693,63 @@ impl Render for Workspace {
                             }),
                     ),
             )
+    }
+}
+
+/// Toolbar page label for table previews and SQL results (#61).
+///
+/// - Paged table with a known total → `Page N of M`
+/// - Non-paged / SQL result with a known total → `Page N · {total} rows`
+/// - Unknown total → `Page N · {page_len} rows` (actual rows on this page)
+pub(crate) fn format_page_label(
+    page_number: u64,
+    page_len: usize,
+    total_rows: Option<u64>,
+    paged: bool,
+) -> String {
+    match (total_rows, paged) {
+        (Some(total), true) => {
+            let pages = total.div_ceil(sela_core::PAGE_SIZE as u64).max(1);
+            format!("Page {page_number} of {pages}")
+        }
+        (Some(total), false) => format!("Page {page_number} · {total} rows"),
+        (None, _) => format!("Page {page_number} · {page_len} rows"),
+    }
+}
+
+#[cfg(test)]
+mod page_label_tests {
+    use super::format_page_label;
+
+    #[test]
+    fn paged_table_shows_page_of_pages() {
+        assert_eq!(format_page_label(1, 100, Some(2500), true), "Page 1 of 25");
+        assert_eq!(format_page_label(2, 100, Some(150), true), "Page 2 of 2");
+    }
+
+    #[test]
+    fn sql_result_shows_actual_row_count() {
+        assert_eq!(format_page_label(1, 5, Some(5), false), "Page 1 · 5 rows");
+        assert_eq!(
+            format_page_label(1, 10, Some(10), false),
+            "Page 1 · 10 rows"
+        );
+        assert_eq!(format_page_label(1, 1, Some(1), false), "Page 1 · 1 rows");
+        assert_eq!(format_page_label(1, 0, Some(0), false), "Page 1 · 0 rows");
+    }
+
+    #[test]
+    fn unknown_total_uses_page_len_not_hardcoded_100() {
+        assert_eq!(format_page_label(1, 37, None, true), "Page 1 · 37 rows");
+        assert_eq!(format_page_label(1, 0, None, false), "Page 1 · 0 rows");
+    }
+
+    #[test]
+    fn multi_page_sql_cap_still_shows_delivered_count() {
+        // Streamed SQL capped at 1000 still reports the delivered total.
+        assert_eq!(
+            format_page_label(1, 1000, Some(1000), false),
+            "Page 1 · 1000 rows"
+        );
     }
 }

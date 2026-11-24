@@ -27,6 +27,8 @@ use crate::decode::{early_value, other, probe_null, type_name};
 pub(crate) enum PgDecodeStrategy {
     /// Use the existing typed `read_postgres_cell` match arms / helpers.
     Native,
+    /// Postgres `void` (e.g. `pg_sleep`) — render as SQL NULL, never `<VOID>`.
+    Void,
     ArrayInt2,
     ArrayInt4,
     ArrayInt8,
@@ -63,9 +65,16 @@ pub(crate) fn strategy_for_type_info(type_info: &PgTypeInfo) -> PgDecodeStrategy
         sqlx::postgres::PgTypeKind::Range(elem) => {
             return range_strategy_for_elem(elem.name());
         }
-        // Composites / records and pseudo-types have structured binary layouts.
-        // Never attempt UTF-8 text interpretation.
-        sqlx::postgres::PgTypeKind::Composite(_) | sqlx::postgres::PgTypeKind::Pseudo => {
+        // Composites / records and most pseudo-types have structured binary
+        // layouts — never attempt UTF-8 text interpretation. `void` is the
+        // one pseudo-type we map to a NULL-style cell (#62).
+        sqlx::postgres::PgTypeKind::Composite(_) => {
+            return PgDecodeStrategy::Fallback;
+        }
+        sqlx::postgres::PgTypeKind::Pseudo => {
+            if type_info.name().eq_ignore_ascii_case("void") {
+                return PgDecodeStrategy::Void;
+            }
             return PgDecodeStrategy::Fallback;
         }
         _ => {}
@@ -127,6 +136,7 @@ fn strategy_for_type_name(name: &str) -> PgDecodeStrategy {
         | "VARCHAR" | "NAME" | "XML" | "CITEXT" | "CHAR" | "BPCHAR" | "\"CHAR\"" | "BYTEA"
         | "UUID" | "JSON" | "JSONB" | "DATE" | "TIME" | "TIMESTAMP" | "TIMESTAMPTZ"
         | "INTERVAL" => PgDecodeStrategy::Native,
+        "VOID" => PgDecodeStrategy::Void,
         // Unknown non-array types (polygon, box, PostGIS, extension types, …) must
         // NOT use TextBytes: sqlx fetches BINARY, and many binary payloads are still
         // valid UTF-8 with control junk. Enums are handled via PgTypeKind::Enum above.
@@ -148,6 +158,12 @@ pub(crate) fn read_postgres_cell_with_strategy(
     index: usize,
     strategy: PgDecodeStrategy,
 ) -> Value {
+    // void must not go through null-probe / text fallback — try_get_raw can
+    // error and become a red !<VOID> decode marker (#62).
+    if matches!(strategy, PgDecodeStrategy::Void) {
+        return Value::Null;
+    }
+
     let type_name = type_name(row, index);
     if let Some(early) = early_value(probe_null(row, index), &type_name) {
         return early;
@@ -155,6 +171,7 @@ pub(crate) fn read_postgres_cell_with_strategy(
 
     match strategy {
         PgDecodeStrategy::Native => crate::decode::read_postgres_native(row, index, &type_name),
+        PgDecodeStrategy::Void => Value::Null,
         PgDecodeStrategy::ArrayInt2 => array_other(
             &type_name,
             try_decode::<Vec<Option<i16>>>(row, index)
@@ -616,6 +633,8 @@ mod tests {
             strategy_for_type_name("TSTZRANGE"),
             PgDecodeStrategy::Fallback
         );
+        assert_eq!(strategy_for_type_name("VOID"), PgDecodeStrategy::Void);
+        assert_eq!(strategy_for_type_name("void"), PgDecodeStrategy::Void);
     }
 
     #[test]

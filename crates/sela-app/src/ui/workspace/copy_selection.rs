@@ -10,6 +10,30 @@ use sela_core::{
 use super::{GridSource, Workspace};
 
 impl Workspace {
+    /// Select every cell in the active result grid (Ctrl/Cmd+A).
+    pub(super) fn select_all_grid(&mut self, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
+            return;
+        };
+        let Some(view) = self.views.get(&tab_id) else {
+            return;
+        };
+        view.grid.update(cx, |state, cx| {
+            let rows = state.delegate().result.total_rows();
+            let cols = state.delegate().result.columns().len();
+            state.delegate_mut().select_all_cells();
+            if rows > 0 && cols > 0 {
+                // Keep DataTable's focus cell so keyboard navigation still works.
+                state.set_selected_cell(0, 0, cx);
+                // set_selected_cell emits SelectCell which would collapse the
+                // range via note_cell_focus(false) — restore the full range.
+                state.delegate_mut().select_all_cells();
+            }
+            state.refresh(cx);
+        });
+        cx.notify();
+    }
+
     pub(super) fn copy_selection(&mut self, format: CopyFormat, cx: &mut Context<Self>) {
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return;
