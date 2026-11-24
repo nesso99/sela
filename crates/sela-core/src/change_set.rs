@@ -92,6 +92,8 @@ pub struct ChangeSet {
     pk_columns: Vec<String>,
     /// Table columns in display / INSERT order.
     columns: Vec<String>,
+    /// Engine `type_name` per column (used for Postgres bind casts).
+    column_types: BTreeMap<String, String>,
     changes: Vec<RowChange>,
     next_insert_id: u64,
 }
@@ -102,6 +104,16 @@ impl ChangeSet {
         table: TableRef,
         pk_columns: Vec<String>,
         columns: Vec<String>,
+    ) -> Result<Self, ChangeError> {
+        Self::try_new_with_types(table, pk_columns, columns, BTreeMap::new())
+    }
+
+    /// Create a change set with known column type names.
+    pub fn try_new_with_types(
+        table: TableRef,
+        pk_columns: Vec<String>,
+        columns: Vec<String>,
+        column_types: BTreeMap<String, String>,
     ) -> Result<Self, ChangeError> {
         if pk_columns.is_empty() {
             return Err(ChangeError::NoPrimaryKey);
@@ -126,6 +138,7 @@ impl ChangeSet {
             table,
             pk_columns,
             columns,
+            column_types,
             changes: Vec::new(),
             next_insert_id: 1,
         })
@@ -141,10 +154,16 @@ impl ChangeSet {
             .iter()
             .map(|c| c.name.clone())
             .collect::<Vec<_>>();
-        Self::try_new(
+        let column_types = structure
+            .columns
+            .iter()
+            .map(|c| (c.name.clone(), c.type_name.clone()))
+            .collect();
+        Self::try_new_with_types(
             TableRef::new(structure.schema.clone(), structure.table.clone()),
             pk,
             columns,
+            column_types,
         )
     }
 
@@ -158,6 +177,11 @@ impl ChangeSet {
 
     pub fn columns(&self) -> &[String] {
         &self.columns
+    }
+
+    /// Engine type name for `name`, when known.
+    pub fn column_type(&self, name: &str) -> Option<&str> {
+        self.column_types.get(name).map(String::as_str)
     }
 
     pub fn changes(&self) -> &[RowChange] {
@@ -321,6 +345,20 @@ impl ChangeSet {
         self.changes.remove(ix);
         Ok(())
     }
+
+    /// Clear a pending delete for `pk` (undelete).
+    ///
+    /// Does not restore a prior [`RowChange::Update`] — callers that preserved
+    /// cell edits before [`Self::delete_row`] re-apply them with [`Self::set_cell`].
+    pub fn undelete_row(&mut self, pk: &[Value]) -> Result<(), ChangeError> {
+        self.require_pk(pk)?;
+        if let Some(ix) = self.find_existing_mut(pk) {
+            if matches!(self.changes[ix], RowChange::Delete { .. }) {
+                self.changes.remove(ix);
+            }
+        }
+        Ok(())
+    }
 }
 
 fn pk_eq(a: &[Value], b: &[Value]) -> bool {
@@ -418,6 +456,15 @@ mod tests {
     }
 
     #[test]
+    fn undelete_clears_delete_mark() {
+        let mut cs = books();
+        cs.delete_row(&[Value::Int(2)]).unwrap();
+        assert!(!cs.is_empty());
+        cs.undelete_row(&[Value::Int(2)]).unwrap();
+        assert!(cs.is_empty());
+    }
+
+    #[test]
     fn insert_edit_and_delete_cancels() {
         let mut cs = books();
         let mut values = BTreeMap::new();
@@ -463,6 +510,7 @@ mod tests {
                 nullable: true,
                 default: None,
                 comment: None,
+                generated: false,
             }],
             indexes: vec![],
             foreign_keys: vec![],

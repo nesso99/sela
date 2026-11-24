@@ -8,6 +8,9 @@ pub struct ColumnStructure {
     pub nullable: bool,
     pub default: Option<String>,
     pub comment: Option<String>,
+    /// True when the engine reports the column as identity, generated, or
+    /// auto-increment (drivers set this from catalog metadata).
+    pub generated: bool,
 }
 
 /// An index on a table (including the primary key when the engine reports it).

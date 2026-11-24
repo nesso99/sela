@@ -6,7 +6,7 @@ Newer shortcuts use GPUI’s `secondary-` modifier (⌘ on macOS, Ctrl elsewhere
 
 The design target for shortcuts that are not built yet is [docs/design/ux/README.md](../design/ux/README.md). That folder writes the platform key as `secondary`. `secondary-shift-f` is reserved for format and is backlog. This page stays the list of what the app binds today.
 
-Specified for a later build, and not bound yet: edit a cell (Enter), preview (Cmd/Ctrl+Shift+P), commit (Cmd/Ctrl+S), discard (Cmd/Ctrl+Shift+Z outside a text field), and font size (Cmd/Ctrl+Plus, Cmd/Ctrl+Minus, Cmd/Ctrl+0). The design notes are in the UX index.
+Font size (Cmd/Ctrl+Plus, Cmd/Ctrl+Minus, Cmd/Ctrl+0) is still specified and not bound yet. Grid edit / preview / commit chords below are bound for table Data.
 
 | Action | Shortcut |
 | --- | --- |
@@ -37,8 +37,14 @@ Specified for a later build, and not bound yet: edit a cell (Enter), preview (Cm
 | Select all cells | Cmd/Ctrl+A (grid focused) |
 | Extend selection | Shift+Arrow (grid focused) |
 | Copy selection as TSV | Cmd/Ctrl+C (grid focused) |
+| Edit focused cell | Enter or double-click (grid focused; table with PK) |
+| Cancel open cell editor | Escape (does not discard the pending set) |
+| Insert / Duplicate / Delete row | Cmd/Ctrl+I / Cmd/Ctrl+D / Cmd/Ctrl+Backspace (grid focused) |
+| Preview pending SQL | Cmd/Ctrl+Shift+P (table Data) |
+| Commit pending changes | Cmd/Ctrl+S (table Data; accepts open editor first) |
+| Discard pending changes | Cmd/Ctrl+Shift+Z (table Data, editor closed; confirms) |
 | Previous / next SQL result | Left / Right (result strip focused) |
-| Quit | Cmd/Ctrl+Q (File ▸ Quit / Quit Sela; confirms only while a query or Count is running) |
+| Quit | Cmd/Ctrl+Q (File ▸ Quit / Quit Sela; confirms while a query is running or pending edits exist) |
 
 Run (Cmd/Ctrl+Enter) runs the statement at the caret, the selected text split into statements, or the whole buffer when using Run all. It only fires when the SQL editor has focus; filter fields still use Enter / Cmd/Ctrl+Enter to apply. Cancel stops the running query for that tab (server-side cancel on Postgres/MySQL; SQLite drops the stream). Closing a tab cancels its in-flight work. Global Cmd/Ctrl+F toggles the filter bar on table tabs; with the SQL editor focused, the same chord opens find-in-SQL; with the history panel focused, it focuses the history search field.
 

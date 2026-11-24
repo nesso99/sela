@@ -2,6 +2,9 @@
 
 mod content;
 mod copy_selection;
+mod edit_actions;
+pub(crate) mod edit_session;
+mod edit_ui;
 mod filter_bar;
 mod history;
 mod query;
@@ -39,13 +42,15 @@ use sela_core::{
 };
 
 use super::{
-    ActivateTab, CancelQuery, CloseTab, CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv,
-    CopySelection, EscapeFilterBar, EscapeHistory, ExtendGridSelectionDown,
+    AcceptCellEditor, ActivateTab, CancelCellEditor, CancelQuery, CloseTab, CommitChanges,
+    CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, DeleteEditRow, DiscardChanges,
+    DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory, ExtendGridSelectionDown,
     ExtendGridSelectionLeft, ExtendGridSelectionRight, ExtendGridSelectionUp, FindInSql, FindNext,
     FindPrevious, FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen,
-    HistoryRerun, HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab, Quit,
-    RemoveFilterRow, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, SelectAllGrid,
-    ShowTableData, ShowTableStructure, ToggleEditor, ToggleFilterBar, ToggleHistory,
+    HistoryRerun, HistorySelectDown, HistorySelectUp, InsertEditRow, InsertFilterRow, NewQueryTab,
+    PreviewChanges, Quit, RemoveFilterRow, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery,
+    SelectAllGrid, SetCellNull, ShowTableData, ShowTableStructure, ToggleEditor, ToggleFilterBar,
+    ToggleHistory,
 };
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
@@ -98,6 +103,10 @@ pub struct Workspace {
     history_focus_restore: HistoryFocusRestore,
     /// True while the "Quit Sela?" confirm dialog is open (blocks repeat Quit).
     quit_confirm_open: bool,
+    /// True while the Discard pending changes confirm is open.
+    discard_confirm_open: bool,
+    /// True while the close-tab-with-pending confirm is open.
+    close_tab_confirm_open: bool,
     /// True while the Switch/Disconnect close-tabs confirm is open.
     close_tabs_confirm_open: bool,
     /// Action to run after the user confirms closing tabs with typed SQL / busy work.
@@ -112,7 +121,11 @@ pub struct Workspace {
 #[derive(Clone)]
 pub(super) enum GridSource {
     Idle,
-    Table { schema: String, table: String },
+    Table {
+        schema: String,
+        table: String,
+        kind: sela_core::RelationKind,
+    },
     Sql(String),
 }
 
@@ -223,6 +236,8 @@ impl Workspace {
             history_write_failed_once: false,
             history_focus_restore: HistoryFocusRestore::None,
             quit_confirm_open: false,
+            discard_confirm_open: false,
+            close_tab_confirm_open: false,
             close_tabs_confirm_open: false,
             pending_close_tabs: None,
             client_decorations: false,
@@ -484,8 +499,8 @@ impl Render for Workspace {
             })
             .on_action({
                 let this = this.clone();
-                move |_: &CloseTab, _, cx| {
-                    this.update(cx, |workspace, cx| workspace.close_active_tab(cx));
+                move |_: &CloseTab, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.close_active_tab(window, cx));
                 }
             })
             .on_action({
@@ -709,6 +724,79 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| workspace.step_result_strip(1, cx));
                 }
             })
+            .on_action({
+                let this = this.clone();
+                move |_: &EditCell, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.begin_cell_edit(window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CancelCellEditor, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.cancel_cell_editor(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &AcceptCellEditor, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if let Err(msg) = workspace.accept_cell_editor(cx) {
+                            if let Some(view) = workspace.active_view_mut() {
+                                view.status = msg;
+                            }
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &SetCellNull, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.set_editor_null_and_accept(window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &InsertEditRow, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.insert_edit_row(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &DuplicateEditRow, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.duplicate_edit_row(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &DeleteEditRow, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.delete_edit_row(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &PreviewChanges, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.toggle_preview_sheet(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CommitChanges, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.request_commit_changes(window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &DiscardChanges, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.request_discard_changes(window, cx);
+                    });
+                }
+            })
             .map(|root| {
                 if client_title_bar {
                     root.child(self.client_title_bar(cx))
@@ -750,6 +838,12 @@ impl Render for Workspace {
                                     .when(matches!(table_pane, TablePane::Data), |column| {
                                         column.child(self.filter_bar(cx, connected))
                                     })
+                                    .when(matches!(table_pane, TablePane::Data), |column| {
+                                        column.child(self.pending_bar(cx))
+                                    })
+                                    .when(matches!(table_pane, TablePane::Data), |column| {
+                                        column.child(self.read_only_strip(cx))
+                                    })
                                     .when_some(self.banner_error(), |column, error| {
                                         column.child(self.error_banner(cx, error))
                                     })
@@ -758,6 +852,9 @@ impl Render for Workspace {
                                         TablePane::Structure => {
                                             self.structure_area(cx).into_any_element()
                                         }
+                                    })
+                                    .when(matches!(table_pane, TablePane::Data), |column| {
+                                        column.child(self.preview_sheet(cx))
                                     })
                                     .when(matches!(table_pane, TablePane::Data), |column| {
                                         column.child(self.predicate_strip(cx))

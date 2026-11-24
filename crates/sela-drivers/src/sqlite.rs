@@ -40,6 +40,40 @@ impl SqliteSession {
         schema_q: &str,
         table: &str,
     ) -> Result<Vec<ColumnStructure>, DbError> {
+        // Prefer xinfo so VIRTUAL/STORED generated columns (hidden 2/3) are marked.
+        let xinfo_sql = format!(
+            "SELECT name, type, \"notnull\", dflt_value, pk, hidden
+             FROM {schema_q}.pragma_table_xinfo(?)
+             ORDER BY cid"
+        );
+        match crate::query(&xinfo_sql)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+        {
+            Ok(rows) => {
+                let mut columns = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let notnull: i64 = row.try_get("notnull").map_err(crate::sqlx_err)?;
+                    let default: Option<String> =
+                        row.try_get("dflt_value").map_err(crate::sqlx_err)?;
+                    let hidden: i64 = row.try_get("hidden").map_err(crate::sqlx_err)?;
+                    columns.push(ColumnStructure {
+                        name: row.try_get("name").map_err(crate::sqlx_err)?,
+                        type_name: row.try_get("type").map_err(crate::sqlx_err)?,
+                        nullable: notnull == 0,
+                        default,
+                        comment: None,
+                        generated: hidden == 2 || hidden == 3,
+                    });
+                }
+                return Ok(columns);
+            }
+            Err(_) => {
+                // Older SQLite builds without pragma_table_xinfo.
+            }
+        }
+
         let sql = format!(
             "SELECT name, type, \"notnull\", dflt_value, pk
              FROM {schema_q}.pragma_table_info(?)
@@ -60,6 +94,7 @@ impl SqliteSession {
                 nullable: notnull == 0,
                 default,
                 comment: None,
+                generated: false,
             });
         }
         Ok(columns)

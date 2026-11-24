@@ -27,23 +27,47 @@ impl Workspace {
             // secondary-q while the quit dialog is open must not quit.
             return;
         }
-        if self.any_query_running() {
-            self.show_quit_confirm(window, cx);
+        let pending = self.pending_edit_count();
+        let busy = self.any_query_running();
+        if busy || pending > 0 {
+            self.show_quit_confirm(window, cx, busy, pending);
             return;
         }
         self.perform_quit(cx);
     }
 
-    fn show_quit_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn pending_edit_count(&self) -> usize {
+        self.views
+            .values()
+            .filter_map(|v| v.edit.as_ref())
+            .map(|e| e.pending_counts().total())
+            .sum()
+    }
+
+    fn show_quit_confirm(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        busy: bool,
+        pending: usize,
+    ) {
         self.quit_confirm_open = true;
         let this = cx.entity();
+        let description = match (busy, pending > 0) {
+            (true, true) => format!(
+                "A query is still running. Quitting will cancel it. {pending} pending changes will be discarded."
+            ),
+            (true, false) => "A query is still running. Quitting will cancel it.".into(),
+            (false, true) => format!("{pending} pending changes will be discarded."),
+            (false, false) => "Quit Sela?".into(),
+        };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this_ok = this.clone();
             let this_cancel = this.clone();
             let this_quit = this.clone();
             alert
                 .title("Quit Sela?")
-                .description("A query is still running. Quitting will cancel it.")
+                .description(description.clone())
                 // Enter dismisses (safer default). Esc uses on_cancel. Quit is a
                 // plain button, not Primary, and is not bound to Enter.
                 .on_ok(move |_, _, cx| {

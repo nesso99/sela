@@ -13,6 +13,7 @@ use gpui_kit::{px, AppContext as _, Context, Entity, Focusable as _, SharedStrin
 use sela_core::{FilterCondition, ResultWindow, RowCountKind, SortSpec, DEFAULT_SQL_ROW_CAP};
 
 use super::super::grid::GridDelegate;
+use super::edit_session::EditSession;
 use super::filter_bar::FilterRowUi;
 use super::structure::StructureCache;
 use super::{GridSource, TablePane};
@@ -88,6 +89,12 @@ pub(super) struct TabView {
     /// Set when a finished statement was skipped because it looks like
     /// password-setting DDL; flushed into the status strip after the outcome.
     pub history_password_note_pending: bool,
+    /// M2-1 / M2-3 grid editing session (table Data only).
+    pub edit: Option<EditSession>,
+    /// Shared input for the open in-cell editor.
+    pub cell_editor: Entity<InputState>,
+    /// Set after a successful commit while the page reload is in flight.
+    pub post_commit_reload: bool,
 }
 
 impl TabView {
@@ -115,6 +122,7 @@ impl TabView {
             )
         });
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in SQL"));
+        let cell_editor = cx.new(|cx| InputState::new(window, cx).placeholder("NULL"));
         Self {
             grid,
             sql,
@@ -159,15 +167,26 @@ impl TabView {
             filter_rows: Vec::new(),
             history_should_record: false,
             history_password_note_pending: false,
+            edit: None,
+            cell_editor,
+            post_commit_reload: false,
         }
     }
 
     pub fn source_label(&self) -> String {
         match &self.source {
             GridSource::Idle => "No table open".into(),
-            GridSource::Table { schema, table } => format!("{schema}.{table}"),
+            GridSource::Table { schema, table, .. } => format!("{schema}.{table}"),
             GridSource::Sql(_) => "SQL result".into(),
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn cell_editor_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        self.cell_editor
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
     }
 
     pub fn clear_structure(&mut self) {

@@ -46,6 +46,7 @@ macro_rules! apply_change_plan {
                     if n != 1 {
                         // Dropping `tx` without commit rolls the whole plan back.
                         return Err(::sela_core::DbError::change_conflict(
+                            &plan.table,
                             statement_index,
                             n,
                             &stmt.pk,

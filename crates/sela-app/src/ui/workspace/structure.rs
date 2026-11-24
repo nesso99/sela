@@ -41,7 +41,7 @@ impl Workspace {
         let Some(view) = self.views.get(&tab_id) else {
             return;
         };
-        let GridSource::Table { schema, table } = &view.source else {
+        let GridSource::Table { schema, table, .. } = &view.source else {
             return;
         };
         let schema = schema.clone();
@@ -66,7 +66,7 @@ impl Workspace {
         let Some(view) = self.views.get(&tab_id) else {
             return;
         };
-        let GridSource::Table { schema, table } = &view.source else {
+        let GridSource::Table { schema, table, .. } = &view.source else {
             return;
         };
         let schema = schema.clone();
@@ -124,7 +124,7 @@ impl Workspace {
                 let still_current = this.views.get(&tab_id).is_some_and(|view| {
                     matches!(
                         &view.source,
-                        GridSource::Table { schema, table }
+                        GridSource::Table { schema, table, .. }
                             if schema == &expected_schema && table == &expected_table
                     )
                 });
@@ -164,7 +164,7 @@ impl Workspace {
             .min_h(px(0.))
             .overflow_hidden()
             .child(match view.map(|v| &v.source) {
-                Some(GridSource::Table { schema, table }) => {
+                Some(GridSource::Table { schema, table, .. }) => {
                     let key = structure_key(schema, table);
                     let view = view.expect("matched Table source");
                     if let Some(err) = &view.structure_error {

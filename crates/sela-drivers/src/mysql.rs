@@ -71,7 +71,8 @@ impl MysqlSession {
                     CAST(column_type AS CHAR) AS type_name,
                     CAST(is_nullable AS CHAR) AS is_nullable,
                     CAST(column_default AS CHAR) AS column_default,
-                    CAST(column_comment AS CHAR) AS column_comment
+                    CAST(column_comment AS CHAR) AS column_comment,
+                    CAST(extra AS CHAR) AS extra
              FROM information_schema.columns
              WHERE table_schema = ? AND table_name = ?
              ORDER BY ordinal_position",
@@ -86,12 +87,19 @@ impl MysqlSession {
             let nullable: String = row.try_get("is_nullable").map_err(crate::sqlx_err)?;
             let default: Option<String> = row.try_get("column_default").map_err(crate::sqlx_err)?;
             let comment: Option<String> = row.try_get("column_comment").map_err(crate::sqlx_err)?;
+            let extra: String = row.try_get("extra").map_err(crate::sqlx_err)?;
+            let extra_upper = extra.to_ascii_uppercase();
+            let generated = extra_upper.contains("AUTO_INCREMENT")
+                || extra_upper.contains("GENERATED")
+                || extra_upper.contains("VIRTUAL")
+                || extra_upper.contains("STORED");
             columns.push(ColumnStructure {
                 name: row.try_get("name").map_err(crate::sqlx_err)?,
                 type_name: row.try_get("type_name").map_err(crate::sqlx_err)?,
                 nullable: nullable.eq_ignore_ascii_case("YES"),
                 default,
                 comment: comment.filter(|c| !c.is_empty()),
+                generated,
             });
         }
         Ok(columns)

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{h_flex, ActiveTheme, IconName, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, Context, IntoElement, Window};
@@ -25,7 +26,13 @@ impl Workspace {
             .tabs
             .tabs()
             .iter()
-            .map(|tab| (tab.id, tab.kind.title()))
+            .map(|tab| {
+                let mut title = tab.kind.title();
+                if tab.dirty {
+                    title.push_str(" •");
+                }
+                (tab.id, title)
+            })
             .collect();
 
         h_flex()
@@ -55,9 +62,9 @@ impl Workspace {
                                 )
                                 .tab_stop(false)
                                 .tooltip("Close tab")
-                                .on_click(move |_, _, cx| {
+                                .on_click(move |_, window, cx| {
                                     this.update(cx, |workspace, cx| {
-                                        workspace.request_close_tab(close_id, cx);
+                                        workspace.request_close_tab(close_id, window, cx);
                                     });
                                 })
                         })
@@ -121,23 +128,97 @@ impl Workspace {
         self.activate_tab_index(number - 1, window, cx);
     }
 
-    /// M2 hook: if the tab is dirty, prompt before closing. Editing does not
-    /// exist yet, so this always closes today.
-    pub(super) fn request_close_tab(&mut self, id: TabId, cx: &mut Context<Self>) {
+    /// Close a tab; confirm when it has pending grid edits (08-preview-commit.md).
+    pub(super) fn request_close_tab(
+        &mut self,
+        id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.tabs.should_prompt_before_close(id) {
-            // M2: open an alert dialog ("Discard unsaved changes?") then call
-            // `close_tab` on confirm. Until cell editing lands, dirty is never set.
-            self.close_tab(id, cx);
+            self.show_close_tab_confirm(id, window, cx);
             return;
         }
         self.close_tab(id, cx);
     }
 
-    pub(super) fn close_active_tab(&mut self, cx: &mut Context<Self>) {
+    fn show_close_tab_confirm(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.close_tab_confirm_open {
+            return;
+        }
+        let Some(view) = self.views.get(&id) else {
+            self.close_tab(id, cx);
+            return;
+        };
+        let n = view
+            .edit
+            .as_ref()
+            .map(|e| e.pending_counts().total())
+            .unwrap_or(0);
+        let table = view
+            .edit
+            .as_ref()
+            .map(|e| e.schema_table_label())
+            .unwrap_or_else(|| view.source_label());
+        self.close_tab_confirm_open = true;
+        let this = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let this_ok = this.clone();
+            let this_cancel = this.clone();
+            let this_close = this.clone();
+            alert
+                .title(format!("Close {table}?"))
+                .description(format!(
+                    "{n} pending changes will be discarded. The database is not changed."
+                ))
+                .on_ok(move |_, _, cx| {
+                    this_ok.update(cx, |workspace, _| {
+                        workspace.close_tab_confirm_open = false;
+                    });
+                    true
+                })
+                .on_cancel(move |_, _, cx| {
+                    this_cancel.update(cx, |workspace, _| {
+                        workspace.close_tab_confirm_open = false;
+                    });
+                    true
+                })
+                .footer(
+                    gpui_kit::component::dialog::DialogFooter::new()
+                        .child(
+                            gpui_kit::component::button::Button::new("close-tab-cancel")
+                                .label("Cancel")
+                                .primary()
+                                .on_click({
+                                    let this = this.clone();
+                                    move |_, window, cx| {
+                                        this.update(cx, |workspace, _| {
+                                            workspace.close_tab_confirm_open = false;
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        )
+                        .child(
+                            gpui_kit::component::button::Button::new("close-tab-close")
+                                .label("Close tab")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    this_close.update(cx, |workspace, cx| {
+                                        workspace.close_tab_confirm_open = false;
+                                        workspace.close_tab(id, cx);
+                                    });
+                                }),
+                        ),
+                )
+        });
+    }
+
+    pub(super) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
-        self.request_close_tab(id, cx);
+        self.request_close_tab(id, window, cx);
     }
 
     pub(super) fn close_tab(&mut self, id: TabId, cx: &mut Context<Self>) {
@@ -166,16 +247,19 @@ impl Workspace {
             .open_table(connection_id, schema.clone(), table.clone());
         if created {
             self.attach_view(id, "", window, cx);
+            let kind = self.relation_kind_for(&schema, &table);
             if let Some(view) = self.views.get_mut(&id) {
                 view.source = GridSource::Table {
                     schema: schema.clone(),
                     table: table.clone(),
+                    kind,
                 };
                 view.table_pane = super::TablePane::Data;
                 view.structure_error = None;
             }
             self.persist_tabs(cx);
             self.load_source_for(id, cx);
+            self.ensure_edit_session_loading(id, cx);
         } else {
             self.on_tab_activated(Some(window), cx);
             self.persist_tabs(cx);
@@ -193,9 +277,10 @@ impl Workspace {
         let view = TabView::new(window, cx, sql_text);
         let grid = view.grid.clone();
         self.views.insert(id, view);
-        let subscription = cx.observe(&grid, move |this, grid, cx| {
+        let subscription = cx.observe_in(&grid, window, move |this, grid, window, cx| {
             let pending_pages = !grid.read(cx).delegate().pending_pages.is_empty();
             let pending_sort = grid.read(cx).delegate().pending_sort;
+            let pending_edit = grid.read(cx).delegate().pending_edit_cell;
             if pending_pages {
                 this.fetch_pending_pages_for(id, cx);
             }
@@ -204,6 +289,14 @@ impl Workspace {
                     state.delegate_mut().pending_sort = None;
                 });
                 this.apply_column_sort(id, col_ix, shift, cx);
+            }
+            if pending_edit.is_some() {
+                grid.update(cx, |state, _| {
+                    state.delegate_mut().pending_edit_cell = None;
+                });
+                if this.tabs.active().map(|t| t.id) == Some(id) {
+                    this.begin_cell_edit(window, cx);
+                }
             }
         });
         let selection = cx.subscribe_in(
@@ -277,15 +370,18 @@ impl Workspace {
                     && self.session.is_some()
                     && matches!(&view.source, GridSource::Idle | GridSource::Table { .. })
             });
+            let kind = self.relation_kind_for(&schema, &table);
             if let Some(view) = self.views.get_mut(&tab_id) {
                 view.source = GridSource::Table {
                     schema: schema.clone(),
                     table: table.clone(),
+                    kind,
                 };
             }
             if needs_load {
                 self.load_source_for(tab_id, cx);
             }
+            self.ensure_edit_session_loading(tab_id, cx);
         }
     }
 
@@ -367,7 +463,11 @@ impl Workspace {
                     rows.push(super::filter_bar::FilterRowUi::new(window, cx, seed));
                 }
                 if let Some(view) = self.views.get_mut(&id) {
-                    view.source = GridSource::Table { schema, table };
+                    view.source = GridSource::Table {
+                        schema,
+                        table,
+                        kind: sela_core::RelationKind::Table,
+                    };
                     view.filters = filters;
                     view.sorts = sorts;
                     view.filter_bar_open = filter_bar_open;
