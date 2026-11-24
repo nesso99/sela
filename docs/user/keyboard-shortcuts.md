@@ -6,6 +6,8 @@ Newer shortcuts use GPUI’s `secondary-` modifier (⌘ on macOS, Ctrl elsewhere
 
 The design target for shortcuts that are not built yet is [docs/design/ux/README.md](../design/ux/README.md). That folder writes the platform key as `secondary`. `secondary-shift-f` is reserved for format and is backlog. This page stays the list of what the app binds today.
 
+Specified for a later build, and not bound yet: edit a cell (Enter), preview (Cmd/Ctrl+Shift+P), commit (Cmd/Ctrl+S), discard (Cmd/Ctrl+Shift+Z outside a text field), and font size (Cmd/Ctrl+Plus, Cmd/Ctrl+Minus, Cmd/Ctrl+0). The design notes are in the UX index.
+
 | Action | Shortcut |
 | --- | --- |
 | Run statement at caret or selection | Cmd/Ctrl+Enter (SQL editor focused) |

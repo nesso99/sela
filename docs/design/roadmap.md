@@ -70,6 +70,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 - Optional OR combine / raw-WHERE mode for filters
 - Remaining Postgres `<TYPE>` placeholders (tsquery, polygon, composites, …)
 - TLS client-key passphrase. rustls needs an unencrypted PEM today. A passphrase, if added later, goes to the OS keychain and never into `connections.json`.
+- M2 follow-up: edit a table that has no primary key but has a unique NOT NULL key. v0.2 is primary-key only (`ChangeError::NoPrimaryKey`, #65). UX: [ux/07-grid-editing.md](./ux/07-grid-editing.md).
 
 ---
 
@@ -85,13 +86,19 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 
 ## M2 · Safe editing
 
-| ID | Work | Done when |
-| --- | --- | --- |
-| M2-1 | `ChangeSet` + grid overlay (edit, insert, delete, duplicate) | US-05 on tables with PK |
-| M2-2 | `ChangePlan` → dialect SQL + golden tests | Snapshots for 3 engines |
-| M2-3 | Preview SQL, one-transaction commit, discard, rollback keeps changes | US-06 |
-| M2-4 | Safe mode 3 levels, no-WHERE warnings (`sqlparser`) | US-07 |
-| M2-5 | Connection color/label, groups, duplicate, import URL | US-01 complete |
+| ID | Work | Done when | Status |
+| --- | --- | --- | --- |
+| M2-1 | `ChangeSet` + grid overlay (edit, insert, delete, duplicate) | US-05 on tables with PK | Core `ChangeSet` done (no UI overlay yet) |
+| M2-2 | `ChangePlan` → dialect SQL + golden tests | Snapshots for 3 engines | Done (core + `apply_changes` + golden / integration tests) |
+| M2-3 | Preview SQL, one-transaction commit, discard, rollback keeps changes | US-06 | Preview + transactional `apply_changes` in core/drivers; UI commit/discard next |
+| M2-4 | Safe mode 3 levels, no-WHERE warnings (`sqlparser`) | US-07 | |
+| M2-5 | Connection color/label, groups, duplicate, import URL | US-01 complete | |
+
+### M2-1 / M2-2 details (core)
+
+- `sela-core::ChangeSet` records pending cell updates, inserts, and deletes for one table. Tables without a primary key are rejected (`ChangeError::NoPrimaryKey`). Merge rules: edit-on-insert updates the insert; delete-of-insert removes it; re-edit back to the original value drops the cell update.
+- `sela-core::ChangePlan::build` emits ordered DELETE → UPDATE → INSERT SQL with dialect quoting and bind placeholders (`$n` / `?`). Values are never interpolated into executable SQL. `preview_sql` / `preview_bound` are for the M2-3 dialog.
+- `DatabaseSession::apply_changes` runs a plan in one transaction (commit on success, rollback on error) on Postgres, MySQL, and SQLite. UPDATE/DELETE must affect exactly one row (`DbError::ChangeConflict` otherwise).
 
 ---
 

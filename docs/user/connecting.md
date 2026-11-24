@@ -65,3 +65,7 @@ docker compose up -d
 | MySQL | `127.0.0.1` | `3306` | `sela` | `sela` | `sample` |
 
 The default **prefer** mode still works with these containers (they do not serve TLS, so the driver falls back to plain TCP). Use **disable** if you want to skip the TLS attempt.
+
+## Color, groups, duplicate, and import URL
+
+Not in this build. The design (a color swatch, an optional label, sidebar groups, Duplicate, and an Import URL field for `postgres://`, `mysql://`, and `sqlite:`) is in the [connection dialog spec](../design/ux/05-connection-dialog.md) and the [sidebar section](../design/ux/01-main-window.md#connection-color-and-groups).

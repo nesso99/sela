@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Preview SQL</title><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; color: #e8e8e8; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 14px 18px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; letter-spacing: 0.04em; }
+.win { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #161616; border: 1px solid #3a3a3a; }
+.titlebar {
+  height: 22px; flex: none; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #bdbdbd; border-bottom: 1px solid #3a3a3a; background: #1c1c1c;
+}
+.body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.toolbar {
+  height: 40px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; border-bottom: 1px solid #3a3a3a;
+}
+.tb-title { font-size: 12px; }
+.tb-sub { font-size: 10px; color: #8d8d8d; }
+.grid {
+  flex: 1; min-height: 0; padding: 8px 10px; color: #6a6a6a; white-space: pre;
+  font: 11px/22px "JetBrains Mono", "DejaVu Sans Mono", monospace;
+}
+.pending {
+  height: 26px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px; border-top: 1px solid #3a3a3a; background: #1c1c1c; font-size: 11px;
+}
+.sheet {
+  height: 250px; flex: none; display: flex; flex-direction: column;
+  background: #141414; border-top: 1px solid #d0d0d0;
+}
+.sheet head, .hd {
+  height: 28px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; border-bottom: 1px solid #3a3a3a; font-size: 12px;
+}
+.hint { font-size: 10px; color: #8d8d8d; padding: 6px 10px 0; }
+.sql {
+  flex: 1; min-height: 0; margin: 6px 10px; padding: 8px 10px; overflow: hidden;
+  border: 1px solid #3a3a3a; background: #101010;
+  font: 11px/18px "JetBrains Mono", "DejaVu Sans Mono", monospace; color: #e8e8e8; white-space: pre;
+}
+.sql .cm { color: #8d8d8d; }
+.sql .val { color: #f2f2f2; }
+.foot {
+  height: 36px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 0 10px; border-top: 1px solid #3a3a3a;
+}
+.btn {
+  height: 22px; padding: 0 10px; border: 1px solid #555; background: #2a2a2a;
+  color: #e8e8e8; font: 11px/20px Inter, sans-serif; display: inline-flex; align-items: center;
+}
+.btn.primary { background: #e8e8e8; color: #161616; border-color: #e8e8e8; font-weight: 600; }
+.btn.ghost { background: transparent; border-color: transparent; color: #bdbdbd; }
+.status {
+  height: 28px; flex: none; background: #242424; border-top: 1px solid #3a3a3a;
+  display: flex; align-items: center; padding: 0 10px; font-size: 11px; color: #8d8d8d;
+}
+</style></head>
+<body>
+  <div class="kicker"><span>Preview and commit · M2-3</span><b>Bound values beside each statement</b></div>
+  <div class="win">
+    <div class="titlebar">Sela</div>
+    <div class="body">
+      <div class="toolbar">
+        <div>
+          <div class="tb-title">public.books</div>
+          <div class="tb-sub">PostgreSQL · sela@127.0.0.1:5432/sample · Safe: Off</div>
+        </div>
+      </div>
+      <div class="grid">id    title              pages
+1     The Hobbit         310
+2     The Silmarillion   …editing
++     Required           New title</div>
+      <div class="pending"><span>2 pending · 1 updated, 1 inserted</span><span>Preview is open</span></div>
+      <div class="sheet">
+        <div class="hd"><span>Preview SQL · public.books</span><span class="btn ghost">Esc closes</span></div>
+        <div class="hint">The database receives bound parameters. Values are listed beside each statement.</div>
+        <div class="sql"><span class="cm">-- update · id 2</span>
+UPDATE "public"."books" SET "title" = $1 WHERE "id" = $2
+<span class="val">$1 = 'The Silmarillion'</span>
+<span class="val">$2 = 2</span>
+
+<span class="cm">-- insert</span>
+INSERT INTO "public"."books" ("title") VALUES ($1)
+<span class="val">$1 = 'New title'</span></div>
+        <div class="foot">
+          <span class="btn ghost">Discard</span>
+          <span class="btn primary">Commit</span>
+        </div>
+      </div>
+      <div class="status">2 pending · changes are not written until Commit</div>
+    </div>
+  </div>
+</body></html>

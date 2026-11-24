@@ -28,7 +28,7 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window};
 
-use super::decorations::should_show_client_title_bar;
+use super::decorations::{should_show_client_title_bar, should_suppress_title_bar_window_menu};
 
 use sela_config::{
     warn_if_mock_credential_store, CachingSecrets, ConfigStore, HistoryStore, KeyringStore,
@@ -314,33 +314,47 @@ impl Workspace {
     /// window controls, drag-to-move, and double-click maximize/restore via
     /// gpui-component `TitleBar`. Menu items sit in the bar so they keep working
     /// without starting a drag (`TitleBar` honors `prevent_default` on controls).
+    ///
+    /// A capture-phase right mouse down stops the kit's Linux CSD overlay that
+    /// would call `show_window_menu` (product: no title-bar right-click menu).
     fn client_title_bar(&self, cx: &Context<Self>) -> impl IntoElement {
         let this = cx.entity();
-        TitleBar::new()
-            .on_close_window(move |_, window, cx| {
-                this.update(cx, |workspace, cx| {
-                    workspace.request_quit(window, cx);
-                });
+        div()
+            .id("sela-csd-title-wrap")
+            .w_full()
+            .capture_any_mouse_down(|event, window, cx| {
+                if should_suppress_title_bar_window_menu(event.button) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
             })
             .child(
-                h_flex()
-                    .id("sela-csd-title")
-                    .items_center()
-                    .gap_2()
-                    .h_full()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .map(|row| {
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            row.child(self.menu_bar.clone())
-                        }
-                        #[cfg(target_os = "macos")]
-                        {
-                            row
-                        }
+                TitleBar::new()
+                    .on_close_window(move |_, window, cx| {
+                        this.update(cx, |workspace, cx| {
+                            workspace.request_quit(window, cx);
+                        });
                     })
-                    .child(div().id("sela-csd-app-title").child("Sela")),
+                    .child(
+                        h_flex()
+                            .id("sela-csd-title")
+                            .items_center()
+                            .gap_2()
+                            .h_full()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .map(|row| {
+                                #[cfg(not(target_os = "macos"))]
+                                {
+                                    row.child(self.menu_bar.clone())
+                                }
+                                #[cfg(target_os = "macos")]
+                                {
+                                    row
+                                }
+                            })
+                            .child(div().id("sela-csd-app-title").child("Sela")),
+                    ),
             )
     }
 }
