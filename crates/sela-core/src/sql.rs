@@ -507,7 +507,11 @@ pub fn line_col_to_byte_range(
         }
         // Underline at least one character when possible.
         let end = if byte < line_end {
-            let ch_len = sql[byte..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            let ch_len = sql[byte..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
             (byte + ch_len).min(line_end)
         } else {
             line_end

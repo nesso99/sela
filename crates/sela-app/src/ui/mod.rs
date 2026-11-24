@@ -28,6 +28,11 @@ actions!(
         InsertFilterRow,
         RemoveFilterRow,
         EscapeFilterBar,
+        RunAllSql,
+        FindInSql,
+        FindNext,
+        FindPrevious,
+        ToggleEditor,
         Quit
     ]
 );
@@ -45,8 +50,6 @@ pub fn run() {
             Theme::change(ThemeMode::Dark, None, cx);
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
-                KeyBinding::new("cmd-enter", RunQuery, None),
-                KeyBinding::new("ctrl-enter", RunQuery, None),
                 KeyBinding::new("cmd-.", CancelQuery, None),
                 KeyBinding::new("ctrl-.", CancelQuery, None),
                 KeyBinding::new("cmd-t", NewQueryTab, None),
@@ -79,6 +82,27 @@ pub fn run() {
             ]);
             // Platform secondary modifier (⌘ on macOS, Ctrl elsewhere) — M1-3 filter bar.
             bind_secondary(cx, "secondary-f", Box::new(ToggleFilterBar), None);
+            bind_secondary(cx, "secondary-enter", Box::new(RunQuery), Some("SqlEditor"));
+            bind_secondary(
+                cx,
+                "secondary-shift-enter",
+                Box::new(RunAllSql),
+                Some("SqlEditor"),
+            );
+            bind_secondary(cx, "secondary-f", Box::new(FindInSql), Some("SqlEditor"));
+            bind_secondary(cx, "secondary-g", Box::new(FindNext), Some("SqlEditor"));
+            bind_secondary(
+                cx,
+                "secondary-shift-g",
+                Box::new(FindPrevious),
+                Some("SqlEditor"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-shift-e",
+                Box::new(ToggleEditor),
+                Some("SqlEditor"),
+            );
             // Filter-bar-only chords (UX §10). `FilterBar > Input` overrides the
             // Input widget's cmd/ctrl-backspace so the row is removed instead.
             bind_secondary(

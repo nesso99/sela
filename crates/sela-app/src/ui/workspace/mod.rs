@@ -3,7 +3,12 @@
 mod content;
 mod filter_bar;
 mod query;
+mod result_strip;
 mod sidebar;
+mod sql_editor;
+mod sql_find;
+mod sql_gutter;
+mod sql_run;
 mod state;
 mod status;
 mod structure;
@@ -23,8 +28,9 @@ use sela_config::{CachingSecrets, ConfigStore, KeyringStore, SavedConnection, Ta
 use sela_core::{DatabaseSession, LoadedSchema, TabId, TabList};
 
 use super::{
-    ActivateTab, CancelQuery, CloseTab, EscapeFilterBar, InsertFilterRow, NewQueryTab,
-    RemoveFilterRow, RunQuery, ShowTableData, ShowTableStructure, ToggleFilterBar,
+    ActivateTab, CancelQuery, CloseTab, EscapeFilterBar, FindInSql, FindNext, FindPrevious,
+    InsertFilterRow, NewQueryTab, RemoveFilterRow, RunAllSql, RunQuery, ShowTableData,
+    ShowTableStructure, ToggleEditor, ToggleFilterBar,
 };
 use tab_view::TabView;
 
@@ -130,7 +136,7 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
         let connected = self.session.is_some();
         let can_next = self.can_go_next();
@@ -181,8 +187,60 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| {
                         if workspace.filter_field_focused(window, cx) {
                             workspace.apply_filters(cx);
-                        } else {
+                        } else if workspace.editor_field_focused(window, cx) {
                             workspace.run_editor(cx);
+                        }
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &RunAllSql, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if workspace.editor_field_focused(window, cx) {
+                            workspace.run_all_editor(cx);
+                        }
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &FindInSql, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if workspace.editor_field_focused(window, cx) {
+                            workspace.toggle_sql_find(window, cx);
+                        }
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &FindNext, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if workspace.editor_field_focused(window, cx) {
+                            workspace.refresh_find_matches(cx);
+                            workspace.find_step(1, cx);
+                        }
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &FindPrevious, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if workspace.editor_field_focused(window, cx) {
+                            workspace.refresh_find_matches(cx);
+                            workspace.find_step(-1, cx);
+                        }
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ToggleEditor, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if workspace.editor_field_focused(window, cx) {
+                            workspace.toggle_editor_collapsed(cx);
                         }
                     });
                 }
@@ -284,7 +342,8 @@ impl Render for Workspace {
                             .when(matches!(table_pane, TablePane::Data), |column| {
                                 column.child(self.predicate_strip(cx))
                             })
-                            .child(self.sql_editor(cx, connected))
+                            .child(self.result_strip(cx))
+                            .child(self.sql_editor(window, cx))
                             .child(self.status_bar(cx))
                     })
                     .when(!has_tabs, |column| {

@@ -43,6 +43,10 @@ impl GridDelegate {
         }
     }
 
+    pub fn set_loading_message(&mut self) {
+        self.empty_message = "Running…".into();
+    }
+
     pub fn show_page(&mut self, page: QueryPage) {
         self.result.replace_with_page(page);
         self.pending_pages.clear();

@@ -9,8 +9,8 @@ use gpui_kit::Context;
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    build_table_page, classify, exact_table_rows, is_safe_to_rerun_for_load_more, normalize_sql,
-    preview_table, run_user_sql, DatabaseSession, DbError, FilterCondition, RowCountKind, SortSpec,
+    build_table_page, classify, exact_table_rows, is_safe_to_rerun_for_load_more, preview_table,
+    run_user_sql, DatabaseSession, DbError, FilterCondition, RowCountKind, SortSpec, SqlError,
     StatementKind, StatementOutcome, StreamBatch, TabId, TablePreview, DEFAULT_SQL_ROW_CAP,
     PAGE_SIZE, STREAM_BATCH_SIZE,
 };
@@ -85,43 +85,218 @@ impl Workspace {
         if !view.busy {
             return;
         }
+        self.clear_run_queue(id);
         if let Some(tab) = self.tabs.get_mut(id) {
             tab.cancel_running();
         }
         if let Some(view) = self.view_mut(id) {
             view.status = "Cancelling…".into();
+            view.sql_running_statement_index = None;
         }
         cx.notify();
+    }
+
+    pub(super) fn run_all_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
+            return;
+        };
+        match self.statements_for_run_all(cx) {
+            Err(SqlError::Empty) => self.prompt_empty_sql(tab_id, cx),
+            Err(SqlError::UnclosedQuote { offset }) => self.set_local_sql_error(tab_id, offset, cx),
+            Err(_) => self.prompt_empty_sql(tab_id, cx),
+            Ok(statements) if statements.is_empty() => self.prompt_empty_sql(tab_id, cx),
+            Ok(statements) => self.begin_sql_run(tab_id, statements, cx),
+        }
     }
 
     pub(super) fn run_editor(&mut self, cx: &mut Context<Self>) {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
-        let sql = {
-            let Some(view) = self.views.get(&tab_id) else {
-                return;
-            };
-            view.sql.read(cx).value().to_string()
-        };
-        if sql.trim().is_empty() {
-            if let Some(view) = self.view_mut(tab_id) {
-                view.status = "Write a SQL statement, then run it.".into();
-                view.error = None;
-            }
-            cx.notify();
-            return;
+        match self.statements_for_run(cx) {
+            Err(SqlError::Empty) => self.prompt_empty_sql(tab_id, cx),
+            Err(SqlError::UnclosedQuote { offset }) => self.set_local_sql_error(tab_id, offset, cx),
+            Err(_) => self.prompt_empty_sql(tab_id, cx),
+            Ok(statements) if statements.is_empty() => self.prompt_empty_sql(tab_id, cx),
+            Ok(statements) => self.begin_sql_run(tab_id, statements, cx),
         }
+    }
+
+    fn prompt_empty_sql(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         if let Some(view) = self.view_mut(tab_id) {
-            view.source = GridSource::Sql(sql);
+            view.status = "Write a SQL statement, then run it.".into();
+            view.error = None;
+            view.local_sql_error = None;
+        }
+        cx.notify();
+    }
+
+    fn set_local_sql_error(&mut self, tab_id: TabId, offset: usize, cx: &mut Context<Self>) {
+        if let Some(view) = self.view_mut(tab_id) {
+            view.error = Some("Unclosed quote".into());
+            view.local_sql_error = Some(SqlError::UnclosedQuote { offset });
+            view.status = "Unclosed quote".into();
+        }
+        cx.notify();
+    }
+
+    fn begin_sql_run(&mut self, tab_id: TabId, statements: Vec<String>, cx: &mut Context<Self>) {
+        if let Some(view) = self.view_mut(tab_id) {
+            view.result_snapshots.clear();
+            view.sql_run_queue = statements;
+            view.sql_run_base_index = 0;
+            view.sql_failed_statement = None;
+            view.local_sql_error = None;
+            view.error = None;
+            view.last_error_sqlstate = None;
+            view.active_result_index = 0;
             view.table_pane = super::TablePane::Data;
             view.structure_error = None;
             view.page_offset = 0;
             view.sql_row_cap = DEFAULT_SQL_ROW_CAP;
             view.truncated = false;
         }
+        self.clear_sql_error_decorations(tab_id, cx);
         self.persist_tabs(cx);
-        self.load_source_for(tab_id, cx);
+        self.run_next_sql_statement(tab_id, cx);
+    }
+
+    fn run_next_sql_statement(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        let has_next = {
+            let Some(view) = self.view_mut(tab_id) else {
+                return;
+            };
+            let Some(sql) = view.sql_run_queue.first().cloned() else {
+                view.sql_running_statement_index = None;
+                view.busy = false;
+                return false;
+            };
+            view.sql_run_statement_index = view.sql_run_base_index + 1;
+            view.sql_running_statement_index = Some(view.sql_run_base_index);
+            view.source = GridSource::Sql(sql);
+            true
+        };
+        if has_next {
+            self.load_source_for(tab_id, cx);
+            self.spawn_running_status_tick(tab_id, cx);
+        }
+    }
+
+    fn spawn_running_status_tick(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        let request = self.tabs.get(tab_id).map(|t| t.request).unwrap_or(0);
+        cx.spawn(async move |this, async_cx| loop {
+            async_cx
+                .background_executor()
+                .timer(std::time::Duration::from_millis(250))
+                .await;
+            let cont = this
+                .update(async_cx, |ws, cx| {
+                    let Some(tab) = ws.tabs.get(tab_id) else {
+                        return false;
+                    };
+                    if tab.request != request {
+                        return false;
+                    }
+                    let Some(view) = ws.views.get_mut(&tab_id) else {
+                        return false;
+                    };
+                    if !view.busy {
+                        return false;
+                    }
+                    let secs = view
+                        .query_started
+                        .map(|t| t.elapsed().as_secs_f32())
+                        .unwrap_or(0.0);
+                    view.status = format!("Running · {secs:.1} s");
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !cont {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn finish_sql_statement(
+        &mut self,
+        tab_id: TabId,
+        failed: bool,
+        sqlstate: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(view) = self.view_mut(tab_id) {
+            if failed {
+                view.sql_failed_statement = Some(view.sql_run_statement_index);
+                view.last_error_sqlstate = sqlstate.clone();
+                view.status = Self::format_query_failed_status(
+                    Some(view.sql_run_statement_index),
+                    sqlstate.as_deref(),
+                );
+            }
+            view.sql_running_statement_index = None;
+            if !view.sql_run_queue.is_empty() {
+                view.sql_run_queue.remove(0);
+            }
+            view.sql_run_base_index += 1;
+        }
+        self.push_result_snapshot(tab_id, cx);
+        if failed {
+            if let Some(view) = self.view_mut(tab_id) {
+                if let Some(last) = view.result_snapshots.last_mut() {
+                    last.failed = true;
+                }
+            }
+            cx.notify();
+            return;
+        }
+        let has_more = self
+            .views
+            .get(&tab_id)
+            .is_some_and(|view| !view.sql_run_queue.is_empty());
+        if has_more {
+            self.run_next_sql_statement(tab_id, cx);
+        }
+        cx.notify();
+    }
+
+    fn maybe_finish_sql_batch(
+        &mut self,
+        tab_id: TabId,
+        result: &Result<(), DbError>,
+        cx: &mut Context<Self>,
+    ) {
+        let running_batch = self.views.get(&tab_id).is_some_and(|view| {
+            matches!(view.source, GridSource::Sql(_))
+                && (view.sql_run_base_index > 0
+                    || !view.sql_run_queue.is_empty()
+                    || view.sql_running_statement_index.is_some())
+        });
+        if !running_batch {
+            return;
+        }
+        match result {
+            Err(err) => {
+                self.finish_sql_statement(tab_id, true, err.sqlstate().map(str::to_string), cx);
+            }
+            Ok(()) => self.finish_sql_statement(tab_id, false, None, cx),
+        }
+    }
+
+    pub(super) fn advance_sql_batch_after_stream(
+        &mut self,
+        tab_id: TabId,
+        failed: bool,
+        err: Option<&DbError>,
+        cx: &mut Context<Self>,
+    ) {
+        if failed {
+            let sqlstate = err.and_then(|e| e.sqlstate()).map(str::to_string);
+            self.finish_sql_statement(tab_id, true, sqlstate, cx);
+        } else {
+            self.finish_sql_statement(tab_id, false, None, cx);
+        }
     }
 
     pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
@@ -320,8 +495,13 @@ impl Workspace {
         view.live_row_cap = None;
         view.status = "Running…".into();
         view.grid.update(cx, |state, cx| {
-            state.delegate_mut().loading = true;
-            state.delegate_mut().pending_pages.clear();
+            let delegate = state.delegate_mut();
+            delegate.loading = true;
+            delegate.pending_pages.clear();
+            if matches!(&source, GridSource::Sql(_)) {
+                delegate.result.reset(Vec::new(), 0);
+                delegate.set_loading_message();
+            }
             state.refresh(cx);
         });
 
@@ -382,19 +562,6 @@ impl Workspace {
         sql_cap: u32,
         cx: &mut Context<Self>,
     ) {
-        let Ok(sql) = normalize_sql(&sql) else {
-            if let Some(view) = self.view_mut(tab_id) {
-                view.error = Some("run one statement at a time".into());
-                view.status = "Query failed".into();
-                view.grid.update(cx, |state, cx| {
-                    state.delegate_mut().loading = false;
-                    state.refresh(cx);
-                });
-            }
-            cx.notify();
-            return;
-        };
-
         match classify(&sql) {
             StatementKind::Execute => {
                 self.spawn_work(
@@ -510,19 +677,29 @@ impl Workspace {
                                                 });
                                             }
                                             this.refresh_status_from_state(tab_id);
+                                            this.advance_sql_batch_after_stream(
+                                                tab_id, false, None, cx,
+                                            );
                                         }
                                         Err(err) if matches!(err, DbError::Cancelled { .. }) => {
                                             this.apply_cancelled(tab_id, err, cx);
                                         }
                                         Err(err) => {
                                             if let Some(view) = this.view_mut(tab_id) {
-                                                view.status = "Query failed".into();
+                                                let stmt = view.sql_run_statement_index;
+                                                view.status = Self::format_query_failed_status(
+                                                    Some(stmt),
+                                                    err.sqlstate(),
+                                                );
                                                 view.error = Some(err.to_string());
                                                 view.grid.update(cx, |state, cx| {
                                                     state.delegate_mut().loading = false;
                                                     state.refresh(cx);
                                                 });
                                             }
+                                            this.advance_sql_batch_after_stream(
+                                                tab_id, true, Some(&err), cx,
+                                            );
                                         }
                                     }
                                     cx.notify();
@@ -575,19 +752,29 @@ impl Workspace {
                                                 });
                                             }
                                             this.refresh_status_from_state(tab_id);
+                                            this.advance_sql_batch_after_stream(
+                                                tab_id, false, None, cx,
+                                            );
                                         }
                                         Err(err) if matches!(err, DbError::Cancelled { .. }) => {
                                             this.apply_cancelled(tab_id, err, cx);
                                         }
                                         Err(err) => {
                                             if let Some(view) = this.view_mut(tab_id) {
-                                                view.status = "Query failed".into();
+                                                let stmt = view.sql_run_statement_index;
+                                                view.status = Self::format_query_failed_status(
+                                                    Some(stmt),
+                                                    err.sqlstate(),
+                                                );
                                                 view.error = Some(err.to_string());
                                                 view.grid.update(cx, |state, cx| {
                                                     state.delegate_mut().loading = false;
                                                     state.refresh(cx);
                                                 });
                                             }
+                                            this.advance_sql_batch_after_stream(
+                                                tab_id, true, Some(&err), cx,
+                                            );
                                         }
                                     }
                                     cx.notify();
@@ -763,6 +950,7 @@ impl Workspace {
     }
 
     fn apply_cancelled(&mut self, tab_id: TabId, err: DbError, cx: &mut Context<Self>) {
+        self.clear_run_queue(tab_id);
         let Some(view) = self.view_mut(tab_id) else {
             return;
         };
@@ -807,6 +995,11 @@ impl Workspace {
         result: Result<Option<StatementOutcome>, DbError>,
         cx: &mut Context<Self>,
     ) {
+        let batch_outcome = match &result {
+            Err(err) if matches!(err, DbError::Cancelled { .. }) => None,
+            Err(err) => Some(Err(err.clone())),
+            Ok(_) => Some(Ok(())),
+        };
         match result {
             Ok(Some(StatementOutcome::Rows(rows))) => {
                 let page_offset = self
@@ -906,14 +1099,19 @@ impl Workspace {
             }
             Err(err) => {
                 if let Some(view) = self.view_mut(tab_id) {
-                    view.status = "Query failed".into();
+                    let stmt = view.sql_run_statement_index;
+                    view.status = Self::format_query_failed_status(stmt, err.sqlstate());
                     view.error = Some(err.to_string());
+                    view.last_error_sqlstate = err.sqlstate().map(str::to_string);
                     view.grid.update(cx, |state, cx| {
                         state.delegate_mut().loading = false;
                         state.refresh(cx);
                     });
                 }
             }
+        }
+        if let Some(outcome) = batch_outcome {
+            self.maybe_finish_sql_batch(tab_id, &outcome, cx);
         }
         cx.notify();
     }

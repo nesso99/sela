@@ -1,9 +1,7 @@
 //! Filter bar UI for table Data tabs (M1-3 / US-04).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{
-    DeleteToBeginningOfLine, Enter, Escape, Input, InputState,
-};
+use gpui_kit::component::input::{DeleteToBeginningOfLine, Enter, Escape, Input, InputState};
 use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, IndexPath, Sizable as _};
@@ -236,11 +234,7 @@ impl Workspace {
     ///
     /// `None` when focus is on the bool Select or elsewhere on the row (not a
     /// text input). Bool Select is not a text field, so backspace removes.
-    fn focused_filter_text_input(
-        &self,
-        window: &Window,
-        cx: &gpui_kit::App,
-    ) -> Option<String> {
+    fn focused_filter_text_input(&self, window: &Window, cx: &gpui_kit::App) -> Option<String> {
         let view = self.active_view()?;
         if !view.filter_bar_open {
             return None;
