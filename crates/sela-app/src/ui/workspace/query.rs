@@ -975,7 +975,9 @@ impl Workspace {
             view.status = format!("Cancelled · {rows} rows · {ms} ms · {err}");
             view.note = Some("Query cancelled".into());
             view.grid.update(cx, |state, cx| {
-                state.delegate_mut().loading = false;
+                // Same path as note_query_failed: clear stale "Running…" when
+                // Stop cancels before any rows arrive (#53).
+                state.delegate_mut().note_query_cancelled();
                 state.refresh(cx);
             });
             let sql = match &view.source {

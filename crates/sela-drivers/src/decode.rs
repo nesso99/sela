@@ -148,8 +148,12 @@ pub fn read_sqlite_cell(row: &SqliteRow, index: usize) -> Value {
     if let Some(early) = early_value(probe_null(row, index), &type_name) {
         return early;
     }
+    // sqlx reports undeclared / expression columns as type name "NULL" (or
+    // empty). That is not SQL NULL — probe the value's storage class instead.
+    if type_name.is_empty() || type_name == "NULL" {
+        return decode_sqlite_storage_class(row, index, &type_name);
+    }
     match type_name.as_str() {
-        "NULL" => Value::Null,
         "INTEGER" | "INT4" => get_int(row, index).unwrap_or_else(|| other(&type_name, row, index)),
         "BOOLEAN" => get_bool(row, index)
             .or_else(|| get_int(row, index))
@@ -184,20 +188,24 @@ pub fn read_sqlite_cell(row: &SqliteRow, index: usize) -> Value {
             })
             .or_else(|| get_text(row, index))
             .unwrap_or_else(|| other(&type_name, row, index)),
-        // Undeclared / unknown declared types: probe storage classes dynamically.
-        _ => {
-            if let Some(value) = get_int(row, index) {
-                value
-            } else if let Some(value) = get_float(row, index) {
-                value
-            } else if let Some(value) = get_text(row, index) {
-                value
-            } else if let Some(value) = get_bytes(row, index) {
-                value
-            } else {
-                other(&type_name, row, index)
-            }
-        }
+        // Unknown declared types: probe storage classes dynamically.
+        _ => decode_sqlite_storage_class(row, index, &type_name),
+    }
+}
+
+/// Decode a SQLite cell from its runtime storage class (INTEGER / REAL / TEXT /
+/// BLOB). Used when the declared type is empty, `"NULL"`, or otherwise unknown.
+fn decode_sqlite_storage_class(row: &SqliteRow, index: usize, type_name: &str) -> Value {
+    if let Some(value) = get_int(row, index) {
+        value
+    } else if let Some(value) = get_float(row, index) {
+        value
+    } else if let Some(value) = get_text(row, index) {
+        value
+    } else if let Some(value) = get_bytes(row, index) {
+        value
+    } else {
+        other(type_name, row, index)
     }
 }
 
@@ -496,5 +504,46 @@ mod tests {
         }
         assert!(early_value(NullProbe::Null, "TEXT").unwrap().is_null());
         assert!(early_value(NullProbe::Present, "TEXT").is_none());
+    }
+
+    /// Expression columns with no declared type must use the value's storage
+    /// class (INTEGER / REAL / TEXT / BLOB / NULL), not treat type name
+    /// `"NULL"` as SQL NULL (#54).
+    #[tokio::test]
+    async fn sqlite_undeclared_types_decode_from_storage_class() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        // One connection: plain `:memory:` is not shared across pool slots.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("in-memory sqlite");
+
+        let row = crate::query("SELECT 42, 1.5, 'a' || 'b', X'6869', NULL, CAST(7 AS INTEGER)")
+            .fetch_one(&pool)
+            .await
+            .expect("select expressions");
+
+        // Declared type for bare expressions is empty / "NULL" in sqlx.
+        for index in 0..5 {
+            let declared = type_name(&row, index);
+            assert!(
+                declared.is_empty() || declared == "NULL",
+                "expected undeclared type at {index}, got {declared}"
+            );
+        }
+
+        assert_eq!(read_sqlite_cell(&row, 0), Value::Int(42));
+        assert_eq!(read_sqlite_cell(&row, 1), Value::Float(1.5));
+        assert_eq!(read_sqlite_cell(&row, 2), Value::text("ab"));
+        assert_eq!(read_sqlite_cell(&row, 3), Value::Bytes(b"hi".to_vec()));
+        assert!(read_sqlite_cell(&row, 4).is_null());
+        // CAST still has a declared INTEGER affinity — keep typed path.
+        assert_eq!(read_sqlite_cell(&row, 5), Value::Int(7));
     }
 }

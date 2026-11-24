@@ -42,7 +42,7 @@ Clicking another saved connection while one is active switches: Sela cancels run
 
 **Toolbar** (`content.rs`). Left: `TabView::source_label` (`schema.table`, `SQL result`, or `No table open`) and, under it, the engine and endpoint. Right, only when a table is open: Data, Structure, and Refresh while Structure is showing. On the Data pane: the page label, Previous, Next. Page label logic in `Workspace::render` stays: `Page N of M` when `total_rows` is known, otherwise `Page N · 100 rows`. When the platform is not drawing a close button, a small close control sits at the right end of this bar. It is not a Quit button. See [Quit and window lifecycle](#quit-and-window-lifecycle).
 
-**Grid** (`grid.rs`, gpui-component `DataTable`). Monospace. Header is the column name, then the type name (`format!("{}   {}", meta.name, meta.type_name)`). NULL is italic and `muted_foreground`. A loading cell is italic `…`. Other values use `foreground`. Cells are one line, truncated at `CELL_DISPLAY_MAX_CHARS` (200) by `truncate_one_line`.
+**Grid** (`grid.rs`, gpui-component `DataTable`). Monospace. Header is the column name, then the type name (`format!("{}   {}", meta.name, meta.type_name)`). NULL is italic and `muted_foreground`. A loading cell is italic `…`. Other values use `foreground`. Cells are one line, truncated at `CELL_DISPLAY_MAX_CHARS` (200) by `truncate_one_line`. Right-click a cell (or a row header) for **Copy** and **Copy as TSV / CSV / JSON / INSERT** (TC-COPY-01). With cell selection on, the menu is attached on each cell because DataTable’s row-level `context_menu` does not open for cell right-clicks. Cmd/Ctrl+C still copies TSV. Details: [copying.md](../../user/copying.md).
 
 **Editor.** Specified in [03-sql-editor.md](./03-sql-editor.md). Until that work lands it remains the monospace `Textarea` at 176px.
 
@@ -108,7 +108,7 @@ Cancel is Stop or `secondary-.` (`stop_query` → `apply_cancelled`). No error b
 - Status: `Cancelled · 340 rows kept · 2.4 s`
 - Do not append the raw `DbError` text when it is the generic cancel message (`query cancelled`). If the server message is different, put it after a middle dot.
 - Stop becomes disabled. Run is enabled.
-- If the run delivered zero rows, the empty message is `Query cancelled`.
+- If the run delivered zero rows, the empty message is `Query cancelled.` (`GridDelegate::note_query_cancelled`, same pattern as `note_query_failed`). Do not leave a stale `Running…` empty copy after Stop.
 
 SQLite still only drops the stream (ADR 0003). The status line is the same. Do not add a second explanation in the banner.
 
@@ -232,6 +232,7 @@ On quit, cancel in-flight queries and close pools, then flush query history: WAL
 - Editor height is a field on `TabView` (each tab remembers its split until quit), not written to disk. Default 176, matching `sql_editor`’s `h(px(176.))`. The splitter is the top border of that column. Collapsed is a bool that forces height 28 and hides the `Textarea`.
 - `render_empty` branches on `self.loading` and on a small empty-reason enum (`Idle`, `Running`, `Failed`, `Cancelled`) instead of overloading `empty_message` from every call site. `show_message` remains the path for `N rows affected`.
 - Failed query empty state: `GridDelegate::note_query_failed` — if the grid’s row count for this request is 0, call `show_message("Query failed — see the error above.")`. If rows were delivered, leave them and only clear `loading`.
+- Cancelled query empty state: `GridDelegate::note_query_cancelled` from `apply_cancelled` — if the grid’s row count for this request is 0, call `show_message("Query cancelled.")`. If rows were delivered, leave them and only clear `loading`.
 - `apply_cancelled`: set the status string in the table above. Do not include `err.to_string()` unless it differs from the generic cancel text.
 - Decode-error styling belongs in `GridDelegate::render_td` after a method on `Value`. Do not paint every `Value::Other` with `danger`.
 - The running elapsed label needs a short GPUI timer while `busy` is true. Stop the timer in the same places that set `busy = false` (the request-id checks in `query.rs`). A stale timer must not update a tab whose request id has moved on.

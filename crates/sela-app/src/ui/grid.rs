@@ -11,7 +11,7 @@
 //! Selection (M1-7): cell / row / column via DataTable; optional Shift range on
 //! [`selection_rect`]. Copy formats live in [`sela_core::CopyFormat`].
 
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelection, TableState};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
@@ -112,6 +112,18 @@ impl GridDelegate {
     pub fn note_query_failed(&mut self) {
         if self.result.total_rows() == 0 {
             self.show_message("Query failed — see the error above.");
+        } else {
+            self.loading = false;
+        }
+    }
+
+    /// Clear a stale "Running…" empty state after the user cancels (Stop).
+    ///
+    /// Same shape as [`Self::note_query_failed`]: with no rows, show the
+    /// cancelled empty copy; with streamed rows, keep them and clear loading.
+    pub fn note_query_cancelled(&mut self) {
+        if self.result.total_rows() == 0 {
+            self.show_message("Query cancelled.");
         } else {
             self.loading = false;
         }
@@ -271,7 +283,11 @@ impl TableDelegate for GridDelegate {
         } else {
             (cx.theme().foreground, None)
         };
+        // Cell selection installs a Right mouse-down that stop_propagation, so
+        // DataTable's row-level TableDelegate::context_menu never opens for
+        // cells. Attach the copy menu on the cell content (innermost wins).
         div()
+            .id(format!("grid-cell:{row_ix}:{col_ix}"))
             .h_full()
             .w_full()
             .px_2()
@@ -283,6 +299,7 @@ impl TableDelegate for GridDelegate {
             .when_some(bg, |cell, bg| cell.bg(bg))
             .when(null || loading, |cell| cell.italic())
             .child(text)
+            .context_menu(|menu, _, _| copy_context_menu(menu))
     }
 
     fn visible_rows_changed(
@@ -330,13 +347,19 @@ impl TableDelegate for GridDelegate {
         _window: &mut Window,
         _cx: &mut gpui_kit::Context<TableState<Self>>,
     ) -> PopupMenu {
-        menu.item(PopupMenuItem::new("Copy as TSV").action(Box::new(CopyAsTsv)))
-            .item(PopupMenuItem::new("Copy as CSV").action(Box::new(CopyAsCsv)))
-            .item(PopupMenuItem::new("Copy as JSON").action(Box::new(CopyAsJson)))
-            .item(PopupMenuItem::new("Copy as INSERT").action(Box::new(CopyAsInsert)))
-            .separator()
-            .item(PopupMenuItem::new("Copy").action(Box::new(CopySelection)))
+        // Row-header right-click path (when right_clicked_row is set).
+        copy_context_menu(menu)
     }
+}
+
+/// Copy formats for the grid context menu (TC-COPY-01 / US-14).
+fn copy_context_menu(menu: PopupMenu) -> PopupMenu {
+    menu.item(PopupMenuItem::new("Copy").action(Box::new(CopySelection)))
+        .separator()
+        .item(PopupMenuItem::new("Copy as TSV").action(Box::new(CopyAsTsv)))
+        .item(PopupMenuItem::new("Copy as CSV").action(Box::new(CopyAsCsv)))
+        .item(PopupMenuItem::new("Copy as JSON").action(Box::new(CopyAsJson)))
+        .item(PopupMenuItem::new("Copy as INSERT").action(Box::new(CopyAsInsert)))
 }
 
 #[cfg(test)]
@@ -432,6 +455,30 @@ mod tests {
         match grid.result.row(0) {
             RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "kept"),
             RowState::Loading => panic!("delivered rows were cleared on failure"),
+        }
+    }
+
+    #[test]
+    fn note_query_cancelled_replaces_running_empty_message() {
+        let mut grid = GridDelegate::empty();
+        grid.set_loading_message();
+        grid.loading = true;
+        grid.note_query_cancelled();
+        assert!(!grid.loading);
+        assert_eq!(grid.empty_message.as_ref(), "Query cancelled.");
+        assert_eq!(grid.result.total_rows(), 0);
+    }
+
+    #[test]
+    fn note_query_cancelled_keeps_rows_already_delivered() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(page(vec![vec![Value::Text("kept".into())]]));
+        grid.loading = true;
+        grid.note_query_cancelled();
+        assert!(!grid.loading);
+        match grid.result.row(0) {
+            RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "kept"),
+            RowState::Loading => panic!("delivered rows were cleared on cancel"),
         }
     }
 }
