@@ -76,7 +76,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 ### M1-7 details
 
 - Grid selection via gpui-component `DataTable` (`cell_selectable`): cell / row / column, plus Shift-click range tracked on `GridDelegate`.
-- Clipboard formats in `sela-core` (`CopyFormat`: TSV default on `secondary-c`, CSV, JSON, INSERT). Context menu on the grid. Unit tests cover escaping and selection math.
+- Clipboard formats in `sela-core` (`CopyFormat` + typed `CopyCell`: TSV default on `secondary-c`, CSV, JSON, INSERT). Context menu on the grid. Unloaded rows and decode cells refuse copy/INSERT with a status message. Unit tests cover NULL-vs-text-`NULL`, MySQL backslash escaping, and selection math.
 - Light and dark `ThemeConfig`s from [ux/06-theme-tokens.md](./ux/06-theme-tokens.md); preference in `{config_dir}/settings.json` (`light` / `dark` / `system`). System follows `Window::appearance` / `Theme::sync_system_appearance`.
 - Result strip: `ResultStrip` key context, tab stop, Left/Right for Prev/Next (roadmap backlog item closed here).
 - User docs: [copying.md](../user/copying.md), [themes.md](../user/themes.md), [keyboard-shortcuts.md](../user/keyboard-shortcuts.md).

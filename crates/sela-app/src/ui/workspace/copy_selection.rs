@@ -3,8 +3,8 @@
 use gpui_kit::{ClipboardItem, Context};
 
 use sela_core::{
-    extract_selection_matrix, format_selection, value_copy_text, CellPos, CopyFormat, RowState,
-    SelectionRect,
+    extract_selection_matrix, format_selection, value_to_copy_cell, CellPos, CopyCell, CopyFormat,
+    RowState, SelectionRect,
 };
 
 use super::{GridSource, Workspace};
@@ -22,7 +22,7 @@ impl Workspace {
         let Some(view) = self.views.get(&tab_id) else {
             return;
         };
-        let text = {
+        let outcome = {
             let state = view.grid.read(cx);
             let selection = state.selection();
             let delegate = state.delegate();
@@ -42,10 +42,10 @@ impl Workspace {
             for row_ix in min_row..=max_row {
                 match delegate.result.row(row_ix) {
                     RowState::Ready(cells) => {
-                        rows.push(cells.iter().map(value_copy_text).collect());
+                        rows.push(cells.iter().map(value_to_copy_cell).collect());
                     }
                     RowState::Loading => {
-                        rows.push(vec![String::new(); columns.len()]);
+                        rows.push(vec![CopyCell::NotLoaded; columns.len().max(1)]);
                     }
                 }
             }
@@ -56,11 +56,18 @@ impl Workspace {
             let Some((headers, body)) = extract_selection_matrix(&columns, &rows, local) else {
                 return;
             };
-            match format_selection(&headers, &body, format, table_name.as_deref(), dialect) {
-                Ok(text) => text,
-                Err(_) => return,
-            }
+            format_selection(&headers, &body, format, table_name.as_deref(), dialect)
         };
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        match outcome {
+            Ok(text) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            Err(err) => {
+                if let Some(view) = self.views.get_mut(&tab_id) {
+                    view.status = err.status_message();
+                }
+                cx.notify();
+            }
+        }
     }
 }

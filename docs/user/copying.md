@@ -19,9 +19,11 @@ With the grid focused (`DataTable` key context):
 
 - **TSV** — tab-separated values with a header row. Default for Cmd/Ctrl+C so spreadsheets paste cleanly.
 - **CSV** — comma-separated values; fields with commas, quotes, or newlines are quoted (RFC 4180-style).
-- **JSON** — a pretty-printed array of objects keyed by column name. Displayed `NULL` becomes JSON `null`.
-- **INSERT** — one `INSERT INTO … VALUES (…);` statement. On a table Data tab the target is `schema.table` with dialect quoting. On a SQL result tab the placeholder table name is `table`.
+- **JSON** — a pretty-printed array of objects keyed by column name. SQL NULL becomes JSON `null`. A text cell whose value is the four characters `NULL` stays a JSON string.
+- **INSERT** — one `INSERT INTO … VALUES (…);` statement. On a table Data tab the target is `schema.table` with dialect quoting (`quote_ident`). Numbers and booleans are unquoted; strings are quoted (`'` → `''`; on MySQL `\` → `\\`). On a SQL result tab the placeholder name is `table`, followed by `-- replace table name`.
 
-NULL cells copy as the text `NULL` in TSV/CSV/INSERT (and as JSON `null`). Loading placeholders copy as empty strings.
+SQL NULL copies as the keyword `NULL` in TSV/CSV/INSERT (and as JSON `null`). A text value equal to `NULL` copies as ordinary text / a quoted string / a JSON string — it is never treated as SQL NULL.
 
-Copy uses the current page of rows in the result window. It does not pull rows that have not been loaded yet.
+If the selection includes rows that are not loaded yet, copy is refused and the status bar shows how many rows are missing (scroll or narrow the selection). INSERT is also refused when a selected cell is a decode error or unsupported type; the status bar names that column.
+
+Copy uses rows already present in the result window. Full-table export remains a later milestone.

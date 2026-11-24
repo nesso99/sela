@@ -1,4 +1,8 @@
 //! Format a rectangular grid selection for the clipboard (US-14).
+//!
+//! Copy works on typed [`CopyCell`] values, not display strings. A text cell
+//! whose contents are the four characters `NULL` is never confused with a SQL
+//! NULL — only [`CopyCell::Null`] becomes the NULL keyword / JSON null.
 
 use crate::quote_ident;
 use crate::selection::SelectionRect;
@@ -15,6 +19,62 @@ pub enum CopyFormat {
     Json,
     /// One `INSERT INTO … VALUES (…);` statement.
     Insert,
+}
+
+/// How a non-null scalar should be emitted in INSERT / JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyScalarKind {
+    /// Quoted string literal (text, uuid, dates, bytes hex, json text, …).
+    Text,
+    /// Unquoted numeric literal in INSERT; JSON number when parseable.
+    Number,
+    /// Unquoted `true` / `false` in INSERT; JSON boolean.
+    Bool,
+}
+
+/// One cell in a copy selection. Carries type so formatters never treat the
+/// display string `"NULL"` as a SQL NULL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyCell {
+    Null,
+    Value(String, CopyScalarKind),
+    /// Decode-error or unsupported-type placeholder (`<TYPE>`, …).
+    Decode(String),
+    /// Row (or cell) not yet in the result window.
+    NotLoaded,
+}
+
+/// Why a copy was refused. The UI shows [`CopyError::status_message`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyError {
+    /// Selection includes unloaded rows.
+    NotLoaded { rows: usize },
+    /// INSERT refused because a decode/unsupported cell cannot be re-inserted.
+    DecodeInInsert { column: String },
+    /// Identifier quoting failed.
+    Ident(String),
+}
+
+impl CopyError {
+    pub fn status_message(&self) -> String {
+        match self {
+            Self::NotLoaded { rows } => {
+                format!("{rows} rows not loaded yet; scroll or narrow the selection")
+            }
+            Self::DecodeInInsert { column } => {
+                format!(
+                    "Cannot copy INSERT: column `{column}` has a decode error or unsupported type"
+                )
+            }
+            Self::Ident(msg) => msg.clone(),
+        }
+    }
+}
+
+impl From<SqlError> for CopyError {
+    fn from(err: SqlError) -> Self {
+        Self::Ident(err.to_string())
+    }
 }
 
 /// Escape a single CSV field (RFC 4180-ish).
@@ -40,35 +100,62 @@ pub fn escape_csv_field(value: &str) -> String {
     out
 }
 
-/// Escape a SQL string literal (`'` → `''`). `NULL` stays the keyword.
-pub fn escape_sql_literal(value: &str) -> String {
-    if value == "NULL" {
-        return "NULL".into();
-    }
+/// Escape a SQL string literal. Always produces a quoted string — never the
+/// bare keyword `NULL`. On MySQL, backslashes are doubled (`\` → `\\`).
+pub fn escape_sql_string(value: &str, dialect: Dialect) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('\'');
     for ch in value.chars() {
-        if ch == '\'' {
-            out.push('\'');
+        match ch {
+            '\'' => {
+                out.push('\'');
+                out.push('\'');
+            }
+            '\\' if matches!(dialect, Dialect::Mysql) => {
+                out.push('\\');
+                out.push('\\');
+            }
+            _ => out.push(ch),
         }
-        out.push(ch);
     }
     out.push('\'');
     out
 }
 
-/// Format a rectangular block of display strings.
+/// Map a typed grid [`Value`] into a [`CopyCell`].
+pub fn value_to_copy_cell(value: &Value) -> CopyCell {
+    if value.is_null() {
+        return CopyCell::Null;
+    }
+    if value.is_decode_error() || value.is_unsupported_placeholder() {
+        return CopyCell::Decode(value.display().into_owned());
+    }
+    let kind = match value {
+        Value::Bool(_) => CopyScalarKind::Bool,
+        Value::Int(_) | Value::UInt(_) | Value::Float(_) | Value::Decimal(_) => {
+            CopyScalarKind::Number
+        }
+        _ => CopyScalarKind::Text,
+    };
+    CopyCell::Value(value.display().into_owned(), kind)
+}
+
+/// Format a rectangular block of typed cells.
 ///
-/// `headers` must cover every column index that appears in `rows`. For TSV/CSV
-/// the header row is always written first. JSON uses headers as object keys.
-/// INSERT uses `table_name` (qualified or bare) and dialect quoting.
+/// For TSV/CSV the header row is always written first. JSON uses headers as
+/// object keys. INSERT uses `table_name` when present; when absent it uses the
+/// placeholder `table` and appends `-- replace table name`.
 pub fn format_selection(
     headers: &[String],
-    rows: &[Vec<String>],
+    rows: &[Vec<CopyCell>],
     format: CopyFormat,
     table_name: Option<&str>,
     dialect: Dialect,
-) -> Result<String, SqlError> {
+) -> Result<String, CopyError> {
+    let not_loaded = count_not_loaded_rows(rows);
+    if not_loaded > 0 {
+        return Err(CopyError::NotLoaded { rows: not_loaded });
+    }
     match format {
         CopyFormat::Tsv => Ok(format_delimited(headers, rows, '\t', false)),
         CopyFormat::Csv => Ok(format_delimited(headers, rows, ',', true)),
@@ -77,55 +164,100 @@ pub fn format_selection(
     }
 }
 
-fn format_delimited(headers: &[String], rows: &[Vec<String>], sep: char, csv: bool) -> String {
+fn count_not_loaded_rows(rows: &[Vec<CopyCell>]) -> usize {
+    rows.iter()
+        .filter(|row| row.iter().any(|c| matches!(c, CopyCell::NotLoaded)))
+        .count()
+}
+
+fn format_delimited(headers: &[String], rows: &[Vec<CopyCell>], sep: char, csv: bool) -> String {
     let mut out = String::new();
-    write_line(&mut out, headers, sep, csv);
+    write_text_line(&mut out, headers.iter().map(|s| s.as_str()), sep, csv);
     for row in rows {
-        write_line(&mut out, row, sep, csv);
+        let fields: Vec<&str> = row.iter().map(cell_tsv_csv_text).collect();
+        write_text_line(&mut out, fields.into_iter(), sep, csv);
     }
     out
 }
 
-fn write_line(out: &mut String, fields: &[String], sep: char, csv: bool) {
-    for (i, field) in fields.iter().enumerate() {
+fn cell_tsv_csv_text(cell: &CopyCell) -> &str {
+    match cell {
+        CopyCell::Null => "NULL",
+        CopyCell::Value(text, _) | CopyCell::Decode(text) => text.as_str(),
+        // Callers refuse NotLoaded before reaching here.
+        CopyCell::NotLoaded => "",
+    }
+}
+
+fn write_text_line<'a>(
+    out: &mut String,
+    fields: impl Iterator<Item = &'a str>,
+    sep: char,
+    csv: bool,
+) {
+    for (i, field) in fields.enumerate() {
         if i > 0 {
             out.push(sep);
         }
         if csv {
             out.push_str(&escape_csv_field(field));
         } else {
-            // TSV: keep tabs/newlines as-is so paste into spreadsheets matches
-            // the raw cell text; callers already use Value::display().
             out.push_str(field);
         }
     }
     out.push('\n');
 }
 
-fn format_json(headers: &[String], rows: &[Vec<String>]) -> String {
+fn format_json(headers: &[String], rows: &[Vec<CopyCell>]) -> String {
     let mut arr = Vec::with_capacity(rows.len());
     for row in rows {
         let mut obj = serde_json::Map::new();
         for (i, key) in headers.iter().enumerate() {
-            let raw = row.get(i).map(|s| s.as_str()).unwrap_or("NULL");
-            let value = if raw == "NULL" {
-                serde_json::Value::Null
-            } else {
-                serde_json::Value::String(raw.to_string())
-            };
-            obj.insert(key.clone(), value);
+            let cell = row.get(i).cloned().unwrap_or(CopyCell::Null);
+            obj.insert(key.clone(), cell_to_json(&cell));
         }
         arr.push(serde_json::Value::Object(obj));
     }
     serde_json::to_string_pretty(&serde_json::Value::Array(arr)).unwrap_or_else(|_| "[]".into())
 }
 
+fn cell_to_json(cell: &CopyCell) -> serde_json::Value {
+    match cell {
+        CopyCell::Null => serde_json::Value::Null,
+        CopyCell::Value(text, CopyScalarKind::Bool) => {
+            serde_json::Value::Bool(text.eq_ignore_ascii_case("true"))
+        }
+        CopyCell::Value(text, CopyScalarKind::Number) => {
+            parse_json_number(text).unwrap_or_else(|| serde_json::Value::String(text.clone()))
+        }
+        CopyCell::Value(text, CopyScalarKind::Text) | CopyCell::Decode(text) => {
+            serde_json::Value::String(text.clone())
+        }
+        CopyCell::NotLoaded => serde_json::Value::Null,
+    }
+}
+
+fn parse_json_number(text: &str) -> Option<serde_json::Value> {
+    if let Ok(n) = text.parse::<i64>() {
+        return Some(serde_json::Value::Number(n.into()));
+    }
+    if let Ok(n) = text.parse::<u64>() {
+        return Some(serde_json::Value::Number(n.into()));
+    }
+    let f: f64 = text.parse().ok()?;
+    serde_json::Number::from_f64(f).map(serde_json::Value::Number)
+}
+
 fn format_insert(
     headers: &[String],
-    rows: &[Vec<String>],
+    rows: &[Vec<CopyCell>],
     table_name: Option<&str>,
     dialect: Dialect,
-) -> Result<String, SqlError> {
+) -> Result<String, CopyError> {
+    if let Some(column) = first_decode_column(headers, rows) {
+        return Err(CopyError::DecodeInInsert { column });
+    }
+    let placeholder = table_name.is_none();
     let table = table_name.unwrap_or("table");
     let quoted_table = quote_table_ref(dialect, table)?;
     let cols: Result<Vec<_>, _> = headers.iter().map(|h| quote_ident(dialect, h)).collect();
@@ -145,13 +277,42 @@ fn format_insert(
             if ci > 0 {
                 out.push_str(", ");
             }
-            let raw = row.get(ci).map(|s| s.as_str()).unwrap_or("NULL");
-            out.push_str(&escape_sql_literal(raw));
+            let cell = row.get(ci).cloned().unwrap_or(CopyCell::Null);
+            out.push_str(&cell_to_sql_literal(&cell, dialect));
         }
         out.push(')');
     }
     out.push_str(";\n");
+    if placeholder {
+        out.push_str("-- replace table name\n");
+    }
     Ok(out)
+}
+
+fn first_decode_column(headers: &[String], rows: &[Vec<CopyCell>]) -> Option<String> {
+    for row in rows {
+        for (ci, cell) in row.iter().enumerate() {
+            if matches!(cell, CopyCell::Decode(_)) {
+                return Some(
+                    headers
+                        .get(ci)
+                        .cloned()
+                        .unwrap_or_else(|| format!("column {ci}")),
+                );
+            }
+        }
+    }
+    None
+}
+
+fn cell_to_sql_literal(cell: &CopyCell, dialect: Dialect) -> String {
+    match cell {
+        CopyCell::Null => "NULL".into(),
+        CopyCell::Value(text, CopyScalarKind::Number | CopyScalarKind::Bool) => text.clone(),
+        CopyCell::Value(text, CopyScalarKind::Text) => escape_sql_string(text, dialect),
+        // Refused earlier for INSERT; defensive fallback.
+        CopyCell::Decode(_) | CopyCell::NotLoaded => "NULL".into(),
+    }
 }
 
 fn quote_table_ref(dialect: Dialect, table: &str) -> Result<String, SqlError> {
@@ -166,12 +327,12 @@ fn quote_table_ref(dialect: Dialect, table: &str) -> Result<String, SqlError> {
     }
 }
 
-/// Slice headers and cell display strings for a selection rectangle.
+/// Slice headers and typed cells for a selection rectangle.
 pub fn extract_selection_matrix(
     columns: &[String],
-    rows: &[Vec<String>],
+    rows: &[Vec<CopyCell>],
     rect: SelectionRect,
-) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+) -> Option<(Vec<String>, Vec<Vec<CopyCell>>)> {
     let (min_row, max_row, min_col, max_col) = rect.normalized();
     if columns.is_empty() || min_col >= columns.len() {
         return None;
@@ -186,93 +347,13 @@ pub fn extract_selection_matrix(
     for row in &rows[min_row..=max_row] {
         let mut cells = Vec::with_capacity(max_col - min_col + 1);
         for col in min_col..=max_col {
-            cells.push(row.get(col).cloned().unwrap_or_else(|| "NULL".into()));
+            cells.push(row.get(col).cloned().unwrap_or(CopyCell::Null));
         }
         out_rows.push(cells);
     }
     Some((headers, out_rows))
 }
 
-/// Display string for a typed value used in copy (never truncated).
-pub fn value_copy_text(value: &Value) -> String {
-    value.display().into_owned()
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::selection::CellPos;
-
-    #[test]
-    fn csv_escaping() {
-        assert_eq!(escape_csv_field("plain"), "plain");
-        assert_eq!(escape_csv_field("a,b"), "\"a,b\"");
-        assert_eq!(escape_csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
-        assert_eq!(escape_csv_field("a\nb"), "\"a\nb\"");
-    }
-
-    #[test]
-    fn sql_literal_escaping() {
-        assert_eq!(escape_sql_literal("NULL"), "NULL");
-        assert_eq!(escape_sql_literal("a'b"), "'a''b'");
-        assert_eq!(escape_sql_literal("ok"), "'ok'");
-    }
-
-    #[test]
-    fn tsv_and_csv_round_trip_shape() {
-        let headers = vec!["id".into(), "name".into()];
-        let rows = vec![
-            vec!["1".into(), "Ada".into()],
-            vec!["2".into(), "a,b".into()],
-        ];
-        let tsv =
-            format_selection(&headers, &rows, CopyFormat::Tsv, None, Dialect::Sqlite).unwrap();
-        assert_eq!(tsv, "id\tname\n1\tAda\n2\ta,b\n");
-
-        let csv =
-            format_selection(&headers, &rows, CopyFormat::Csv, None, Dialect::Sqlite).unwrap();
-        assert_eq!(csv, "id,name\n1,Ada\n2,\"a,b\"\n");
-    }
-
-    #[test]
-    fn json_null_and_strings() {
-        let headers = vec!["id".into(), "note".into()];
-        let rows = vec![vec!["1".into(), "NULL".into()]];
-        let json =
-            format_selection(&headers, &rows, CopyFormat::Json, None, Dialect::Postgres).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed[0]["id"], "1");
-        assert!(parsed[0]["note"].is_null());
-    }
-
-    #[test]
-    fn insert_quotes_identifiers_and_literals() {
-        let headers = vec!["id".into(), "name".into()];
-        let rows = vec![vec!["1".into(), "O'Hara".into()]];
-        let sql = format_selection(
-            &headers,
-            &rows,
-            CopyFormat::Insert,
-            Some("public.users"),
-            Dialect::Postgres,
-        )
-        .unwrap();
-        assert!(sql.starts_with("INSERT INTO \"public\".\"users\" (\"id\", \"name\") VALUES\n"));
-        assert!(sql.contains("('1', 'O''Hara')"));
-        assert!(sql.ends_with(";\n"));
-    }
-
-    #[test]
-    fn extract_matrix_slices_rectangle() {
-        let columns = vec!["a".into(), "b".into(), "c".into()];
-        let rows = vec![
-            vec!["1".into(), "2".into(), "3".into()],
-            vec!["4".into(), "5".into(), "6".into()],
-            vec!["7".into(), "8".into(), "9".into()],
-        ];
-        let rect = SelectionRect::from_corners(CellPos::new(0, 1), CellPos::new(1, 2));
-        let (headers, body) = extract_selection_matrix(&columns, &rows, rect).unwrap();
-        assert_eq!(headers, vec!["b", "c"]);
-        assert_eq!(body, vec![vec!["2", "3"], vec!["5", "6"]]);
-    }
-}
+#[path = "copy_format_tests.rs"]
+mod tests;

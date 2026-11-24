@@ -20,8 +20,8 @@ mod types;
 pub use column_kind::{ColumnKind, MAX_SORT_KEYS};
 pub use connection::{SavedConnection, TlsMode, TlsSettings};
 pub use copy_format::{
-    escape_csv_field, escape_sql_literal, extract_selection_matrix, format_selection,
-    value_copy_text, CopyFormat,
+    escape_csv_field, escape_sql_string, extract_selection_matrix, format_selection,
+    value_to_copy_cell, CopyCell, CopyError, CopyFormat, CopyScalarKind,
 };
 pub use error::DbError;
 pub use filter::{
