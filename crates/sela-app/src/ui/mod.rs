@@ -125,8 +125,10 @@ pub fn run() {
             // SQL editor and dialogs.
             bind_secondary(cx, "secondary-q", Box::new(Quit), None);
             // Font size (#39): global, including inside text fields.
+            // Spec: secondary-= and secondary-+ (secondary-shift-=).
             bind_secondary(cx, "secondary-=", Box::new(IncreaseFontSize), None);
             bind_secondary(cx, "secondary-+", Box::new(IncreaseFontSize), None);
+            bind_secondary(cx, "secondary-shift-=", Box::new(IncreaseFontSize), None);
             bind_secondary(cx, "secondary--", Box::new(DecreaseFontSize), None);
             bind_secondary(cx, "secondary-0", Box::new(ResetFontSize), None);
             // Platform secondary modifier (⌘ on macOS, Ctrl elsewhere) — M1-3 filter bar.

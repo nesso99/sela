@@ -1,5 +1,7 @@
 //! Tree node ids and catalog-tree rendering helpers.
 
+use std::collections::HashMap;
+
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tree::{TreeEntry, TreeItem};
 use gpui_kit::component::{h_flex, ActiveTheme};
@@ -17,12 +19,16 @@ pub(super) enum NodeId {
     Table { schema: String, table: String },
 }
 
+/// Color and label looked up from saved connections (keyed by connection id).
+pub(super) type ConnDisplayLookup = HashMap<String, (ConnectionColor, String)>;
+
 pub(super) fn render_tree_entry(
     _: usize,
     entry: &TreeEntry,
     _: bool,
     _: &mut Window,
     cx: &mut App,
+    lookup: &ConnDisplayLookup,
 ) -> ListItem {
     let depth = entry.depth() as f32;
     let id = entry.item().id.as_str();
@@ -39,13 +45,11 @@ pub(super) fn render_tree_entry(
     };
 
     let palette = SelaPalette::for_mode(cx.theme().mode);
-    let meta = connection_meta_from_id(id);
-    let swatch = meta
-        .as_ref()
-        .and_then(|m| palette.connection_color(m.color));
+    let conn_id = connection_id_from_selection(id);
+    let meta = conn_id.and_then(|cid| lookup.get(&cid));
+    let swatch = meta.and_then(|(color, _)| palette.connection_color(*color));
     let conn_label = meta
-        .as_ref()
-        .map(|m| m.label.as_str())
+        .map(|(_, label)| label.as_str())
         .filter(|s| !s.is_empty());
 
     let label_text = if marker.is_empty() {
@@ -79,24 +83,6 @@ fn connection_swatch(fill: Hsla, border: Hsla) -> impl IntoElement {
         .bg(fill)
 }
 
-struct ConnMeta {
-    color: ConnectionColor,
-    label: String,
-}
-
-fn connection_meta_from_id(id: &str) -> Option<ConnMeta> {
-    let mut parts = id.split(SEP);
-    match parts.next()? {
-        "c" => {
-            let _connection = parts.next()?;
-            let color = ConnectionColor::parse(parts.next().unwrap_or("none"));
-            let label = parts.next().unwrap_or("").to_string();
-            Some(ConnMeta { color, label })
-        }
-        _ => None,
-    }
-}
-
 pub(super) fn table_item(connection: &str, schema: &str, table: &TableInfo) -> TreeItem {
     let suffix = match table.kind {
         RelationKind::View => "  ·  view",
@@ -108,17 +94,18 @@ pub(super) fn table_item(connection: &str, schema: &str, table: &TableInfo) -> T
     )
 }
 
+/// Stable tree id for a connection. Must stay `c{SEP}{id}` so expand/collapse
+/// and Connect/Refresh (`conn_key`) agree across rebuilds.
 pub(super) fn conn_key(id: &str) -> String {
     format!("c{SEP}{id}")
 }
 
-/// Connection tree id that embeds color and optional label for rendering.
-pub(super) fn conn_key_with_meta(id: &str, color: ConnectionColor, label: &str) -> String {
-    format!("c{SEP}{id}{SEP}{}{SEP}{}", color.as_str(), label.trim())
-}
-
 pub(super) fn group_key(name: &str) -> String {
     format!("g{SEP}{name}")
+}
+
+pub(super) fn is_group_key(id: &str) -> bool {
+    id.split(SEP).next() == Some("g")
 }
 
 pub(super) fn schema_key(connection: &str, schema: &str) -> String {
@@ -165,6 +152,21 @@ pub(super) fn connection_id_from_selection(id: &str) -> Option<String> {
     }
 }
 
+/// Update `selected_connection_id` from a tree selection id.
+///
+/// Group rows clear the selection so Edit / Duplicate / Delete disable.
+/// Connection / schema / table nodes set it. Other ids leave it unchanged.
+pub(super) fn apply_selection_to_edit_target(
+    selected_connection_id: &mut Option<String>,
+    tree_id: &str,
+) {
+    if is_group_key(tree_id) {
+        *selected_connection_id = None;
+    } else if let Some(connection_id) = connection_id_from_selection(tree_id) {
+        *selected_connection_id = Some(connection_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,11 +176,6 @@ mod tests {
         let id = "abc-123";
         assert_eq!(
             connection_id_from_selection(&conn_key(id)).as_deref(),
-            Some(id)
-        );
-        assert_eq!(
-            connection_id_from_selection(&conn_key_with_meta(id, ConnectionColor::Red, "prod"))
-                .as_deref(),
             Some(id)
         );
         assert_eq!(
@@ -203,14 +200,35 @@ mod tests {
     }
 
     #[test]
-    fn color_and_label_embedded_in_conn_key_parses() {
-        let id = conn_key_with_meta("x", ConnectionColor::Teal, "qa");
-        let meta = connection_meta_from_id(&id).unwrap();
-        assert_eq!(meta.color, ConnectionColor::Teal);
-        assert_eq!(meta.label, "qa");
+    fn conn_key_is_stable_without_color_or_label() {
+        // Expand/collapse and Connect insert `conn_key(id)`; the tree item id
+        // must match so a collapsed connection stays collapsed after rebuild.
+        let id = "warehouse";
+        assert_eq!(conn_key(id), format!("c{SEP}{id}"));
         assert!(matches!(
-            parse_node(&id),
-            Some(NodeId::Connection(ref s)) if s == "x"
+            parse_node(&conn_key(id)),
+            Some(NodeId::Connection(ref s)) if s == id
         ));
+        // Color/label live in the lookup map, not the tree id.
+        let mut lookup = ConnDisplayLookup::new();
+        lookup.insert(id.into(), (ConnectionColor::Red, "prod".into()));
+        assert_eq!(
+            lookup.get(id).map(|(c, l)| (*c, l.as_str())),
+            Some((ConnectionColor::Red, "prod"))
+        );
+    }
+
+    #[test]
+    fn group_selection_clears_edit_target() {
+        let mut selected = Some("pg-qa".to_string());
+        apply_selection_to_edit_target(&mut selected, &group_key("Work"));
+        assert_eq!(selected, None);
+
+        apply_selection_to_edit_target(&mut selected, &conn_key("mysql-qa"));
+        assert_eq!(selected.as_deref(), Some("mysql-qa"));
+
+        // Schema under another connection retargets Edit.
+        apply_selection_to_edit_target(&mut selected, &schema_key("pg-qa", "public"));
+        assert_eq!(selected.as_deref(), Some("pg-qa"));
     }
 }

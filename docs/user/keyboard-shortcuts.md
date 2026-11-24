@@ -44,7 +44,7 @@ Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below a
 | Commit pending changes | Cmd/Ctrl+S (table Data; accepts open editor first) |
 | Discard pending changes | Cmd/Ctrl+Shift+Z (table Data, editor closed; confirms) |
 | Previous / next SQL result | Left / Right (result strip focused) |
-| Larger / smaller / reset font size | Cmd/Ctrl+= (or +) / Cmd/Ctrl+- / Cmd/Ctrl+0 (global) |
+| Larger / smaller / reset font size | Cmd/Ctrl+= or Cmd/Ctrl+Shift+= (also +) / Cmd/Ctrl+- / Cmd/Ctrl+0 (global) |
 | Quit | Cmd/Ctrl+Q (File ▸ Quit / Quit Sela; confirms while a query is running or pending edits exist) |
 
 Run (Cmd/Ctrl+Enter) runs the statement at the caret, the selected text split into statements, or the whole buffer when using Run all. It only fires when the SQL editor has focus; filter fields still use Enter / Cmd/Ctrl+Enter to apply. Cancel stops the running query for that tab (server-side cancel on Postgres/MySQL; SQLite drops the stream). Closing a tab cancels its in-flight work. Global Cmd/Ctrl+F toggles the filter bar on table tabs; with the SQL editor focused, the same chord opens find-in-SQL; with the history panel focused, it focuses the history search field.

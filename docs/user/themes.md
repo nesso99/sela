@@ -18,7 +18,7 @@ One step for the whole window (UI and mono). The status-bar menu immediately bef
 
 | Action | Shortcut |
 | --- | --- |
-| Larger | Cmd/Ctrl+= or Cmd/Ctrl++ |
+| Larger | Cmd/Ctrl+= or Cmd/Ctrl+Shift+= (also Cmd/Ctrl++) |
 | Smaller | Cmd/Ctrl+- |
 | Reset to 13 | Cmd/Ctrl+0 |
 

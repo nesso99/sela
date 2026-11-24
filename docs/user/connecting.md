@@ -70,7 +70,7 @@ The default **prefer** mode still works with these containers (they do not serve
 
 In the connection dialog:
 
-- **Color** — named swatches (None, Blue, Green, Amber, Red, Purple, Teal). Red marks production; a new connection set to Red starts with Confirm writes once Safe mode (M2-4) is wired.
+- **Color** — named swatches (None, Blue, Green, Amber, Red, Purple, Teal). Red marks production.
 - **Label** — optional short tag (max 16) shown after the name in the sidebar.
 - **Group** — optional one-level group name (max 40, no `/`). Ungrouped connections stay at the top; groups follow in first-appearance order.
 

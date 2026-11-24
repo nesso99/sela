@@ -20,7 +20,7 @@ use sela_core::{
 use sela_drivers::{connect, create_sample_database, load_catalog};
 
 use super::super::form::{ConnectionDraft, ConnectionForm, FormEvent};
-use super::tree::{conn_key, connection_id_from_selection, parse_node, schema_key, NodeId};
+use super::tree::{apply_selection_to_edit_target, conn_key, parse_node, schema_key, NodeId};
 use super::{GridSource, Workspace};
 
 // `open_table` lives in tabs.rs as `open_table_tab`.
@@ -42,9 +42,7 @@ impl Workspace {
         let Some(id) = id else {
             return;
         };
-        if let Some(connection_id) = connection_id_from_selection(&id) {
-            self.selected_connection_id = Some(connection_id);
-        }
+        apply_selection_to_edit_target(&mut self.selected_connection_id, &id);
         match parse_node(&id) {
             Some(NodeId::Connection(connection_id)) => {
                 self.connect_id(connection_id, Some(window), cx)

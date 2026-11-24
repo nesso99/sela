@@ -255,21 +255,9 @@ impl ConnectionForm {
                 }
                 if imported.engine == Engine::Sqlite {
                     self.tls_mode = TlsMode::Disable;
-                } else {
-                    self.tls_mode = imported.tls.mode;
-                    Self::set_value(&self.ca_path, imported.tls.ca_path, window, cx);
-                    Self::set_value(
-                        &self.client_cert_path,
-                        imported.tls.client_cert_path,
-                        window,
-                        cx,
-                    );
-                    Self::set_value(
-                        &self.client_key_path,
-                        imported.tls.client_key_path,
-                        window,
-                        cx,
-                    );
+                } else if let Some(mode) = imported.tls_mode {
+                    // Recognised sslmode only — never wipe CA / client cert paths.
+                    self.tls_mode = mode;
                 }
                 let mut note =
                     "Filled from the URL. The password is only in the password field.".to_string();
@@ -414,7 +402,7 @@ impl Render for ConnectionForm {
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(
-                                        "Red marks production. A new connection set to Red starts in Confirm writes.",
+                                        "Red marks production.",
                                     ),
                             ),
                     )

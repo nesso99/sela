@@ -4,10 +4,10 @@
 //! separately so callers can put it in the masked field / keychain path.
 
 use percent_encoding::percent_decode_str;
-use url::Url;
+use url::{Host, Url};
 
 use crate::types::Engine;
-use crate::{TlsMode, TlsSettings};
+use crate::TlsMode;
 
 /// Fields filled from a connection URL. Password is optional and never stored
 /// on [`crate::SavedConnection`].
@@ -19,7 +19,9 @@ pub struct ImportedConnection {
     pub username: String,
     pub database: String,
     pub file_path: String,
-    pub tls: TlsSettings,
+    /// Set only when the URL has a recognised `sslmode` / `ssl-mode`.
+    /// `None` means leave the form's TLS mode and certificate paths alone.
+    pub tls_mode: Option<TlsMode>,
     /// Present when the URL had userinfo (including an empty password).
     pub password: Option<String>,
     /// Soft notes for the form result line (ignored params, sslmode=allow, …).
@@ -109,7 +111,13 @@ pub fn parse_connection_url(raw: &str) -> Result<ImportedConnection, ImportUrlEr
     };
 
     // Multiple hosts: URL with comma in host, or empty host with path-only form.
-    let host = url.host_str().unwrap_or("").to_string();
+    // IPv6: Host::Ipv6 yields the address without brackets (`::1`, not `[::1]`).
+    let host = match url.host() {
+        Some(Host::Domain(d)) => d.to_string(),
+        Some(Host::Ipv4(a)) => a.to_string(),
+        Some(Host::Ipv6(a)) => a.to_string(),
+        None => return Err(ImportUrlError::NoHost),
+    };
     if host.is_empty() {
         return Err(ImportUrlError::NoHost);
     }
@@ -165,7 +173,7 @@ pub fn parse_connection_url(raw: &str) -> Result<ImportedConnection, ImportUrlEr
     // Reject path that looks like multiple segments for "database name" — keep
     // the whole path as the database name (Postgres allows that rarely).
 
-    let (tls, notes) = parse_tls_query(engine, url.query());
+    let (tls_mode, notes) = parse_tls_query(engine, url.query());
 
     Ok(ImportedConnection {
         engine,
@@ -174,7 +182,7 @@ pub fn parse_connection_url(raw: &str) -> Result<ImportedConnection, ImportUrlEr
         username,
         database,
         file_path: String::new(),
-        tls,
+        tls_mode,
         password,
         notes,
     })
@@ -232,17 +240,18 @@ fn parse_sqlite(raw: &str) -> Result<ImportedConnection, ImportUrlError> {
         username: String::new(),
         database: String::new(),
         file_path,
-        tls: TlsSettings::default(),
+        tls_mode: None,
         password: None,
         notes: Vec::new(),
     })
 }
 
-fn parse_tls_query(engine: Engine, query: Option<&str>) -> (TlsSettings, Vec<String>) {
-    let mut tls = TlsSettings::default();
+/// Returns `Some(mode)` only for a recognised sslmode / ssl-mode value.
+fn parse_tls_query(engine: Engine, query: Option<&str>) -> (Option<TlsMode>, Vec<String>) {
+    let mut tls_mode = None;
     let mut notes = Vec::new();
     let Some(query) = query else {
-        return (tls, notes);
+        return (None, notes);
     };
 
     let mut ignored = Vec::new();
@@ -269,16 +278,17 @@ fn parse_tls_query(engine: Engine, query: Option<&str>) -> (TlsSettings, Vec<Str
             .map(|s| s.to_ascii_lowercase())
             .unwrap_or_else(|_| value.to_ascii_lowercase());
         match value_l.as_str() {
-            "disable" => tls.mode = TlsMode::Disable,
-            "prefer" => tls.mode = TlsMode::Prefer,
-            "require" => tls.mode = TlsMode::Require,
-            "verify-ca" => tls.mode = TlsMode::VerifyCa,
-            "verify-full" => tls.mode = TlsMode::VerifyFull,
+            "disable" => tls_mode = Some(TlsMode::Disable),
+            "prefer" => tls_mode = Some(TlsMode::Prefer),
+            "require" => tls_mode = Some(TlsMode::Require),
+            "verify-ca" => tls_mode = Some(TlsMode::VerifyCa),
+            "verify-full" => tls_mode = Some(TlsMode::VerifyFull),
             "allow" => {
-                tls.mode = TlsMode::Prefer;
+                tls_mode = Some(TlsMode::Prefer);
                 notes.push(format!("{key}={value} was saved as prefer."));
             }
             other => {
+                // Leave tls_mode unset so the form keeps its current mode.
                 notes.push(format!("Unknown sslmode '{other}'."));
             }
         }
@@ -286,7 +296,7 @@ fn parse_tls_query(engine: Engine, query: Option<&str>) -> (TlsSettings, Vec<Str
     if !ignored.is_empty() {
         notes.push(format!("Ignored URL parameters: {}.", ignored.join(", ")));
     }
-    (tls, notes)
+    (tls_mode, notes)
 }
 
 #[cfg(test)]
@@ -305,7 +315,7 @@ mod tests {
         assert_eq!(imported.username, "alice@x");
         assert_eq!(imported.password.as_deref(), Some("s;cret"));
         assert_eq!(imported.database, "app/db");
-        assert_eq!(imported.tls.mode, TlsMode::Require);
+        assert_eq!(imported.tls_mode, Some(TlsMode::Require));
         assert!(imported
             .notes
             .iter()
@@ -318,6 +328,7 @@ mod tests {
         assert_eq!(imported.engine, Engine::Postgres);
         assert_eq!(imported.port, 5432);
         assert_eq!(imported.password.as_deref(), Some(""));
+        assert_eq!(imported.tls_mode, None);
     }
 
     #[test]
@@ -327,15 +338,39 @@ mod tests {
                 .unwrap();
         assert_eq!(imported.engine, Engine::Mysql);
         assert_eq!(imported.port, 3307);
-        assert_eq!(imported.tls.mode, TlsMode::VerifyFull);
+        assert_eq!(imported.tls_mode, Some(TlsMode::VerifyFull));
         assert_eq!(imported.password.as_deref(), Some("p"));
     }
 
     #[test]
     fn sslmode_allow_becomes_prefer() {
         let imported = parse_connection_url("postgres://u@h/db?sslmode=allow").unwrap();
-        assert_eq!(imported.tls.mode, TlsMode::Prefer);
+        assert_eq!(imported.tls_mode, Some(TlsMode::Prefer));
         assert!(imported.notes.iter().any(|n| n.contains("saved as prefer")));
+    }
+
+    #[test]
+    fn no_sslmode_leaves_tls_mode_none() {
+        let imported = parse_connection_url("postgres://u@h/db").unwrap();
+        assert_eq!(imported.tls_mode, None);
+        assert!(imported.notes.is_empty());
+    }
+
+    #[test]
+    fn unknown_sslmode_leaves_tls_mode_none_with_note() {
+        let imported = parse_connection_url("postgres://u@h/db?sslmode=bogus").unwrap();
+        assert_eq!(imported.tls_mode, None);
+        assert!(imported
+            .notes
+            .iter()
+            .any(|n| n.contains("Unknown sslmode 'bogus'")));
+    }
+
+    #[test]
+    fn ipv6_host_strips_brackets() {
+        let imported = parse_connection_url("postgres://u@[::1]:5432/db").unwrap();
+        assert_eq!(imported.host, "::1");
+        assert_eq!(imported.port, 5432);
     }
 
     #[test]
