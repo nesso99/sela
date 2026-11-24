@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Sela
+GenericName=Database Client
+Comment=Native desktop database client for PostgreSQL, MySQL, and SQLite
+Exec=sela
+Icon=sela
+Terminal=false
+Categories=Development;Database;
+StartupNotify=true
+Keywords=sql;postgres;mysql;sqlite;database;
