@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- UX specs for v0.2 safe editing: grid editing, preview and commit, safe mode ([docs/design/ux/07-grid-editing.md](docs/design/ux/07-grid-editing.md), [08](docs/design/ux/08-preview-commit.md), [09](docs/design/ux/09-safe-mode.md)), connection color, groups, duplicate, and import URL, font size (#39), and the Linux client-side title bar (#58). Indexed in [docs/design/ux/README.md](docs/design/ux/README.md).
+
 ### Fixed
 
 - Result grid range selection: Shift+click and Shift+arrow extend `selection_rect` (highlighted), Ctrl/Cmd+A selects all cells, and right-click inside a range still keeps the range for Copy (#59).

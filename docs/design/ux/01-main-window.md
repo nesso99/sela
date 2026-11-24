@@ -2,16 +2,17 @@
 
 The Sela window is one sidebar and one content column. The content column is a tab bar, a toolbar, an optional error banner, the results (grid or Structure), the SQL editor, and a status bar. Nothing in this layout is a card. Regions meet on 1px borders.
 
-This spec matches the window in `crates/sela-app/src/ui/workspace/` and the shortcuts in `crates/sela-app/src/ui/mod.rs`. Filter-bar behavior is specified in [02-filter-sort-review.md](./02-filter-sort-review.md). The editor split, autocomplete, and gutter errors are specified in [03-sql-editor.md](./03-sql-editor.md). Shortcut notation is in [README.md](./README.md). Quit and the close control are in [Quit and window lifecycle](#quit-and-window-lifecycle).
+This spec matches the window in `crates/sela-app/src/ui/workspace/` and the shortcuts in `crates/sela-app/src/ui/mod.rs`. Filter-bar behavior is specified in [02-filter-sort-review.md](./02-filter-sort-review.md). The editor split, autocomplete, and gutter errors are specified in [03-sql-editor.md](./03-sql-editor.md). Shortcut notation is in [README.md](./README.md). Quit and the close control are in [Quit and window lifecycle](#quit-and-window-lifecycle). Grid editing is in [07-grid-editing.md](./07-grid-editing.md). The Linux client title bar is in [Client-side title bar](#client-side-title-bar).
 
 ![Main window layout with dimensions](images/main-layout.png)
 
 ## Regions
 
-Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). The OS title bar says “Sela” and is not drawn by the workspace.
+Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). Where the platform draws a server-side title bar, it says “Sela” and the workspace does not draw one. On client-side decorations the workspace draws the bar in [Client-side title bar](#client-side-title-bar).
 
 | Region | Size | Where it is set today | Resize |
 | --- | --- | --- | --- |
+| Menu / title row | 32px, Linux and Windows | `workspace/mod.rs` `menu_bar_row`, `h(px(32.))` | Fixed. Window controls only when decorations are client-side. See [Client-side title bar](#client-side-title-bar). |
 | Sidebar | 292px default | `sidebar.rs`, `w(px(292.))`, `flex_shrink_0` | Drag the right edge. Min 200, max 480. Double-click returns to 292. |
 | Tab bar | 28px | `tabs.rs` `TabBar`, no explicit height | Fixed. |
 | Toolbar | 44px | `content.rs` `toolbar`, `h(px(44.))` | Fixed. Do not grow it. A later density pass may take it to 32px. Not part of M1-3. |
@@ -32,7 +33,7 @@ Column widths stay as they are: `GridDelegate::column` sizes from the header tex
 
 ## What each region shows
 
-**Sidebar** (`sidebar.rs`). “Sela”, the engine line, New, Sample library, the connection tree, then Edit, Delete, Refresh, Disconnect. A connected row is `●` plus the engine short name. Schemas and tables render only under the active connection. Empty copy is the current sentence: “No saved connections yet. Create one, or open the sample SQLite library.”
+**Sidebar** (`sidebar.rs`). “Sela”, the engine line, New, Sample library, the connection tree, then Edit, Delete, Refresh, Disconnect. M2-5 inserts Duplicate between Edit and Delete ([Connection color and groups](#connection-color-and-groups)). A connected row is `●` plus the engine short name. Schemas and tables render only under the active connection. Empty copy is the current sentence: “No saved connections yet. Create one, or open the sample SQLite library.”
 
 Clicking another saved connection while one is active switches: Sela cancels running work on the previous connection’s tabs, closes those tabs, then connects the chosen row. If any of those tabs have non-empty editor SQL (trimmed) or a busy query, Sela asks first: title `Close N tab(s) for {name}?`, body `Unsaved SQL in the editor will be lost.`, buttons **Cancel** (primary / Esc / Enter) and **Close tabs**. Cancel leaves the session, tabs, selection, and running queries unchanged. With no such tabs, the close is silent. **Edit** and **Delete** target the tree selection (the clicked connection, or the connection that owns a selected schema/table), falling back to the active session when nothing is selected. **Refresh** and **Disconnect** act on the live session.
 
@@ -40,7 +41,7 @@ Clicking another saved connection while one is active switches: Sela cancels run
 
 **Tab bar** (`tabs.rs`). One tab per table or query. The close control is on the tab. `+` creates a query tab. With no tabs the bar shows a disabled “No tabs” item, which is what the code does today.
 
-**Toolbar** (`content.rs`). Left: `TabView::source_label` (`schema.table`, `SQL result`, or `No table open`) and, under it, the engine and endpoint. Right, only when a table is open: Data, Structure, and Refresh while Structure is showing. On the Data pane: the page label, Previous, Next. Page label (`format_page_label`): `Page N of M` for paged tables when `total_rows` is known; `Page N · {total} rows` for SQL / non-paged results with a known total; `Page N · {page_len} rows` when the total is unknown (never a hardcoded 100). When the platform is not drawing a close button, a small close control sits at the right end of this bar. It is not a Quit button. See [Quit and window lifecycle](#quit-and-window-lifecycle).
+**Toolbar** (`content.rs`). Left: `TabView::source_label` (`schema.table`, `SQL result`, or `No table open`) and, under it, the engine and endpoint. M2-4 appends the safe-mode segment on that line ([09-safe-mode.md](./09-safe-mode.md)). Right, only when a table is open: Data, Structure, and Refresh while Structure is showing. On the Data pane: the page label, Previous, Next. M2-1 adds Insert, Duplicate, and Delete before the page label ([07-grid-editing.md](./07-grid-editing.md)). Page label (`format_page_label`): `Page N of M` for paged tables when `total_rows` is known; `Page N · {total} rows` for SQL / non-paged results with a known total; `Page N · {page_len} rows` when the total is unknown (never a hardcoded 100). M2-5 paints a 3px connection-color strip on the left edge when the connection has a color ([Connection color and groups](#connection-color-and-groups)). The close control is not on this bar. See [Client-side title bar](#client-side-title-bar).
 
 **Grid** (`grid.rs`, gpui-component `DataTable`). Monospace. Header is the column name, then the type name when non-empty (`name` alone when the type is unknown — never `NULL` as a type). NULL is italic and `muted_foreground`. A loading cell is italic `…`. Other values use `foreground`. Cells are one line, truncated at `CELL_DISPLAY_MAX_CHARS` (200) by `truncate_one_line`. Shift-click / Shift+arrow grow `selection_rect` (painted with `table_active`); Ctrl/Cmd+A selects all cells. Right-click a cell (or a row header) for **Copy** and **Copy as TSV / CSV / JSON / INSERT** (TC-COPY-01). With cell selection on, the menu is attached on each cell because DataTable’s row-level `context_menu` does not open for cell right-clicks; opening the menu also selects that cell when it is outside the current selection so Copy never acts on a different cell or an empty selection, and a right-click inside a range keeps the range. Cmd/Ctrl+C still copies TSV. Details: [copying.md](../../user/copying.md).
 
@@ -58,7 +59,7 @@ Clicking another saved connection while one is active switches: Sela cancels run
 
 > Open a table from the sidebar, or press Ctrl+T / ⌘+T for a query tab.
 
-Use that sentence. In shortcut docs it is `secondary-t`. A selected connection with zero tabs uses this same main pane; the sidebar still shows that connection’s tree once it is connected.
+Use that sentence. In shortcut docs it is `secondary-t`. A selected connection with zero tabs uses this same main pane; the sidebar still shows that connection’s tree once it is connected. The empty column does not grow a close strip. When decorations are client-side, the title bar already has the close control.
 
 If `connections.json` fails to load, `boot_error` is the banner above the empty message. There is still no grid.
 
@@ -162,9 +163,9 @@ Tab order, top to bottom. Shift+Tab reverses. The status text and the source lab
 
 1. Sidebar: New, Sample library.
 2. Sidebar tree.
-3. Sidebar: Edit, Delete, Refresh, Disconnect.
-4. Tabs, then the new-tab button. Tab close buttons stay `tab_stop(false)`, as they are now.
-5. Toolbar: Data, Structure, Refresh, Filter (when the spec in 02 adds it), Previous, Next.
+3. Sidebar: Edit, Duplicate (M2-5), Delete, Refresh, Disconnect.
+4. Tabs, then the new-tab button. Tab close buttons stay `tab_stop(false)`, as they are now. Title-bar window controls stay `tab_stop(false)` too.
+5. Toolbar: Data, Structure, Refresh, Filter (when the spec in 02 adds it), Insert, Duplicate, Delete (M2-1, Data pane), Previous, Next.
 6. Filter fields, when the bar is open.
 7. The grid, as one stop. Arrows move the focused cell once focus is inside it.
 8. The editor.
@@ -194,17 +195,64 @@ Filter and editor chords are in the other specs. They must be context-scoped so 
 
 ## Quit and window lifecycle
 
-The window always has a close control. Use server-side decorations where the platform draws them. On Linux and Wayland, when the server does not draw decorations, show a small client-side close button at the right end of the 44px toolbar. GPUI draws no native menu bar on Linux, so that button is the close control on those sessions. It is not a Quit button. Do not put Quit on the toolbar.
+The window always has a close control. Ask for server-side decorations (`WindowDecorations::Server` in `ui/mod.rs`). When `window.window_decorations()` is server-side, the platform draws the close control and the workspace does not. When it is client-side, the workspace draws the [client-side title bar](#client-side-title-bar). That bar's close control is the one close control. Do not also put a close button on the 44px content toolbar or on the empty-state strip. The close control shipped on that toolbar in #31 is replaced by the title bar, not kept beside it.
+
+The close control is not a Quit button. Do not put the word Quit on the title bar or the toolbar. It calls `Workspace::request_quit`, the same handler as `secondary-q`.
 
 `secondary-q` quits. That is Command+Q on macOS and Control+Q on Linux and Windows. The binding is global: it works from the SQL editor and from dialogs. On Windows, Alt+F4 is the OS close and uses the same quit path. Register it once, with `bind_secondary`, not as a second `cmd-q` / `ctrl-q` pair.
 
-On macOS the app menu item is `Quit Sela`, last, after a separator. On Linux and Windows the File menu item is `Quit`, last, after a separator, with a Ctrl+Q hint. GPUI does not draw a native menu bar on Linux, so that item is not visible there.
+On macOS the app menu item is `Quit Sela`, last, after a separator. On Linux and Windows the File menu item is `Quit`, last, after a separator, with a Ctrl+Q hint. GPUI does not draw a native OS menu bar on Linux. The in-window File menu in the 32px row is the one those sessions show (`menu_bar_row` in `workspace/mod.rs`). On client-side decorations that same row is the title bar below.
 
 Closing the last window quits on Linux and Windows. On macOS the app stays running after the last window closes, and Command+Q quits. That is gpui-pre 0.3.12 `QuitMode::Default` (`Explicit` on macOS, `LastWindowClosed` elsewhere). `ui/mod.rs` does not call `set_quit_mode`. Keep that default. The shortcut, the menu item, Alt+F4, and the close control go through one quit handler. Closing the window on macOS is not that handler.
 
-Confirm only while a query is running. Count is included: `spawn_work` sets `view.busy` for Count the same way it does for a query. If any tab is busy, confirm. Title `Quit Sela?`. Body `A query is still running. Quitting will cancel it.` Buttons are Cancel, then Quit. Cancel is the default (primary-styled) button. Initial keyboard focus may sit on the dialog rather than on the Cancel button; Enter or Escape still dismisses the dialog without quitting. Quit is not primary-styled. A second `secondary-q` while this dialog is open does not quit.
+Confirm while a query is running. Count is included: `spawn_work` sets `view.busy` for Count the same way it does for a query. If any tab is busy, confirm. Title `Quit Sela?`. Body `A query is still running. Quitting will cancel it.` Buttons are Cancel, then Quit. Cancel is the default (primary-styled) button. Initial keyboard focus may sit on the dialog rather than on the Cancel button; Enter or Escape still dismisses the dialog without quitting. Quit is not primary-styled. A second `secondary-q` while this dialog is open does not quit.
+
+Pending grid edits use that same dialog once editing ships. The title, the extra sentence, and the close-tab variant are in [08-preview-commit.md](./08-preview-commit.md#closing-with-pending-edits). Until then, a quit with no busy tab still quits with no dialog. Switching connections and Disconnect also gain the pending-edits sentence in that same confirm; Cancel still keeps the session.
 
 On quit, cancel in-flight queries and close pools, then flush query history: WAL checkpoint and close `history.sqlite`. That cleanup runs from `Context::on_app_quit` and is capped by gpui-pre’s `SHUTDOWN_TIMEOUT` (200 ms) inside `App::shutdown`. After the timeout GPUI exits anyway.
+
+## Connection color and groups
+
+M2-5, with the dialog fields in [05-connection-dialog.md](./05-connection-dialog.md#color-label-and-group). The swatch pairs live in [06-theme-tokens.md](./06-theme-tokens.md#edit-and-connection-marks). A stored name (`red`, `blue`, …) picks the pair for the active theme. `none` draws nothing.
+
+| Place | What |
+| --- | --- |
+| Sidebar row | An 8px square, then the existing `●` / `○`, engine short name, connection name, and the optional label in `text.muted`. Paint the square in `render_tree_entry`. Do not encode it as a character in the tree label. |
+| Toolbar | A 3px vertical strip on the left edge, full 44px height, in the connection color. Hidden when the color is `none`. The connection name stays on the engine line, before the safe-mode segment. |
+| Tab | A 2px bottom edge in the same color, on every tab, because one connection owns the open tabs. Hidden when the color is `none`. |
+
+Groups are one level. The sidebar keeps file order. Connections with an empty group stay a flat list at the top, in the order they have today. Each non-empty group is a parent row after that, in the order its first member appears in the file. Members stay in file order under the parent. A group row shows the group name and a disclosure triangle. It is not a connection: clicking it expands or collapses, and it does not connect. Empty groups are not shown. There is no nested group.
+
+Duplicate is a ghost `xsmall` button between Edit and Delete, enabled when Edit is enabled. No shortcut (`secondary-d` is duplicate-row on the grid). It saves a new connection immediately and does not connect and does not open the dialog. The name is `{name} copy`, then `{name} copy 2`, and so on. The new id is new. Engine, host, port, user, database, file, TLS, `record_history`, color, label, group, and safe mode are copied. When the source password was read from the keychain, write that secret under the new id. When it was not, the copy has no password. Status: `Duplicated {name}.`
+
+## Client-side title bar
+
+Linux only, and only when `window.window_decorations()` is client-side. That is the GNOME Wayland case in #58: the window asks for server decorations, GNOME does not draw them, and GPUI reports client decorations. Windows, macOS, X11, and any compositor that actually draws server decorations stay as they are. Do not render these controls there. The 32px row on Windows with server decorations stays a menu bar: File on the left, no drag-to-move, no window buttons.
+
+![Linux client title bar: File, the title, minimize, maximize, close](images/titlebar-linux.png)
+
+The row is the existing `menu_bar_row`, 32px, full window width, above the sidebar and the content column. Do not merge it into the 44px content toolbar, and do not add a second strip. The content toolbar is table actions and is absent when there are no tabs. The title bar has to exist in that empty state too, which is why the empty column no longer grows its own close strip.
+
+| Piece | Placement |
+| --- | --- |
+| File menu | Left, as today. |
+| Title | `Sela`, centered in the row. `text.secondary`. |
+| Window controls | Right. Order is minimize, then maximize, then close. Close is the rightmost control. This is the GNOME default (`:minimize,maximize,close`). |
+| Each control | 32×32 hit target, ghost, icon only. Tooltips `Minimize`, `Maximize`, `Restore`, `Close`. |
+
+Maximize shows `Restore` while the window is maximized. The icons are a minus, a square, and `×`. None of them is labeled Quit.
+
+**Drag.** Empty space in the row, including the title text, moves the window (`start_window_move`) after a few pixels of left-button drag. A left click that does not drag only focuses the window. These are not draggable: the File menu, an open menu, and the three window controls. A right-click does not start a move.
+
+**Double-click.** Double-click on the drag region toggles maximize and restore (`titlebar_double_click` or the kit equivalent). Double-click on the File menu or on a window control does not.
+
+**Right-click.** On the drag region, a menu: `Minimize`, `Maximize` or `Restore`, a separator, `Close`. `Close` calls `request_quit`. The File menu and the window buttons do not open this menu. Ship the menu with the title bar. If a right-click cannot be separated from the drag gesture, omit the menu and do not make the buttons start a drag. That omission is the only fallback.
+
+**Close.** The close control and the menu's `Close` call `Workspace::request_quit`. They do not call `remove_window` directly. Minimize and maximize do not quit. A running query still confirms, as in the quit section.
+
+**Edges.** Client decorations keep edge resize. Draw a 1px `border.divider` around the window content so the edge is visible. Do not add a drop shadow on top of whatever the compositor already draws.
+
+gpui-component `TitleBar` is the right starting point when it can host the File menu, the drag region, and a close control that calls `request_quit`. If its close button only removes the window, do not use that button. Composing the existing 32px row is the fallback, and it is the layout either way.
 
 ## Status text
 
@@ -239,7 +287,8 @@ On quit, cancel in-flight queries and close pools, then flush query history: WAL
 - Banner: keep `error_banner`. Add `max_h` around 60px and vertical scroll. Append SQLSTATE from `DbError` instead of only `Display`, which is the message alone (`error.rs`).
 - Load more footer: a sibling under the `DataTable` inside `results_area`, visible only when `GridSource::Sql` and `truncated`. It is not a row in `ResultWindow`.
 - Do not turn on `TableState::sortable(true)`. Header sort is specified in the filter spec and is server-side.
-- Quit goes through one handler (`Workspace::request_quit`), as in [Quit and window lifecycle](#quit-and-window-lifecycle). Cancel queries synchronously, then `cx.quit()`; pool close and history flush run from `on_app_quit` within `SHUTDOWN_TIMEOUT` (200 ms).
+- Quit goes through one handler (`Workspace::request_quit`), as in [Quit and window lifecycle](#quit-and-window-lifecycle). Cancel queries synchronously, then `cx.quit()`; pool close and history flush run from `on_app_quit` within `SHUTDOWN_TIMEOUT` (200 ms). The client title bar's close control uses that handler. Remove `client_close_bar` and the toolbar `window-close` button once the title bar is the close control.
+- Decide client decorations from `window.window_decorations()`, not from the `WindowDecorations::Server` request. The request stays.
 
 ## Decisions
 
@@ -247,7 +296,11 @@ On quit, cancel in-flight queries and close pools, then flush query history: WAL
 2. **Keep both error surfaces.** The banner always shows the full message. The gutter marker and underline are drawn only when the engine reports a position.
 3. **M1-9 is done** (#13, `pg_decode.rs`). Text fallbacks are normal cells, as in the decode-error section. Do not edit `roadmap.md` for that status here. Engineering updates the roadmap, PRD, and SPECS status rows in the M1-3 pull request.
 4. **Quit cleanup uses GPUI’s `SHUTDOWN_TIMEOUT` (200 ms)** via `on_app_quit`, not a separate ~2 s wait before `cx.quit()`.
+5. **Client decorations use the 32px menu row as the title bar.** Window controls are not merged into the 44px toolbar. Close goes through `request_quit`.
 
 ## Open questions
 
-None open for quit. See [Quit and window lifecycle](#quit-and-window-lifecycle) for the shipped behavior.
+None open for quit. See [Quit and window lifecycle](#quit-and-window-lifecycle) for the shipped confirm.
+
+1. The title-bar control order is fixed: minimize, maximize, close, on the right. The alternative is to read GNOME `org.gnome.desktop.wm.preferences button-layout` and follow that, including a left-side layout. This spec does not read the setting.
+2. The right-click menu ships in the same work as the title bar, and is omitted only when the gesture cannot be split from dragging. Confirm that omission is acceptable rather than blocking the bar.

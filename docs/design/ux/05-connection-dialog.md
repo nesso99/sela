@@ -1,6 +1,6 @@
 # Connection dialog
 
-The dialog that creates and edits a saved connection. It already ships as a 460px modal from `open_form` in `crates/sela-app/src/ui/workspace/state.rs`, rendered by `ConnectionForm` in `ui/form.rs`. The sections below keep that dialog and extend it. TLS modes are M1-8. Test connection is an acceptance check on US-01 and has no UI today. Query-history recording is the switch from [04-query-history.md](./04-query-history.md).
+The dialog that creates and edits a saved connection. It already ships as a 460px modal from `open_form` in `crates/sela-app/src/ui/workspace/state.rs`, rendered by `ConnectionForm` in `ui/form.rs`. The sections below keep that dialog and extend it. TLS modes are M1-8. Test connection is an acceptance check on US-01 and has no UI today. Query-history recording is the switch from [04-query-history.md](./04-query-history.md). Color, label, group, safe mode, and import-from-URL are M2-5 (US-01). Duplicate is a sidebar action, specified in [01-main-window.md](./01-main-window.md#connection-color-and-groups), not a button in this dialog.
 
 Shortcut notation is in [README.md](./README.md). `secondary` is Command on macOS and Control on Linux and Windows. The dialog traps focus until it closes, which the main-window spec already requires.
 
@@ -34,29 +34,35 @@ There is no card around the TLS block. A 1px top border and an 11px `TLS` label 
 
 ### PostgreSQL and MySQL
 
-1. Engine
-2. Name
-3. Host, Port
-4. User, Database
-5. Password
-6. Password helper, then any keychain warning, then the validation error
-7. TLS mode
-8. The one-line explanation of the selected mode
-9. CA certificate
-10. Client certificate
-11. Client key
-12. Record query history
-13. Test result
-14. Cancel, Test, Save, Save & connect
+1. Import URL
+2. Engine
+3. Name
+4. Color, Label
+5. Group, Safe mode
+6. Host, Port
+7. User, Database
+8. Password
+9. Password helper, then any keychain warning, then the validation error
+10. TLS mode
+11. The one-line explanation of the selected mode
+12. CA certificate
+13. Client certificate
+14. Client key
+15. Record query history
+16. Test result
+17. Cancel, Test, Save, Save & connect
 
 ### SQLite
 
-1. Engine
-2. Name
-3. SQLite file, with Browse
-4. Record query history
-5. Test result
-6. Cancel, Test, Save, Save & connect
+1. Import URL
+2. Engine
+3. Name
+4. Color, Label
+5. Group, Safe mode
+6. SQLite file, with Browse
+7. Record query history
+8. Test result
+9. Cancel, Test, Save, Save & connect
 
 The TLS block is not in the tree for SQLite. It is not a disabled checkbox. Password is not shown. Submit keeps today's clearing of host, user, database, and port, and it writes TLS as absent.
 
@@ -222,10 +228,82 @@ Show one error, the first failure in field order. Keep the existing strings.
 | Client certificate missing or a directory | `Client certificate was not found.` |
 | Client key missing or a directory | `Client key was not found.` |
 | Only one of the client pair is set | `Client certificate and client key paths must both be set, or both empty.` |
+| Label longer than 16 characters | `Label must be 16 characters or fewer.` |
+| Group longer than 40 characters | `Group must be 40 characters or fewer.` |
+| Group contains `/` | `Groups are one level. Remove the slash.` |
 
 TLS checks run only when the engine is Postgres or MySQL and the mode is not the reason to skip them. In Disable, skip the file checks. In Prefer and Require, check a path only when it is non-empty, and check the client pair when either side is non-empty. The `~` expansion applies before the existence check.
 
 Do not warn about the key file's permission bits.
+
+## Color, label, and group
+
+M2-5. The sidebar and the toolbar paint these; see [01-main-window.md](./01-main-window.md#connection-color-and-groups). Swatch pairs are in [06-theme-tokens.md](./06-theme-tokens.md#edit-and-connection-marks). Safe mode behavior is in [09-safe-mode.md](./09-safe-mode.md).
+
+Color and Label share a row. Group and Safe mode share a row.
+
+**Color.** One tab stop. Seven squares, 16px, 1px border. Arrow keys move the selection. The selected square uses the 2px `ring`. The name under the row is `text_xs`: `None`, `Blue`, `Green`, `Amber`, `Red`, `Purple`, `Teal`. There is no free color picker. The stored value is the name in the theme table (`none`, `blue`, `green`, `amber`, `red`, `purple`, `teal`), never a hex. An unknown stored name loads as `none`.
+
+Red is the production mark. The helper under the swatches, one line, `text.muted`: `Red marks production. A new connection set to Red starts in Confirm writes.` The rule for when that default sticks is in [09-safe-mode.md](./09-safe-mode.md#where-it-is-set).
+
+**Label.** Optional. Single line, placeholder `prod`, max 16 characters after trim. Shown after the connection name in the sidebar, `text.muted`. Empty stores `""`.
+
+**Group.** Optional. Single line, max 40 characters, with a menu of the group names already in the file. Empty means ungrouped. `/` is rejected so a group cannot pretend to nest.
+
+**Safe mode.** A select: `Off`, `Confirm writes`, `Read-only`. Stored as `off`, `confirm`, `read-only`. The helper is one line and follows the select:
+
+| Level | Helper |
+| --- | --- |
+| Off | `Writes run without a confirm. UPDATE and DELETE without WHERE still ask.` |
+| Confirm writes | `Writes ask before they run. UPDATE and DELETE without WHERE still ask.` |
+| Read-only | `Writes are refused. Reads run as usual.` |
+
+New fields use serde defaults. A v0.1 file with none of them still loads. Do not bump `schema_version` and do not write a migration. That is the same pattern as `record_history` ([ADR 0006](../../adr/0006-no-migrations-before-release.md) asked for no migration code; these fields stay compatible by defaulting).
+
+```json
+"color": "red",
+"label": "prod",
+"group": "Work",
+"safe_mode": "confirm"
+```
+
+`skip_serializing_if` may omit `none`, `""`, and `off`. Reading a missing field is the default.
+
+## Import URL
+
+A single line at the top of the body, label `Import URL`, placeholder `postgres://user:pass@host:5432/db`, and a ghost `Import` button. `Enter` in the field and the button do the same thing. They fill the form. They do not save, do not connect, and do not write the keychain. `secondary-enter` is still Save & connect for the dialog.
+
+On success, clear the URL field so a password in the URL is not left in a plain field. Put the password, when the URL has one, into the password field (masked). Switch the engine to match the scheme. Result line, `text.muted`: `Filled from the URL. The password is only in the password field.`
+
+A password is applied only when the URL has userinfo. `user:@host` sets the password field empty. A URL with no userinfo leaves the password field as it was, so an edit does not wipe a loaded secret.
+
+A failed parse leaves every other field alone. The error uses the form's existing error line.
+
+| Input | Result |
+| --- | --- |
+| `postgres://` or `postgresql://` | Engine PostgreSQL. |
+| `mysql://` | Engine MySQL. |
+| `sqlite:`, `sqlite://`, `sqlite:///` | Engine SQLite. |
+| Any other scheme, including `jdbc:` | `Use a postgres://, mysql://, or sqlite: URL.` |
+| Empty field | No change. The button does nothing. |
+| Network URL with no host | `The URL has no host.` |
+| Network URL with more than one host | `The URL has more than one host.` |
+| Network URL with no database path | `The URL has no database name.` |
+| Port missing | Use 5432 or 3306. |
+| Port not an integer from 1 to 65535 | `Port must be a number from 1 to 65535.` |
+| User missing on Postgres or MySQL | Fill the rest. The usual `User is required.` check applies on save. Do not invent a user. |
+| SQLite with no path | `The URL has no file path.` |
+| Bad percent-encoding | `Could not read the URL.` |
+
+SQLite paths: `sqlite:///home/me/db.sqlite` is `/home/me/db.sqlite`. `sqlite://relative.sqlite` and `sqlite:relative.sqlite` are `relative.sqlite`. Percent-decode the path.
+
+`sslmode` (Postgres) and `ssl-mode` (MySQL) map onto the TLS select: `disable`, `prefer`, `require`, `verify-ca`, `verify-full`. `allow` is not a mode here; store it as `prefer` and add `sslmode=allow was saved as prefer.` to the result line. An unknown mode is `Unknown sslmode '{value}'.` and does not change TLS. Any other query key is ignored, with `Ignored URL parameters: {list}.` on the result line. The fragment is ignored.
+
+Do not log the URL. It can contain a password. The password still never enters `connections.json`; save uses the keychain path this dialog already has.
+
+## Duplicate
+
+Not in this dialog. The sidebar button is specified in [01-main-window.md](./01-main-window.md#connection-color-and-groups). Do not add a second Duplicate here.
 
 ## Keyboard
 
@@ -233,6 +311,7 @@ Do not warn about the key file's permission bits.
 | --- | --- |
 | Save and connect | `secondary-enter` from any field |
 | Cancel | `Escape`, unless the platform file dialog is open |
+| Fill from the URL | `Enter` in the Import URL field, or the Import button |
 | Next / previous field | `Tab` / `Shift-Tab` |
 | Choose a file | `Space` or `Enter` on Browse |
 
@@ -240,7 +319,7 @@ Test has no shortcut. `secondary-enter` is the primary button, not Test.
 
 `secondary-enter` does not insert a newline. Every field in this dialog is a single line. The dialog's focus context does not include the window-level run binding, so `secondary-enter` cannot start a query on the tab behind the dialog.
 
-Focus order is the field order above, then Cancel, Test, Save, Save & connect. The test result is not focusable. Disabled TLS fields are skipped.
+Focus order is the field order above, then Cancel, Test, Save, Save & connect. The test result is not focusable. Disabled TLS fields are skipped. The color swatches are one stop. `Enter` in the Import URL field parses and does not insert a newline.
 
 ## Implementation notes for engineering
 
@@ -255,6 +334,8 @@ Focus order is the field order above, then Cancel, Test, Save, Save & connect. T
 - Field names are `ca_path`, `client_cert_path`, and `client_key_path` on `TlsSettings` (#15).
 - The history checkbox writes `record_history`. It does not open the history panel.
 - Do not add a client-key passphrase control. rustls needs an unencrypted PEM. The follow-up is on the M1 backlog in [roadmap.md](../roadmap.md).
+- Color, label, group, and `safe_mode` are serde defaults on `SavedConnection`. Omit them when they are the default. Do not bump `schema_version`.
+- Parse the URL with the platform URL parser. Percent-decode user, password, and path. Drop the raw URL after a successful fill so it is not what Save writes.
 
 ## Decisions
 
@@ -263,3 +344,9 @@ Focus order is the field order above, then Cancel, Test, Save, Save & connect. T
 3. No client-key passphrase in this dialog. It is backlog. The key file is an unencrypted PEM.
 4. The JSON names are `ca_path`, `client_cert_path`, and `client_key_path`.
 5. No separate certificate hostname field. Verify full checks the Host field. A hostname override is backlog.
+6. Color is a named swatch, not a hex the user picks. Red is the production mark.
+7. Import fills the form and clears the URL field. It does not connect.
+
+## Open questions
+
+1. Duplicate copies the keychain password onto the new id when the source secret was readable. The alternative is to leave the copy without a password and make the user type it. This spec copies it. The sidebar behavior is in [01-main-window.md](./01-main-window.md#connection-color-and-groups).

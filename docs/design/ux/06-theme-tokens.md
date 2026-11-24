@@ -20,9 +20,9 @@ Ship two `ThemeConfig` values, light and dark, each containing the override keys
 { "theme": "dark" }
 ```
 
-`theme` is `light`, `dark`, or `system`. A missing or unreadable file means `dark`, which is what the binary does today. This file is not `connections.json` and it is not config schema v2. When `theme` is `system`, startup and later OS appearance changes call `Theme::sync_system_appearance`. When it is `light` or `dark`, call `Theme::change` with that mode and ignore later OS changes.
+`theme` is `light`, `dark`, or `system`. A missing or unreadable file means `dark`, which is what the binary does today. This file is not `connections.json` and it is not config schema v2. When `theme` is `system`, startup and later OS appearance changes call `Theme::sync_system_appearance`. When it is `light` or `dark`, call `Theme::change` with that mode and ignore later OS changes. `font_size` is an optional sibling of `theme`, specified in [Font size](#font-size). The binary does not read it yet.
 
-The status bar grows one `xsmall` ghost menu, after the History button and before the source label. The bar stays 28px. The label is the current choice: `Light`, `Dark`, or `System`. The menu items are those three. `System` follows the OS appearance. If a platform build cannot report window appearance, the menu is Light and Dark only. The check is in the implementation notes. Dark is still the default.
+The status bar grows one `xsmall` ghost menu, after the History button and before the source label. The bar stays 28px. The label is the current choice: `Light`, `Dark`, or `System`. The menu items are those three. `System` follows the OS appearance. If a platform build cannot report window appearance, the menu is Light and Dark only. The check is in the implementation notes. Dark is still the default. Font size adds a second menu immediately before this one. The bar still stays 28px.
 
 Tokens that have no `ThemeColor` field live in a small `SelaPalette` the UI picks from `theme.mode`. They are listed as gaps. Do not overload `danger` or `success` for those roles: in the kit those fields are button fills, and the light fill/foreground pairs fail 4.5:1 (`neutral-50` on green-500 is 2.18:1, on yellow-500 is 1.84:1, on cyan-500 is 2.33:1, on red-500 is 3.61:1).
 
@@ -173,6 +173,8 @@ Do not bundle Inter or JetBrains Mono. Those faces are in the wireframe HTML so 
 | Active tab, primary button, dialog title | UI | 13px | 16px | 600 |
 | Grid cells and SQL editor | `mono_font_family` | 12px (`mono_font_size`) | 26px row / 18px editor line | 400 |
 
+These sizes are the default step. [Font size](#font-size) scales the type. It does not scale the chrome heights in the next sections.
+
 `mono_font_family` stays the kit default: Menlo on macOS, Consolas on Windows, DejaVu Sans Mono on Linux, with the kit's installed-font fallback. Do not set a family the machine may not have. GPUI panics on the first line laid out in a missing family.
 
 Weight 700 is not used in the chrome.
@@ -252,13 +254,81 @@ Gaps, with no `ThemeColor` field in gpui-component 0.10.0:
 | syntax.* and editor.line_number | They live on `highlight_theme`, not on `ThemeColor`. Set them through the highlight block. |
 | A per-mode `SelaPalette` | `Theme::change` will not carry these across a mode switch unless the app owns them. |
 
+## Font size
+
+Backlog #39. One step for the whole window, not a separate editor zoom. The step is the UI pixel size. Mono is derived from it. The value is stored in `settings.json` next to `theme` and applied to both the light and the dark `ThemeConfig`, so a mode switch does not reset it.
+
+```json
+{ "theme": "dark", "font_size": 13 }
+```
+
+`font_size` is an integer. Missing, or not an integer, means 13. A value outside 11–18 is clamped. The file still holds no secrets.
+
+| UI `font_size` | Mono | `text_xs` | UI line | Editor line | Grid, sidebar, history, and filter row |
+| --- | --- | --- | --- | --- | --- |
+| 11 | 11 | 11 | 14 | 18 | 26 |
+| 13 (default) | 12 | the kit value, never under 11 | 16 | 18 | 26 |
+| 18 | 17 | 16 | 22 | 26 | 37 |
+
+Formulas, integer pixels, half rounds away from zero the way `round` usually does:
+
+- Mono = `max(11, ui - 1)`.
+- At UI 13, leave `text_xs` as the kit resolves it, and do not shrink it. Otherwise `text_xs` = `max(11, ui - 2)`. The 11px floor from the type section stays.
+- UI line = `max(14, round(ui * 16 / 13))`.
+- Editor line = `max(18, round(18 * mono / 12))`.
+- Row = `max(26, round(26 * mono / 12))`. This is the grid row, the grid header, the sidebar row, the history row, and the filter row.
+
+At the default step, keep `DataTable` on `Size::XSmall` (26). Do not pass a custom row height to get under 26. Above 13, set the row height from the formula.
+
+These stay fixed at every step. Text inside them may grow until the largest step, which is why the maximum is 18 and not larger:
+
+| Token | px | Why it stays |
+| --- | --- | --- |
+| toolbar.height | 44 | One line still fits at UI 18 (line 22). |
+| status.height | 28 | `text_xs` at the top step is 16. |
+| tab.height | 28 | The strip does not grow. |
+| editor.header, history header | 28 | The header chrome. |
+| Menu / title row | 32 | [01-main-window.md](./01-main-window.md#client-side-title-bar). |
+| editor.band | 176 | The splitter default, not a font metric. Fewer lines fit when the line height grows. |
+| sidebar.width, dialog.width, window size | unchanged | Layout, not type. |
+| space.1–space.6, radius, border, focus | unchanged | The 4px scale. |
+
+The control is a status-bar menu, `xsmall` ghost, immediately before the theme menu. The label is the current UI size (`13`). The items are `11` through `18`, with a check on the current size, then `Reset`. The bar stays 28px. There is still no settings window. `secondary-,` stays reserved.
+
+| Action | Shortcut | Bound today |
+| --- | --- | --- |
+| Larger | `secondary-=` and `secondary-+` (`secondary-shift-=`) | no |
+| Smaller | `secondary--` | no |
+| Reset to 13 | `secondary-0` | no |
+
+None of those chords is in the reserved table in [README.md](./README.md). `secondary-1` through `secondary-9` stay tab switches. `secondary-0` is reset, not a tab. The chords are global, including inside a text field: they change the font and do not insert the character. Register each once, with `bind_secondary`. They do not dismiss a dialog.
+
+## Edit and connection marks
+
+No `ThemeColor` field. Read them from `SelaPalette` for the active mode, same as the status text colors. Hex is the value to use. A connection swatch stores a name; the paint looks up the pair.
+
+| Token | Light | Dark | Use |
+| --- | --- | --- | --- |
+| row.insert.bg | `#F0FDF4` | `#052E16` | Inserted and duplicated rows. `text.primary` on these is above 4.5:1. |
+| cell.dirty.mark | `#854D0E` | `#FACC15` | The 6px triangle. Same hues as status.warning.text. |
+| conn.none | — | — | Draw nothing. |
+| conn.blue | `#2563EB` | `#60A5FA` | Same hues as accent. |
+| conn.green | `#15803D` | `#4ADE80` | Same hues as status.success.text. |
+| conn.amber | `#A16207` | `#EAB308` | Dark enough to see on `#FAFAFA`, light enough to see on `#171717`. |
+| conn.red | `#B91C1C` | `#F87171` | Production mark. Same hues as status.error.text. |
+| conn.purple | `#7E22CE` | `#C084FC` | |
+| conn.teal | `#0F766E` | `#2DD4BF` | |
+
+The triangle, the gutter glyph, and strikethrough are specified in [07-grid-editing.md](./07-grid-editing.md). The swatch placement is in [01-main-window.md](./01-main-window.md#connection-color-and-groups). Do not reuse `danger` or `success` fills for these.
+
 ## Keyboard
 
 | Action | Shortcut | Bound today |
 | --- | --- | --- |
 | Choose Light, Dark, or System | The status menu | yes (M1-7) |
+| Font size | [Font size](#font-size) | no |
 
-There is no shortcut. `secondary-,` stays reserved for a future settings window. The status menu is the M1-7 control.
+The theme menu has no shortcut. `secondary-,` stays reserved for a future settings window. The status menu is the M1-7 control.
 
 ## Implementation notes for engineering
 
@@ -278,3 +348,8 @@ There is no shortcut. `secondary-,` stays reserved for a future settings window.
 1. The status menu offers Light, Dark, and System when `Window::appearance()` is available. System follows the OS through `Theme::sync_system_appearance`. If that API is missing on a platform, the menu is Light and Dark only. Dark is the default.
 2. Light-theme SQL comments stay `#525252`.
 3. Dark chrome (`#171717` on a `#0A0A0A` canvas) with a 13px UI font is the density. Do not keep the kit at 16px and only shrink the grid and the editor. `theme.rs` already ships these values.
+4. Font size is one UI step, 11–18, default 13. Mono is `max(11, ui - 1)`. Chrome heights in this file stay fixed. The step is written to both theme configs.
+
+## Open questions
+
+1. Issue #39 asks whether the UI and the grid/editor should zoom separately. This spec uses one step so the 13:12 relationship holds. Split controls are the alternative.

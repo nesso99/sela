@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Safe mode</title><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; color: #e8e8e8; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 14px 18px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; letter-spacing: 0.04em; }
+.win {
+  flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column;
+  background: #161616; border: 1px solid #3a3a3a;
+}
+.dim { position: absolute; inset: 22px 0 0 0; background: rgba(0,0,0,0.45); }
+.titlebar {
+  height: 22px; flex: none; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #bdbdbd; border-bottom: 1px solid #3a3a3a; background: #1c1c1c;
+}
+.editor {
+  flex: 1; padding: 16px 18px; font: 12px/20px "JetBrains Mono", "DejaVu Sans Mono", monospace; color: #6e6e6e;
+}
+.dialog {
+  position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
+  width: 460px; background: #1c1c1c; border: 1px solid #8a8a8a;
+}
+.dialog h2 { margin: 0; padding: 14px 16px 0; font-size: 14px; font-weight: 600; }
+.dialog p { margin: 8px 0 0; padding: 0 16px; font-size: 12px; line-height: 1.4; color: #d0d0d0; }
+.sql {
+  margin: 10px 16px 0; padding: 8px; border: 1px solid #3a3a3a; background: #141414;
+  font: 11px/16px "JetBrains Mono", "DejaVu Sans Mono", monospace; color: #e8e8e8;
+}
+.foot {
+  display: flex; justify-content: flex-end; gap: 8px; padding: 14px 16px;
+}
+.btn {
+  height: 26px; padding: 0 12px; border: 1px solid #555; background: #2a2a2a;
+  color: #e8e8e8; font: 12px/24px Inter, sans-serif;
+}
+.btn.primary { background: #e8e8e8; color: #161616; border-color: #e8e8e8; font-weight: 600; }
+.note {
+  position: absolute; left: 16px; bottom: 14px; font-size: 10px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: #9a9a9a;
+}
+</style></head>
+<body>
+  <div class="kicker"><span>Safe mode · M2-4</span><b>No WHERE · Cancel is primary</b></div>
+  <div class="win">
+    <div class="titlebar">Sela</div>
+    <div class="editor">UPDATE books SET in_print = false;</div>
+    <div class="dim"></div>
+    <div class="dialog">
+      <h2>This statement has no WHERE</h2>
+      <p>This UPDATE changes every row in books. It is not limited by a WHERE clause.</p>
+      <div class="sql">UPDATE books SET in_print = false</div>
+      <div class="foot">
+        <span class="btn primary">Cancel</span>
+        <span class="btn">Run anyway</span>
+      </div>
+    </div>
+    <div class="note">Enter and Esc cancel · Run anyway is not primary</div>
+  </div>
+</body></html>

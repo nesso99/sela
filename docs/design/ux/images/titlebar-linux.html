@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Linux title bar</title><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; color: #e8e8e8; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 14px 18px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; letter-spacing: 0.04em; }
+.win {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  background: #161616; border: 1px solid #d0d0d0;
+}
+.tbar {
+  height: 32px; flex: none; display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: center; background: #1c1c1c; border-bottom: 1px solid #3a3a3a;
+  position: relative;
+}
+.file { justify-self: start; padding-left: 10px; font-size: 12px; }
+.file u { text-decoration: none; border-bottom: 1px solid #888; }
+.title { font-size: 12px; color: #d0d0d0; }
+.ctrls { justify-self: end; display: flex; height: 32px; }
+.ctrls span {
+  width: 32px; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #e8e8e8; border-left: 1px solid #2a2a2a;
+}
+.ctrls span.close { font-size: 14px; }
+.body { flex: 1; min-height: 0; display: flex; }
+.side { width: 200px; flex: none; background: #1e1e1e; border-right: 1px solid #3a3a3a; padding: 10px; font-size: 12px; }
+.side .dim { color: #8d8d8d; font-size: 10px; margin-top: 4px; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.toolbar {
+  height: 44px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px 0 0; border-bottom: 1px solid #3a3a3a;
+}
+.strip { width: 3px; align-self: stretch; background: #f2f2f2; margin-right: 10px; }
+.tb-title { font-size: 12px; }
+.tb-sub { font-size: 10px; color: #8d8d8d; }
+.left { display: flex; align-items: center; height: 100%; }
+.btn { height: 20px; padding: 0 8px; border: 1px solid #555; background: #2a2a2a; color: #e8e8e8; font: 11px/18px Inter, sans-serif; }
+.callouts { flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 16px; font-size: 12px; color: #cfcfcf; }
+.callouts div { border-left: 2px solid #8a8a8a; padding-left: 8px; line-height: 1.35; }
+.callouts b { color: #f2f2f2; }
+.menu {
+  position: absolute; right: 8px; top: 36px; width: 160px; background: #1c1c1c; border: 1px solid #8a8a8a;
+  font-size: 12px; z-index: 2;
+}
+.menu div { height: 26px; display: flex; align-items: center; padding: 0 10px; }
+.menu .sep { height: 9px; border-top: 1px solid #3a3a3a; margin-top: 4px; }
+</style></head>
+<body>
+  <div class="kicker"><span>Linux · client decorations · GNOME Wayland</span><b>32px row, not the content toolbar</b></div>
+  <div class="win">
+    <div class="tbar">
+      <div class="file"><u>File</u></div>
+      <div class="title">Sela</div>
+      <div class="ctrls"><span>−</span><span>□</span><span class="close">×</span></div>
+      <div class="menu">
+        <div>Minimize</div>
+        <div>Maximize</div>
+        <div class="sep"></div>
+        <div>Close</div>
+      </div>
+    </div>
+    <div class="body">
+      <div class="side">
+        <div>Sela</div>
+        <div class="dim">sidebar is not the drag region</div>
+      </div>
+      <div class="main">
+        <div class="toolbar">
+          <div class="left">
+            <div class="strip"></div>
+            <div>
+              <div class="tb-title">public.books</div>
+              <div class="tb-sub">PostgreSQL · prod-orders · Safe: Confirm</div>
+            </div>
+          </div>
+          <span class="btn">Data</span>
+        </div>
+        <div class="callouts">
+          <div><b>Drag</b> the empty title row, including the word Sela. File and the three controls do not drag.</div>
+          <div><b>Double-click</b> the drag region to maximize or restore.</div>
+          <div><b>Order</b> is minimize, maximize, close. Close is rightmost and calls the quit handler.</div>
+          <div><b>Right-click</b> the drag region for this menu. Close there also quits through the same handler.</div>
+          <div><b>No second close</b> on the 44px toolbar. The white edge is the connection-color strip.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body></html>
