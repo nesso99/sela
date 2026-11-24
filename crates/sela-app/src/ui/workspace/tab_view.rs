@@ -8,8 +8,7 @@ use gpui_kit::component::input::{
     EditorState, GutterDecorationCollection, InputState, TextDecorationCollection,
 };
 use gpui_kit::component::table::TableState;
-use gpui_kit::prelude::Focusable as _;
-use gpui_kit::{px, AppContext as _, Context, Entity, SharedString, Window};
+use gpui_kit::{px, AppContext as _, Context, Entity, Focusable as _, SharedString, Window};
 
 use sela_core::{FilterCondition, ResultWindow, RowCountKind, SortSpec, DEFAULT_SQL_ROW_CAP};
 

@@ -169,7 +169,7 @@ impl Workspace {
             let Some(sql) = view.sql_run_queue.first().cloned() else {
                 view.sql_running_statement_index = None;
                 view.busy = false;
-                return false;
+                return;
             };
             view.sql_run_statement_index = view.sql_run_base_index + 1;
             view.sql_running_statement_index = Some(view.sql_run_base_index);
@@ -996,7 +996,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let batch_outcome = match &result {
-            Err(err) if matches!(err, DbError::Cancelled { .. }) => None,
+            Err(DbError::Cancelled { .. }) => None,
             Err(err) => Some(Err(err.clone())),
             Ok(_) => Some(Ok(())),
         };
@@ -1100,7 +1100,7 @@ impl Workspace {
             Err(err) => {
                 if let Some(view) = self.view_mut(tab_id) {
                     let stmt = view.sql_run_statement_index;
-                    view.status = Self::format_query_failed_status(stmt, err.sqlstate());
+                    view.status = Self::format_query_failed_status(Some(stmt), err.sqlstate());
                     view.error = Some(err.to_string());
                     view.last_error_sqlstate = err.sqlstate().map(str::to_string);
                     view.grid.update(cx, |state, cx| {

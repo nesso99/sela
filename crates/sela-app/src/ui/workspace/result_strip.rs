@@ -1,9 +1,9 @@
 //! Result-set strip between the grid and the SQL editor.
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::{h_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{px, Context, IntoElement};
+use gpui_kit::{div, px, Context, IntoElement};
 
 use super::{GridSource, Workspace};
 

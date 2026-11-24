@@ -12,7 +12,7 @@ use sela_core::{
 use super::Workspace;
 
 impl Workspace {
-    pub(super) fn sync_active_sql_decorations(&self, cx: &Context<Self>) {
+    pub(super) fn sync_active_sql_decorations(&self, cx: &mut Context<Self>) {
         let Some(view) = self.active_view() else {
             return;
         };
@@ -23,6 +23,8 @@ impl Workspace {
         let statements = split_statements(&buffer).ok();
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
+        let gutter = view.sql_gutter.clone();
+        let marks = view.sql_error_marks.clone();
 
         let mut gutter_decorations = Vec::new();
         let mut text_decorations = Vec::new();
@@ -50,7 +52,7 @@ impl Workspace {
                     if col.is_some() {
                         let style = HighlightStyle {
                             underline: Some(UnderlineStyle {
-                                thickness: px(1.).into(),
+                                thickness: px(1.),
                                 color: Some(danger),
                                 wavy: false,
                             }),
@@ -66,8 +68,8 @@ impl Workspace {
             }
         }
 
-        view.sql_gutter.set(gutter_decorations, cx);
-        view.sql_error_marks.set(text_decorations, cx);
+        gutter.set(gutter_decorations, cx);
+        marks.set(text_decorations, cx);
     }
 
     pub(super) fn clear_sql_error_decorations(

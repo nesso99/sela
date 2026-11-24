@@ -287,7 +287,14 @@ impl Render for Workspace {
             .on_action({
                 let this = this.clone();
                 move |_: &ToggleFilterBar, window, cx| {
-                    this.update(cx, |workspace, cx| workspace.toggle_filter_bar(window, cx));
+                    this.update(cx, |workspace, cx| {
+                        // SqlEditor also binds secondary-f to FindInSql; do not open the
+                        // filter bar when the editor (or its find field) has focus.
+                        if workspace.editor_field_focused(window, cx) {
+                            return;
+                        }
+                        workspace.toggle_filter_bar(window, cx);
+                    });
                 }
             })
             .on_action({

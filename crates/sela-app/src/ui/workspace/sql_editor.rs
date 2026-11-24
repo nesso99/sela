@@ -1,15 +1,21 @@
 //! SQL editor column: header, find bar, splitter, and Editor body.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Editor, Enter, Escape, Input, InputState};
+use gpui_kit::component::input::{Editor, Enter, Escape, Input};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, IntoElement, Window};
+use gpui_kit::{div, px, Context, DragMoveEvent, IntoElement, Render, Window};
 
 use super::tab_view::{DEFAULT_EDITOR_HEIGHT, MIN_EDITOR_HEIGHT};
 use super::Workspace;
 
 struct EditorDrag;
+
+impl Render for EditorDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().h(px(5.)).w_full()
+    }
+}
 
 impl Workspace {
     pub(super) fn toggle_editor_collapsed(&mut self, cx: &mut Context<Self>) {
@@ -36,11 +42,15 @@ impl Workspace {
     fn editor_max_height(&self, window: &Window) -> f32 {
         let bounds = window.bounds().size;
         let chrome = 44. + 28. + 28. + 44.;
-        let body = bounds.height.0 - chrome;
+        let body = f32::from(bounds.height) - chrome;
         (body * 0.7).max(MIN_EDITOR_HEIGHT)
     }
 
-    pub(super) fn sql_editor(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn sql_editor(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         self.sync_active_sql_decorations(cx);
         let this = cx.entity();
         let connected = self.session.is_some();
@@ -62,29 +72,36 @@ impl Workspace {
             .border_color(cx.theme().border)
             .child(
                 div()
+                    .id("sql-editor-split")
                     .h(px(5.))
                     .w_full()
                     .bg(cx.theme().border)
                     .cursor_row_resize()
-                    .on_double_click({
+                    .on_click({
                         let this = this.clone();
-                        move |_, _, cx| {
-                            this.update(cx, |workspace, cx| workspace.reset_editor_height(cx));
+                        move |event, _, cx| {
+                            if event.click_count() == 2 {
+                                this.update(cx, |workspace, cx| workspace.reset_editor_height(cx));
+                            }
                         }
                     })
                     .on_drag(EditorDrag, |_, _offset, _, cx| cx.new(|_| EditorDrag))
                     .on_drag_move({
                         let this = this.clone();
-                        let max_h = max_h;
-                        move |_, offset, _, cx| {
+                        move |event: &DragMoveEvent<EditorDrag>, window, cx| {
+                            let mouse_y = f32::from(event.event.position.y);
+                            let window_h = f32::from(window.bounds().size.height);
+                            // Status bar sits below the editor column.
+                            let status_h = 28.;
                             this.update(cx, |workspace, cx| {
                                 let Some(tab_id) = workspace.tabs.active().map(|t| t.id) else {
                                     return;
                                 };
                                 if let Some(view) = workspace.view_mut(tab_id) {
                                     view.editor_collapsed = false;
-                                    let next = view.editor_height - offset.y.0;
-                                    view.editor_height = next.clamp(MIN_EDITOR_HEIGHT, max_h);
+                                    let next = (window_h - mouse_y - status_h)
+                                        .clamp(MIN_EDITOR_HEIGHT, max_h);
+                                    view.editor_height = next;
                                 }
                                 cx.notify();
                             });
@@ -149,7 +166,7 @@ impl Workspace {
                                                 });
                                             }
                                         })
-                                        .child(Input::new(&find).placeholder("Find")),
+                                        .child(Input::new(&find)),
                                 )
                             })
                             .child({
@@ -164,7 +181,7 @@ impl Workspace {
                                     })
                             })
                             .child({
-                                let this = this.clone();
+                                let this = this;
                                 Button::new("stop-query")
                                     .small()
                                     .label("Stop")

@@ -52,6 +52,7 @@ impl Workspace {
                     .items_center()
                     .child(status)
                     .when(truncated && can_load_more && is_sql && !busy, |row| {
+                        let this = this.clone();
                         row.child({
                             Button::new("load-more")
                                 .xsmall()
@@ -63,6 +64,7 @@ impl Workspace {
                         })
                     })
                     .when(show_count, |row| {
+                        let this = this.clone();
                         row.child({
                             Button::new("status-count")
                                 .xsmall()

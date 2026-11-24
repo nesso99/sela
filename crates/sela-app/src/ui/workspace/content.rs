@@ -165,7 +165,7 @@ impl Workspace {
     pub(super) fn error_banner(&self, cx: &Context<Self>, error: String) -> impl IntoElement {
         div()
             .max_h(px(60.))
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .px_3()
             .py_2()
             .text_sm()

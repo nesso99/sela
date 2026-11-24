@@ -496,13 +496,11 @@ pub fn line_col_to_byte_range(
             return Some(start..line_end);
         }
         let mut byte = start;
-        let mut col_ix = 1usize;
-        for (idx, _) in sql[start..line_end].char_indices() {
+        for (col_ix, (idx, _)) in (1usize..).zip(sql[start..line_end].char_indices()) {
             if col_ix == col {
                 byte = start + idx;
                 break;
             }
-            col_ix += 1;
             byte = start + idx + sql[start + idx..].chars().next()?.len_utf8();
         }
         // Underline at least one character when possible.

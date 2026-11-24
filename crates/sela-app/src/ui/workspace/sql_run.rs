@@ -150,7 +150,7 @@ impl Workspace {
     }
 }
 
-fn substring_by_bytes(text: &str, range: &Range<usize>) -> &str {
+fn substring_by_bytes<'a>(text: &'a str, range: &Range<usize>) -> &'a str {
     let start = range.start.min(text.len());
     let end = range.end.min(text.len());
     if start > end {
