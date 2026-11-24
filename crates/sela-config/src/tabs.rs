@@ -161,6 +161,9 @@ mod tests {
             tabs: vec![PersistedTab {
                 connection_id: "c".into(),
                 kind: TabKind::Query { sql: String::new() },
+                filters: Vec::new(),
+                sorts: Vec::new(),
+                filter_bar_open: false,
             }],
             active: Some(0),
         };

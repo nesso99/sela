@@ -13,9 +13,10 @@ use gpui_kit::component::input::TextareaState;
 use gpui_kit::component::table::TableState;
 use gpui_kit::{AppContext as _, Context, Entity, Window};
 
-use sela_core::{RowCountKind, DEFAULT_SQL_ROW_CAP};
+use sela_core::{FilterCondition, RowCountKind, SortSpec, DEFAULT_SQL_ROW_CAP};
 
 use super::super::grid::GridDelegate;
+use super::filter_bar::FilterRowUi;
 use super::structure::StructureCache;
 use super::{GridSource, TablePane};
 
@@ -43,11 +44,21 @@ pub(super) struct TabView {
     pub note: Option<String>,
     pub busy: bool,
     pub query_started: Option<Instant>,
+    /// Active filters for table previews (AND-combined).
+    pub filters: Vec<FilterCondition>,
+    /// Active ORDER BY for table previews.
+    pub sorts: Vec<SortSpec>,
+    /// Whether the filter bar is visible.
+    pub filter_bar_open: bool,
+    /// Editable filter rows (UI state; synced into `filters` on Apply).
+    pub filter_rows: Vec<FilterRowUi>,
 }
 
 impl TabView {
     pub fn new(window: &mut Window, cx: &mut Context<super::Workspace>, sql_text: &str) -> Self {
         let grid = cx.new(|cx| {
+            // sortable(false) by default — enabled only for table Data in load_source_for.
+            // Header clicks require TableState.sortable(true); that path does not reorder rows.
             TableState::new(GridDelegate::empty(), window, cx)
                 .sortable(false)
                 .col_movable(false)
@@ -79,6 +90,10 @@ impl TabView {
             note: None,
             busy: false,
             query_started: None,
+            filters: Vec::new(),
+            sorts: Vec::new(),
+            filter_bar_open: false,
+            filter_rows: Vec::new(),
         }
     }
 

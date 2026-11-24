@@ -1,6 +1,7 @@
 //! Main window: saved connections, schema tree, result grid, and the SQL editor.
 
 mod content;
+mod filter_bar;
 mod query;
 mod sidebar;
 mod state;
@@ -23,6 +24,7 @@ use sela_core::{DatabaseSession, LoadedSchema, TabId, TabList};
 
 use super::{
     ActivateTab, CancelQuery, CloseTab, NewQueryTab, RunQuery, ShowTableData, ShowTableStructure,
+    ToggleFilterBar,
 };
 use tab_view::TabView;
 
@@ -174,8 +176,15 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action({
                 let this = this.clone();
-                move |_: &RunQuery, _, cx| {
-                    this.update(cx, |workspace, cx| workspace.run_editor(cx));
+                move |_: &RunQuery, window, cx| {
+                    // Scope secondary-enter: filter fields Apply; otherwise Run in the editor.
+                    this.update(cx, |workspace, cx| {
+                        if workspace.filter_field_focused(window, cx) {
+                            workspace.apply_filters(cx);
+                        } else {
+                            workspace.run_editor(cx);
+                        }
+                    });
                 }
             })
             .on_action({
@@ -217,6 +226,12 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| workspace.show_table_structure(cx));
                 }
             })
+            .on_action({
+                let this = this.clone();
+                move |_: &ToggleFilterBar, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.toggle_filter_bar(window, cx));
+                }
+            })
             .child(self.sidebar(cx))
             .child(
                 v_flex()
@@ -234,12 +249,18 @@ impl Render for Workspace {
                                 can_next,
                                 connected,
                             ))
+                            .when(matches!(table_pane, TablePane::Data), |column| {
+                                column.child(self.filter_bar(cx, connected))
+                            })
                             .when_some(self.banner_error(), |column, error| {
                                 column.child(self.error_banner(cx, error))
                             })
                             .child(match table_pane {
                                 TablePane::Data => self.results_area().into_any_element(),
                                 TablePane::Structure => self.structure_area(cx).into_any_element(),
+                            })
+                            .when(matches!(table_pane, TablePane::Data), |column| {
+                                column.child(self.predicate_strip(cx))
                             })
                             .child(self.sql_editor(cx, connected))
                             .child(self.status_bar(cx))

@@ -7,6 +7,7 @@
 //! Public surface: [`connect`], [`drive`], [`load_catalog`], and
 //! [`create_sample_database`]. Domain types live in `sela-core`.
 
+mod bind;
 mod decode;
 mod error_map;
 mod mysql;
@@ -17,6 +18,7 @@ mod sqlite;
 mod stream;
 mod tls;
 
+pub(crate) use bind::bind_params;
 pub(crate) use decode::{column_meta, read_mysql_cell, read_postgres_cell, read_sqlite_cell};
 pub(crate) use error_map::sqlx_err;
 pub use runtime::drive;

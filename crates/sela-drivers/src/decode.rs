@@ -459,8 +459,11 @@ macro_rules! exec_sql {
 #[macro_export]
 macro_rules! count_sql {
     ($pool:expr, $sql:expr) => {{
+        $crate::count_sql!($pool, $sql, &[])
+    }};
+    ($pool:expr, $sql:expr, $params:expr) => {{
         use sqlx::Row as _;
-        let row = sqlx::query($sql)
+        let row = $crate::bind_params(sqlx::query($sql), $params)
             .fetch_one($pool)
             .await
             .map_err($crate::sqlx_err)?;

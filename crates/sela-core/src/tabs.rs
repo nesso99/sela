@@ -8,6 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use serde::{Deserialize, Serialize};
 
+use crate::filter::{FilterCondition, SortSpec};
+
 /// Stable identity for a tab within one app session (not persisted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(u64);
@@ -255,6 +257,9 @@ impl TabList {
     }
 
     /// Snapshot for disk (no passwords, no tokens).
+    ///
+    /// Callers should merge filter/sort from the UI [`PersistedTab`] fields
+    /// before save; this copies kind + connection only.
     pub fn to_persisted(&self) -> PersistedTabs {
         PersistedTabs {
             tabs: self
@@ -263,6 +268,9 @@ impl TabList {
                 .map(|tab| PersistedTab {
                     connection_id: tab.connection_id.clone(),
                     kind: tab.kind.clone(),
+                    filters: Vec::new(),
+                    sorts: Vec::new(),
+                    filter_bar_open: false,
                 })
                 .collect(),
             active: self.active,
@@ -304,6 +312,15 @@ pub struct PersistedTabs {
 pub struct PersistedTab {
     pub connection_id: String,
     pub kind: TabKind,
+    /// Table-tab filter conditions (serde-default empty for older tabs.json).
+    #[serde(default)]
+    pub filters: Vec<FilterCondition>,
+    /// Table-tab sort specs (serde-default empty).
+    #[serde(default)]
+    pub sorts: Vec<SortSpec>,
+    /// Whether the filter bar was open when the session was saved.
+    #[serde(default)]
+    pub filter_bar_open: bool,
 }
 
 #[cfg(test)]
@@ -452,9 +469,22 @@ mod tests {
                 kind: TabKind::Query {
                     sql: "select 1".into(),
                 },
+                filters: Vec::new(),
+                sorts: Vec::new(),
+                filter_bar_open: false,
             }],
             active: Some(99),
         });
         assert_eq!(restored.active_index(), Some(0));
+    }
+
+    #[test]
+    fn persisted_tab_defaults_missing_filter_fields() {
+        let json =
+            r#"{"connection_id":"c","kind":{"type":"table","schema":"public","table":"books"}}"#;
+        let tab: PersistedTab = serde_json::from_str(json).unwrap();
+        assert!(tab.filters.is_empty());
+        assert!(tab.sorts.is_empty());
+        assert!(!tab.filter_bar_open);
     }
 }

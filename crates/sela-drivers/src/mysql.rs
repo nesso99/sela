@@ -276,8 +276,8 @@ impl DatabaseSession for MysqlSession {
         crate::exec_sql!(&self.pool, sql)
     }
 
-    async fn count_query(&self, sql: &str) -> Result<u64, DbError> {
-        crate::count_sql!(&self.pool, sql)
+    async fn count_query(&self, sql: &str, params: &[sela_core::Value]) -> Result<u64, DbError> {
+        crate::count_sql!(&self.pool, sql, params)
     }
 
     async fn estimate_table_rows(&self, schema: &str, table: &str) -> Result<Option<u64>, DbError> {
@@ -326,6 +326,7 @@ impl DatabaseSession for MysqlSession {
     async fn stream_query(
         &self,
         sql: &str,
+        params: &[sela_core::Value],
         batch_size: usize,
         row_cap: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
         finish_at_cap: bool,
@@ -335,6 +336,7 @@ impl DatabaseSession for MysqlSession {
         crate::stream::stream_mysql(
             &self.pool,
             sql,
+            params,
             batch_size,
             row_cap,
             finish_at_cap,
@@ -607,7 +609,7 @@ mod tests {
         let (tx, rx) = async_channel::bounded(4);
         let cancel = CancellationToken::new();
         let cancel_after_first = cancel.clone();
-        let produce = session.stream_query(sql, 50, None, true, cancel, tx);
+        let produce = session.stream_query(sql, &[], 50, None, true, cancel, tx);
         tokio::pin!(produce);
         let first = tokio::select! {
             biased;
@@ -742,5 +744,194 @@ mod tests {
             .execute("DROP TABLE sela_struct_parent")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_filter_and_sort_when_configured() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql filter: set SELA_MYSQL_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
+        let session = MysqlSession::connect_url(&url)
+            .await
+            .expect("mysql connect");
+        session
+            .execute("DROP TABLE IF EXISTS sela_filter")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_filter (
+                    id INT PRIMARY KEY,
+                    name VARCHAR(64) NOT NULL,
+                    note VARCHAR(64) NULL
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                r#"INSERT INTO sela_filter (id, name, note) VALUES
+                 (1, 'Ada', 'plain'),
+                 (2, '100%', 'pct'),
+                 (3, 'a_b', 'under'),
+                 (4, 'back\\slash', 'esc'),
+                 (5, 'O''Brien', 'quote'),
+                 (6, 'ユニコード', 'unicode'),
+                 (7, 'drop; --', 'inject'),
+                 (8, 'wow!', 'bang')"#,
+            )
+            .await
+            .unwrap();
+
+        use sela_core::{
+            preview_table, FilterCondition, FilterOp, SortSpec, TablePreview, PAGE_SIZE,
+        };
+
+        // Literal `%` (not a wildcard).
+        let contains_pct = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "%")],
+                sorts: &[SortSpec::asc("id")],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains_pct else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("100%"));
+        assert_eq!(rows.row_count_kind, sela_core::RowCountKind::Unknown);
+
+        // Literal `_` (not a single-char wildcard).
+        let contains_under = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "_")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains_under else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("a_b"));
+
+        // Escape char itself (`!`) is a literal.
+        let contains_bang = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, "!")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains_bang else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("wow!"));
+
+        // Backslash in the value is a literal (MySQL stores one `\`).
+        let contains_bs = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Contains, r"\")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = contains_bs else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text(r"back\slash"));
+
+        let inject = preview_table(
+            &session,
+            &schema,
+            "sela_filter",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new(
+                    "name",
+                    FilterOp::Eq,
+                    "1; DROP TABLE sela_filter;--",
+                )],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = inject else {
+            panic!("rows");
+        };
+        assert!(rows.page.rows.is_empty());
+        assert_eq!(
+            sela_core::exact_table_rows(&session, &schema, "sela_filter", &[])
+                .await
+                .unwrap(),
+            8
+        );
+
+        let sorted =
+            preview_table(
+                &session,
+                &schema,
+                "sela_filter",
+                PAGE_SIZE,
+                0,
+                CancellationToken::new(),
+                TablePreview {
+                    filters: &[
+                        FilterCondition::new("id", FilterOp::In, "2, 6, 7").with_type("integer")
+                    ],
+                    sorts: &[SortSpec::desc("id")],
+                },
+            )
+            .await
+            .unwrap();
+        let StatementOutcome::Rows(rows) = sorted else {
+            panic!("rows");
+        };
+        assert_eq!(
+            rows.page
+                .rows
+                .iter()
+                .map(|r| r[0].clone())
+                .collect::<Vec<_>>(),
+            vec![Value::Int(7), Value::Int(6), Value::Int(2)]
+        );
+
+        session.execute("DROP TABLE sela_filter").await.unwrap();
     }
 }

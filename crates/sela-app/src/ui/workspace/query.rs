@@ -9,9 +9,10 @@ use gpui_kit::Context;
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    classify, exact_table_rows, is_safe_to_rerun_for_load_more, normalize_sql, preview_table,
-    run_user_sql, select_all, wrap_page, DatabaseSession, DbError, RowCountKind, StatementKind,
-    StatementOutcome, StreamBatch, TabId, DEFAULT_SQL_ROW_CAP, PAGE_SIZE, STREAM_BATCH_SIZE,
+    build_table_page, classify, exact_table_rows, is_safe_to_rerun_for_load_more, normalize_sql,
+    preview_table, run_user_sql, DatabaseSession, DbError, FilterCondition, RowCountKind, SortSpec,
+    StatementKind, StatementOutcome, StreamBatch, TabId, TablePreview, DEFAULT_SQL_ROW_CAP,
+    PAGE_SIZE, STREAM_BATCH_SIZE,
 };
 use sela_drivers::drive;
 
@@ -195,16 +196,32 @@ impl Workspace {
         let GridSource::Table { schema, table } = view.source.clone() else {
             return;
         };
+        let filters = view.filters.clone();
         let Some(session) = self.session.clone() else {
             return;
         };
         if let Some(view) = self.view_mut(tab_id) {
-            view.status = "Counting rows…".into();
+            view.status = "Counting…".into();
         }
         self.spawn_work(
             Some(tab_id),
             cx,
-            |_| async move { exact_table_rows(session.as_ref(), &schema, &table).await },
+            |cancel| async move {
+                let work = exact_table_rows(session.as_ref(), &schema, &table, &filters);
+                futures_util::pin_mut!(work);
+                let aborted = cancel.cancelled();
+                futures_util::pin_mut!(aborted);
+                match select(work, aborted).await {
+                    Either::Left((result, _)) => {
+                        if cancel.is_cancelled() {
+                            Err(DbError::cancelled("count cancelled"))
+                        } else {
+                            result
+                        }
+                    }
+                    Either::Right((_, _)) => Err(DbError::cancelled("count cancelled")),
+                }
+            },
             move |this, result, cx| match result {
                 Ok(total) => {
                     if let Some(view) = this.view_mut(tab_id) {
@@ -219,14 +236,55 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(err) => {
+                    // Count failure/cancel is not a data-query failure — keep the
+                    // grid and previous kind; do not set view.error (no banner).
                     if let Some(view) = this.view_mut(tab_id) {
-                        view.error = Some(err.to_string());
-                        view.status = "Count failed".into();
+                        view.error = None;
+                        view.status = if matches!(err, DbError::Cancelled { .. }) {
+                            "Count cancelled".into()
+                        } else {
+                            format!("Count failed · {err}")
+                        };
                     }
                     cx.notify();
                 }
             },
         );
+        // Tick Counting… · elapsed ~4×/sec while this request is busy.
+        let request = self.tabs.get(tab_id).map(|t| t.request).unwrap_or(0);
+        cx.spawn(async move |this, async_cx| loop {
+            async_cx
+                .background_executor()
+                .timer(std::time::Duration::from_millis(250))
+                .await;
+            let cont = this
+                .update(async_cx, |ws, cx| {
+                    let Some(tab) = ws.tabs.get(tab_id) else {
+                        return false;
+                    };
+                    if tab.request != request {
+                        return false;
+                    }
+                    let Some(view) = ws.views.get_mut(&tab_id) else {
+                        return false;
+                    };
+                    if !view.busy {
+                        return false;
+                    }
+                    let secs = view
+                        .query_started
+                        .map(|t| t.elapsed().as_secs_f32())
+                        .unwrap_or(0.0);
+                    view.status = format!("Counting… · {secs:.1} s");
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !cont {
+                break;
+            }
+        })
+        .detach();
     }
 
     pub(super) fn load_source_for(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
@@ -244,10 +302,21 @@ impl Workspace {
         let source = view.source.clone();
         let offset = view.page_offset;
         let sql_cap = view.sql_row_cap;
+        let filters = view.filters.clone();
+        let sorts = view.sorts.clone();
+        let is_table = matches!(source, GridSource::Table { .. });
         view.error = None;
         view.note = None;
         view.truncated = false;
         view.can_load_more = false;
+        view.grid.update(cx, |state, _| {
+            // gpui-component only delivers header clicks when TableState.sortable
+            // is true; that path calls perform_sort and does not reorder rows.
+            state.sortable = is_table;
+            let d = state.delegate_mut();
+            d.sortable = is_table;
+            d.sorts = sorts.clone();
+        });
         view.live_row_cap = None;
         view.status = "Running…".into();
         view.grid.update(cx, |state, cx| {
@@ -277,7 +346,7 @@ impl Workspace {
                 cx.notify();
                 cx.spawn(async move |this, async_cx| {
                     let result = drive(async move {
-                        run_source(session, source, offset, sql_cap, cancel).await
+                        run_source(session, source, offset, sql_cap, cancel, &filters, &sorts).await
                     })
                     .await;
                     this.update(async_cx, |this, cx| {
@@ -374,7 +443,7 @@ impl Workspace {
                         async move {
                             session
                                 .stream_query(
-                                    &sql,
+                                    &sql, &[],
                                     STREAM_BATCH_SIZE,
                                     Some(cap),
                                     false,
@@ -606,6 +675,8 @@ impl Workspace {
         let GridSource::Table { schema, table } = view.source.clone() else {
             return;
         };
+        let filters = view.filters.clone();
+        let sorts = view.sorts.clone();
         let pending: Vec<usize> = self.views.get_mut(&tab_id).map_or(Vec::new(), |view| {
             view.grid.update(cx, |state, _| {
                 let d = state.delegate_mut();
@@ -630,16 +701,26 @@ impl Workspace {
             let session = session.clone();
             let schema = schema.clone();
             let table = table.clone();
+            let filters = filters.clone();
+            let sorts = sorts.clone();
             let cancel = cancel.clone();
             let offset = (page_index as u64) * (PAGE_SIZE as u64);
             cx.spawn(async move |this, async_cx| {
                 let result = drive(async move {
-                    let sql = select_all(session.dialect(), &schema, &table)
-                        .map_err(|err| DbError::query(err.to_string()))?;
-                    let page_sql = wrap_page(session.dialect(), &sql, PAGE_SIZE, offset);
+                    let bound = build_table_page(
+                        session.dialect(),
+                        &schema,
+                        &table,
+                        &filters,
+                        &sorts,
+                        PAGE_SIZE,
+                        offset,
+                    )
+                    .map_err(|err| DbError::query(err.to_string()))?;
                     let (tx, rx) = async_channel::bounded(2);
                     let stream = session.stream_query(
-                        &page_sql,
+                        &bound.sql,
+                        &bound.params,
                         STREAM_BATCH_SIZE,
                         Some(Arc::new(AtomicUsize::new(PAGE_SIZE as usize))),
                         true,
@@ -710,23 +791,14 @@ impl Workspace {
             .query_started
             .map(|t| t.elapsed().as_millis())
             .unwrap_or(0);
-        let rows = view.total_rows.unwrap_or(view.page_len as u64);
-        let count = match view.row_count_kind {
-            RowCountKind::Estimated => format!("~{rows} rows"),
-            RowCountKind::AtLeast if view.truncated => format!("{rows}+ rows"),
-            RowCountKind::Unknown => {
-                if view.paged {
-                    format!("{} rows (page)", view.page_len)
-                } else {
-                    format!("{rows} rows")
-                }
-            }
-            _ => format!("{rows} rows"),
-        };
-        view.status = format!("{count} · {ms} ms");
-        if let Some(note) = &view.note {
-            view.status = format!("{} · {note}", view.status);
-        }
+        view.status = format_status_line(
+            view.row_count_kind,
+            view.total_rows,
+            view.page_len,
+            view.truncated,
+            ms,
+            view.note.as_deref(),
+        );
     }
 
     pub(super) fn apply_outcome(
@@ -886,22 +958,84 @@ impl Workspace {
     }
 }
 
+/// Status-bar count sentence (extracted for unit tests / UX acceptance).
+pub(super) fn format_status_line(
+    kind: RowCountKind,
+    total_rows: Option<u64>,
+    page_len: usize,
+    truncated: bool,
+    ms: u128,
+    note: Option<&str>,
+) -> String {
+    let rows = total_rows.unwrap_or(page_len as u64);
+    let count = match kind {
+        RowCountKind::Estimated => format!("~{rows} rows"),
+        RowCountKind::AtLeast if truncated => format!("{rows}+ rows"),
+        RowCountKind::Unknown => {
+            format!("unknown rows · {page_len} on this page")
+        }
+        _ => format!("{rows} rows"),
+    };
+    let mut status = format!("{count} · {ms} ms");
+    if let Some(note) = note {
+        // Avoid duplicating the unknown-rows sentence when a note is set.
+        if !matches!(kind, RowCountKind::Unknown) {
+            status = format!("{status} · {note}");
+        }
+    }
+    status
+}
+
 pub(super) async fn run_source(
     session: Arc<dyn DatabaseSession>,
     source: GridSource,
     offset: u64,
     sql_cap: u32,
     cancel: CancellationToken,
+    filters: &[FilterCondition],
+    sorts: &[SortSpec],
 ) -> Result<Option<StatementOutcome>, DbError> {
     match source {
         GridSource::Idle => Ok(None),
-        GridSource::Table { schema, table } => {
-            preview_table(session.as_ref(), &schema, &table, PAGE_SIZE, offset, cancel)
-                .await
-                .map(Some)
-        }
+        GridSource::Table { schema, table } => preview_table(
+            session.as_ref(),
+            &schema,
+            &table,
+            PAGE_SIZE,
+            offset,
+            cancel,
+            TablePreview { filters, sorts },
+        )
+        .await
+        .map(Some),
         GridSource::Sql(sql) => run_user_sql(session.as_ref(), &sql, sql_cap, cancel)
             .await
             .map(Some),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_status_line;
+    use sela_core::RowCountKind;
+
+    #[test]
+    fn unknown_filtered_status_matches_ux() {
+        let s = format_status_line(RowCountKind::Unknown, None, 100, false, 18, None);
+        assert_eq!(s, "unknown rows · 100 on this page · 18 ms");
+    }
+
+    #[test]
+    fn unknown_does_not_append_note() {
+        let s = format_status_line(
+            RowCountKind::Unknown,
+            None,
+            50,
+            false,
+            3,
+            Some("Filtered results…"),
+        );
+        assert_eq!(s, "unknown rows · 50 on this page · 3 ms");
+        assert!(!s.contains("Filtered"));
     }
 }
