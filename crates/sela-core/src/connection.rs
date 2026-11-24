@@ -1,6 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
+use crate::connection_color::{
+    default_safety_level_for_color, ConnectionColor, DefaultSafetyLevel,
+};
 use crate::types::Engine;
 
 /// SSL/TLS mode for Postgres and MySQL. Ignored for SQLite.
@@ -163,7 +166,16 @@ pub struct SavedConnection {
     /// When false, editor runs on this connection are not written to history.
     #[serde(default = "default_true")]
     pub record_history: bool,
-    /// Write guard for the editor (and grid commit once that UI lands). Missing = Off.
+    /// Named swatch (`none` omitted on save). Missing field loads as None.
+    #[serde(default, skip_serializing_if = "ConnectionColor::is_none")]
+    pub color: ConnectionColor,
+    /// Optional short tag after the name in the sidebar. Max 16 after trim.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// Optional one-level sidebar group. Max 40; `/` rejected.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    /// Write guard for the editor and grid commit. Missing = Off.
     #[serde(default, skip_serializing_if = "SafeMode::is_default")]
     pub safe_mode: SafeMode,
 }
@@ -194,6 +206,13 @@ impl<'de> Deserialize<'de> for SavedConnection {
             /// Missing field means record (M1-5). No schema_version bump.
             #[serde(default = "default_true")]
             record_history: bool,
+            /// Missing field means none (M2-5). No schema_version bump.
+            #[serde(default)]
+            color: ConnectionColor,
+            #[serde(default)]
+            label: String,
+            #[serde(default)]
+            group: String,
             /// Missing field means Off (M2-4). No schema_version bump.
             #[serde(default)]
             safe_mode: SafeMode,
@@ -215,6 +234,9 @@ impl<'de> Deserialize<'de> for SavedConnection {
             file_path: raw.file_path,
             tls,
             record_history: raw.record_history,
+            color: raw.color,
+            label: raw.label,
+            group: raw.group,
             safe_mode: raw.safe_mode,
         })
     }
@@ -243,6 +265,9 @@ impl SavedConnection {
             file_path: String::new(),
             tls,
             record_history: true,
+            color: ConnectionColor::None,
+            label: String::new(),
+            group: String::new(),
             safe_mode: SafeMode::Off,
         }
     }
@@ -250,6 +275,17 @@ impl SavedConnection {
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("Give the connection a name.".into());
+        }
+        let label = self.label.trim();
+        if label.chars().count() > 16 {
+            return Err("Label must be 16 characters or fewer.".into());
+        }
+        let group = self.group.trim();
+        if group.chars().count() > 40 {
+            return Err("Group must be 40 characters or fewer.".into());
+        }
+        if group.contains('/') {
+            return Err("Groups are one level. Remove the slash.".into());
         }
         match self.engine {
             Engine::Sqlite => {
@@ -300,6 +336,26 @@ impl SavedConnection {
                 )
             }
         }
+    }
+}
+
+/// Safe mode driven by the color swatch on a **new** connection dialog.
+///
+/// When `user_touched_safe_mode` is false, Red → Confirm writes and any other
+/// color → Off. When the user has already picked Safe mode, returns `current`
+/// unchanged (color never overwrites an explicit pick). Editing an existing
+/// connection does not call this (see docs/design/ux/09-safe-mode.md).
+pub fn safe_mode_driven_by_color(
+    color: ConnectionColor,
+    user_touched_safe_mode: bool,
+    current: SafeMode,
+) -> SafeMode {
+    if user_touched_safe_mode {
+        return current;
+    }
+    match default_safety_level_for_color(color) {
+        DefaultSafetyLevel::ConfirmWrites => SafeMode::Confirm,
+        DefaultSafetyLevel::Off => SafeMode::Off,
     }
 }
 
@@ -498,5 +554,100 @@ mod tests {
         assert!(pg.validate().is_err());
         pg.tls.client_key_path = "/tmp/client.key".into();
         assert!(pg.validate().is_ok());
+    }
+
+    #[test]
+    fn missing_color_label_group_default_and_round_trip() {
+        let raw = r#"{
+            "id": "c1",
+            "name": "Local",
+            "engine": "postgres",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "username": "sela",
+            "database": "sample"
+        }"#;
+        let conn: SavedConnection = serde_json::from_str(raw).unwrap();
+        assert_eq!(conn.color, ConnectionColor::None);
+        assert!(conn.label.is_empty());
+        assert!(conn.group.is_empty());
+        let text = serde_json::to_string(&conn).unwrap();
+        assert!(!text.contains("\"color\""));
+        assert!(!text.contains("\"label\""));
+        assert!(!text.contains("\"group\""));
+
+        let mut tagged = conn;
+        tagged.color = ConnectionColor::Red;
+        tagged.label = "prod".into();
+        tagged.group = "Work".into();
+        let text = serde_json::to_string(&tagged).unwrap();
+        assert!(text.contains("\"color\":\"red\""));
+        assert!(text.contains("\"label\":\"prod\""));
+        assert!(text.contains("\"group\":\"Work\""));
+        let back: SavedConnection = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.color, ConnectionColor::Red);
+        assert_eq!(back.label, "prod");
+        assert_eq!(back.group, "Work");
+    }
+
+    #[test]
+    fn unknown_color_name_loads_as_none() {
+        let raw = r#"{
+            "id": "c1",
+            "name": "Local",
+            "engine": "sqlite",
+            "file_path": "/tmp/a.sqlite",
+            "color": "hotpink"
+        }"#;
+        let conn: SavedConnection = serde_json::from_str(raw).unwrap();
+        assert_eq!(conn.color, ConnectionColor::None);
+    }
+
+    #[test]
+    fn label_and_group_validation() {
+        let mut c = SavedConnection::new(Engine::Sqlite);
+        c.name = "Lib".into();
+        c.file_path = "/tmp/a.sqlite".into();
+        c.label = "abcdefghijklmnopq".into(); // 17
+        assert_eq!(
+            c.validate().unwrap_err(),
+            "Label must be 16 characters or fewer."
+        );
+        c.label = "prod".into();
+        c.group = "a".repeat(41);
+        assert_eq!(
+            c.validate().unwrap_err(),
+            "Group must be 40 characters or fewer."
+        );
+        c.group = "Work/Nested".into();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            "Groups are one level. Remove the slash."
+        );
+        c.group = "Work".into();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn new_connection_red_defaults_to_confirm_until_explicit_pick() {
+        // New dialog: Red → Confirm writes while Safe mode is untouched.
+        assert_eq!(
+            safe_mode_driven_by_color(ConnectionColor::Red, false, SafeMode::Off),
+            SafeMode::Confirm
+        );
+        // Leaving Red restores Off while still untouched.
+        assert_eq!(
+            safe_mode_driven_by_color(ConnectionColor::Blue, false, SafeMode::Confirm),
+            SafeMode::Off
+        );
+        // Explicit Safe mode pick is respected; color no longer drives the level.
+        assert_eq!(
+            safe_mode_driven_by_color(ConnectionColor::Red, true, SafeMode::ReadOnly),
+            SafeMode::ReadOnly
+        );
+        assert_eq!(
+            safe_mode_driven_by_color(ConnectionColor::None, true, SafeMode::Confirm),
+            SafeMode::Confirm
+        );
     }
 }

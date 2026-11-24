@@ -7,8 +7,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, IntoElement};
 
 use sela_config::SavedConnection;
+use sela_core::{sidebar_connection_layout, SidebarConnectionNode};
 
-use super::tree::{conn_key, render_tree_entry, schema_key, table_item, SEP};
+use super::tree::{
+    conn_key, group_key, is_group_key, render_tree_entry, schema_key, table_item,
+    ConnDisplayLookup, SEP,
+};
 use super::Workspace;
 
 impl Workspace {
@@ -20,25 +24,44 @@ impl Workspace {
         self.last_selection = None;
     }
 
-    fn tree_items(&self) -> Vec<TreeItem> {
+    fn conn_display_lookup(&self) -> ConnDisplayLookup {
         self.connections
             .iter()
-            .map(|connection| self.connection_item(connection))
+            .map(|c| (c.id.clone(), (c.color, c.label.clone())))
+            .collect()
+    }
+
+    fn tree_items(&self) -> Vec<TreeItem> {
+        sidebar_connection_layout(&self.connections)
+            .into_iter()
+            .flat_map(|node| match node {
+                SidebarConnectionNode::Connection(connection) => {
+                    vec![self.connection_item(connection)]
+                }
+                SidebarConnectionNode::Group { name, members } => {
+                    let key = group_key(name);
+                    let children = members
+                        .into_iter()
+                        .map(|connection| self.connection_item(connection));
+                    vec![TreeItem::new(key.clone(), name.to_string())
+                        .children(children)
+                        .expanded(self.expanded.contains(&key))]
+                }
+            })
             .collect()
     }
 
     fn connection_item(&self, connection: &SavedConnection) -> TreeItem {
         let key = conn_key(&connection.id);
+        let expanded = self.expanded.contains(&key);
         let active = self.active_id.as_deref() == Some(connection.id.as_str());
         let mark = if active && self.session.is_some() {
             "●"
         } else {
             "○"
         };
-        let mut item = TreeItem::new(
-            key.clone(),
-            format!("{mark}  {}  {}", connection.engine.short(), connection.name),
-        );
+        let label = format!("{mark}  {}  {}", connection.engine.short(), connection.name);
+        let mut item = TreeItem::new(key.clone(), label);
         if active {
             let children = self.catalog.iter().map(|schema| {
                 let schema_key = schema_key(&connection.id, &schema.name);
@@ -58,16 +81,17 @@ impl Workspace {
                 }
                 schema_item
             });
-            item = item
-                .children(children)
-                .expanded(self.expanded.contains(&key));
+            item = item.children(children).expanded(expanded);
         }
         item
     }
 
     pub(super) fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
-        let has_edit_target = self.selected_or_active_connection().is_some();
+        // Group rows clear selected_connection_id; keep Edit/Dup/Delete off even
+        // when an active session connection would otherwise be the fallback.
+        let has_edit_target = !self.last_selection.as_deref().is_some_and(is_group_key)
+            && self.selected_or_active_connection().is_some();
         v_flex()
             .w(px(292.))
             .h_full()
@@ -105,12 +129,18 @@ impl Workspace {
                         })
                 }),
             )
-            .child(
+            .child({
+                let lookup = self.conn_display_lookup();
                 div()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(Tree::new(&self.tree, render_tree_entry).size_full()),
-            )
+                    .child(
+                        Tree::new(&self.tree, move |ix, entry, selected, window, cx| {
+                            render_tree_entry(ix, entry, selected, window, cx, &lookup)
+                        })
+                        .size_full(),
+                    )
+            })
             .when(self.connections.is_empty(), |sidebar| {
                 sidebar.child(
                     div()
@@ -141,6 +171,19 @@ impl Workspace {
                                     if let Some(existing) = existing {
                                         workspace.open_form(Some(existing), window, cx);
                                     }
+                                });
+                            })
+                    })
+                    .child({
+                        let this = this.clone();
+                        Button::new("duplicate-connection")
+                            .xsmall()
+                            .ghost()
+                            .label("Duplicate")
+                            .disabled(!has_edit_target)
+                            .on_click(move |_, _, cx| {
+                                this.update(cx, |workspace, cx| {
+                                    workspace.duplicate_selected_connection(cx);
                                 });
                             })
                     })

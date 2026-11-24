@@ -6,7 +6,9 @@ use gpui_kit::component::{h_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{px, Context, IntoElement, Window};
 
-use sela_config::ThemePreference;
+use sela_config::{
+    clamp_font_size, AppSettings, ThemePreference, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE,
+};
 use sela_core::RowCountKind;
 
 use super::Workspace;
@@ -19,9 +21,50 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.theme_preference = preference;
-        let _ = self.settings.save(preference);
+        let _ = self.settings.save(AppSettings {
+            theme: preference,
+            font_size: self.font_size,
+        });
         super::super::theme::apply_preference(preference, Some(window), cx);
         cx.notify();
+    }
+
+    pub(super) fn set_font_size(
+        &mut self,
+        font_size: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let font_size = clamp_font_size(i64::from(font_size));
+        if self.font_size == font_size {
+            return;
+        }
+        self.font_size = font_size;
+        let _ = self.settings.save(AppSettings {
+            theme: self.theme_preference,
+            font_size,
+        });
+        super::super::theme::install_sela_themes(
+            self.theme_preference,
+            font_size,
+            Some(window),
+            cx,
+        );
+        cx.notify();
+    }
+
+    pub(super) fn bump_font_size(
+        &mut self,
+        delta: i8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = i64::from(self.font_size) + i64::from(delta);
+        self.set_font_size(clamp_font_size(next), window, cx);
+    }
+
+    pub(super) fn reset_font_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_font_size(DEFAULT_FONT_SIZE, window, cx);
     }
 
     pub(super) fn status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -60,6 +103,8 @@ impl Workspace {
         let theme_label = self.theme_preference.label();
         let current = self.theme_preference;
         let offer_system = self.system_theme_available;
+        let font_size = self.font_size;
+        let font_label = font_size.to_string();
 
         let history_open = self.history_open;
         h_flex()
@@ -120,6 +165,37 @@ impl Workspace {
                                 this.update(cx, |workspace, cx| {
                                     workspace.toggle_history_panel(window, cx)
                                 });
+                            })
+                    })
+                    .child({
+                        let this = this.clone();
+                        Button::new("font-size-menu")
+                            .xsmall()
+                            .ghost()
+                            .label(font_label)
+                            .tooltip("Font size (Ctrl/⌘+= / − / 0)")
+                            .dropdown_menu(move |menu, _, _| {
+                                let mut menu = menu;
+                                for size in MIN_FONT_SIZE..=MAX_FONT_SIZE {
+                                    let this = this.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(size.to_string())
+                                            .checked(current_font_checked(font_size, size))
+                                            .on_click(move |_, window, cx| {
+                                                this.update(cx, |workspace, cx| {
+                                                    workspace.set_font_size(size, window, cx);
+                                                });
+                                            }),
+                                    );
+                                }
+                                let this = this.clone();
+                                menu.item(PopupMenuItem::new("Reset").on_click(
+                                    move |_, window, cx| {
+                                        this.update(cx, |workspace, cx| {
+                                            workspace.reset_font_size(window, cx);
+                                        });
+                                    },
+                                ))
                             })
                     })
                     .child({
@@ -187,4 +263,8 @@ impl Workspace {
                     .child(label),
             )
     }
+}
+
+fn current_font_checked(current: u8, size: u8) -> bool {
+    current == size
 }

@@ -72,4 +72,12 @@ The default **prefer** mode still works with these containers (they do not serve
 
 ## Color, groups, duplicate, and import URL
 
-Not in this build. The design (a color swatch, an optional label, sidebar groups, Duplicate, and an Import URL field for `postgres://`, `mysql://`, and `sqlite:`) is in the [connection dialog spec](../design/ux/05-connection-dialog.md) and the [sidebar section](../design/ux/01-main-window.md#connection-color-and-groups).
+In the connection dialog:
+
+- **Color** — named swatches (None, Blue, Green, Amber, Red, Purple, Teal). Red marks production. A new connection set to Red starts in Confirm writes until you change Safe mode.
+- **Label** — optional short tag (max 16) shown after the name in the sidebar.
+- **Group** — optional one-level group name (max 40, no `/`). Ungrouped connections stay at the top; groups follow in first-appearance order.
+
+**Duplicate** (sidebar, between Edit and Delete) saves a copy immediately without connecting. The password is not copied; type it before connecting. Status: `Duplicated {name}. Type the password to connect.`
+
+**Import URL** fills the form from `postgres://`, `postgresql://`, `mysql://`, or `sqlite:` / `sqlite://` / `sqlite:///`. It does not save or connect. A password in the URL goes into the masked password field (and into the keychain only when you Save). Sela never logs the URL.

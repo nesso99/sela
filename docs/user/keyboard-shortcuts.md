@@ -6,7 +6,7 @@ Newer shortcuts use GPUI’s `secondary-` modifier (⌘ on macOS, Ctrl elsewhere
 
 The design target for shortcuts that are not built yet is [docs/design/ux/README.md](../design/ux/README.md). That folder writes the platform key as `secondary`. `secondary-shift-f` is reserved for format and is backlog. This page stays the list of what the app binds today.
 
-Font size (Cmd/Ctrl+Plus, Cmd/Ctrl+Minus, Cmd/Ctrl+0) is still specified and not bound yet. Grid edit / preview / commit chords below are bound for table Data.
+Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below are bound.
 
 | Action | Shortcut |
 | --- | --- |
@@ -44,6 +44,7 @@ Font size (Cmd/Ctrl+Plus, Cmd/Ctrl+Minus, Cmd/Ctrl+0) is still specified and not
 | Commit pending changes | Cmd/Ctrl+S (table Data; accepts open editor first) |
 | Discard pending changes | Cmd/Ctrl+Shift+Z (table Data, editor closed; confirms) |
 | Previous / next SQL result | Left / Right (result strip focused) |
+| Larger / smaller / reset font size | Cmd/Ctrl+= or Cmd/Ctrl+Shift+= (also +) / Cmd/Ctrl+- / Cmd/Ctrl+0 (global) |
 | Quit | Cmd/Ctrl+Q (File ▸ Quit / Quit Sela; confirms while a query is running or pending edits exist) |
 
 Run (Cmd/Ctrl+Enter) runs the statement at the caret, the selected text split into statements, or the whole buffer when using Run all. It only fires when the SQL editor has focus; filter fields still use Enter / Cmd/Ctrl+Enter to apply. Cancel stops the running query for that tab (server-side cancel on Postgres/MySQL; SQLite drops the stream). Closing a tab cancels its in-flight work. Global Cmd/Ctrl+F toggles the filter bar on table tabs; with the SQL editor focused, the same chord opens find-in-SQL; with the history panel focused, it focuses the history search field.
@@ -54,6 +55,6 @@ Query history details: [query-history.md](./query-history.md).
 
 With the grid focused, **Cmd/Ctrl+C** copies the current cell or range as TSV. Right-click the grid for CSV, JSON, or INSERT. See [Copying](./copying.md). With the history list focused, the same chord copies the selected history SQL.
 
-The SQL result strip (between the grid and the editor after a multi-statement run) is a tab stop. With the strip focused, **Left** / **Right** move Prev / Next. Theme (Light / Dark / System) is the status-bar menu — no shortcut. See [Themes](./themes.md).
+The SQL result strip (between the grid and the editor after a multi-statement run) is a tab stop. With the strip focused, **Left** / **Right** move Prev / Next. Theme (Light / Dark / System) and font size are status-bar menus; font size also has Cmd/Ctrl+= / − / 0. See [Themes](./themes.md).
 
 The chords above are the ones registered in `ui/mod.rs`. `secondary` in [docs/design/ux/README.md](../design/ux/README.md) means ⌘ on macOS and Ctrl on Linux and Windows. Quit is `secondary-q` (global, including the SQL editor and dialogs): [Quit and window lifecycle](../design/ux/01-main-window.md#quit-and-window-lifecycle).

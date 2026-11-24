@@ -59,6 +59,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
 
 sela-core = { path = "crates/sela-core" }
 sela-drivers = { path = "crates/sela-drivers" }

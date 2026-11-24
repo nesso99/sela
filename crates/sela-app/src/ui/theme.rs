@@ -5,7 +5,8 @@ use std::rc::Rc;
 use gpui_kit::component::{try_parse_color, Theme, ThemeConfig, ThemeMode};
 use gpui_kit::{App, Hsla, Window, WindowAppearance};
 
-use sela_config::ThemePreference;
+use sela_config::{mono_font_size, ThemePreference};
+use sela_core::ConnectionColor;
 
 /// Colors with no `ThemeColor` field in gpui-component 0.10.
 ///
@@ -26,6 +27,12 @@ pub struct SelaPalette {
     pub row_insert_bg: Hsla,
     /// Dirty-cell triangle (`cell.dirty.mark`).
     pub cell_dirty_mark: Hsla,
+    pub conn_blue: Hsla,
+    pub conn_green: Hsla,
+    pub conn_amber: Hsla,
+    pub conn_red: Hsla,
+    pub conn_purple: Hsla,
+    pub conn_teal: Hsla,
 }
 
 impl SelaPalette {
@@ -34,6 +41,19 @@ impl SelaPalette {
             Self::parse_dark()
         } else {
             Self::parse_light()
+        }
+    }
+
+    /// Paint color for a named connection swatch, or `None` for `none`.
+    pub fn connection_color(&self, name: ConnectionColor) -> Option<Hsla> {
+        match name {
+            ConnectionColor::None => None,
+            ConnectionColor::Blue => Some(self.conn_blue),
+            ConnectionColor::Green => Some(self.conn_green),
+            ConnectionColor::Amber => Some(self.conn_amber),
+            ConnectionColor::Red => Some(self.conn_red),
+            ConnectionColor::Purple => Some(self.conn_purple),
+            ConnectionColor::Teal => Some(self.conn_teal),
         }
     }
 
@@ -49,6 +69,12 @@ impl SelaPalette {
             cell_decode_bg: color("#FEF2F2"),
             row_insert_bg: color("#F0FDF4"),
             cell_dirty_mark: color("#854D0E"),
+            conn_blue: color("#2563EB"),
+            conn_green: color("#15803D"),
+            conn_amber: color("#A16207"),
+            conn_red: color("#B91C1C"),
+            conn_purple: color("#7E22CE"),
+            conn_teal: color("#0F766E"),
         }
     }
 
@@ -64,6 +90,12 @@ impl SelaPalette {
             cell_decode_bg: color("#3F1212"),
             row_insert_bg: color("#052E16"),
             cell_dirty_mark: color("#FACC15"),
+            conn_blue: color("#60A5FA"),
+            conn_green: color("#4ADE80"),
+            conn_amber: color("#EAB308"),
+            conn_red: color("#F87171"),
+            conn_purple: color("#C084FC"),
+            conn_teal: color("#2DD4BF"),
         }
     }
 }
@@ -73,10 +105,15 @@ fn color(hex: &str) -> Hsla {
 }
 
 /// Build the two ThemeConfigs (kit defaults + Sela overrides) and apply the
-/// active preference.
-pub fn install_sela_themes(preference: ThemePreference, window: Option<&mut Window>, cx: &mut App) {
-    let light = Rc::new(sela_theme_config(ThemeMode::Light));
-    let dark = Rc::new(sela_theme_config(ThemeMode::Dark));
+/// active preference. `font_size` is written onto both light and dark configs.
+pub fn install_sela_themes(
+    preference: ThemePreference,
+    font_size: u8,
+    window: Option<&mut Window>,
+    cx: &mut App,
+) {
+    let light = Rc::new(sela_theme_config(ThemeMode::Light, font_size));
+    let dark = Rc::new(sela_theme_config(ThemeMode::Dark, font_size));
     Theme::update(cx, |theme| {
         theme.light_theme = light;
         theme.dark_theme = dark;
@@ -110,16 +147,18 @@ pub fn system_is_dark(window: &Window) -> bool {
     }
 }
 
-fn sela_theme_config(mode: ThemeMode) -> ThemeConfig {
+fn sela_theme_config(mode: ThemeMode, font_size: u8) -> ThemeConfig {
     let (name, overrides) = match mode {
         ThemeMode::Light => ("Sela Light", light_overrides()),
         ThemeMode::Dark => ("Sela Dark", dark_overrides()),
     };
+    let ui = f32::from(font_size);
+    let mono = f32::from(mono_font_size(font_size));
     let value = serde_json::json!({
         "name": name,
         "mode": if mode.is_dark() { "dark" } else { "light" },
-        "font.size": 13,
-        "mono_font.size": 12,
+        "font.size": ui,
+        "mono_font.size": mono,
         "radius": 4,
         "radius.lg": 6,
         "window.radius": 0,
@@ -197,22 +236,26 @@ fn highlight_block(mode: ThemeMode) -> serde_json::Value {
 mod tests {
     use super::*;
     use gpui_kit::component::ThemeColor;
-    use sela_config::resolve_theme_mode;
+    use sela_config::{resolve_theme_mode, DEFAULT_FONT_SIZE};
 
     #[test]
     fn theme_configs_deserialize() {
-        let light = sela_theme_config(ThemeMode::Light);
+        let light = sela_theme_config(ThemeMode::Light, DEFAULT_FONT_SIZE);
         assert!(!light.mode.is_dark());
         assert_eq!(light.font_size, Some(13.));
         assert_eq!(light.mono_font_size, Some(12.));
         assert_eq!(light.radius, Some(4));
         assert!(light.highlight.is_some());
 
-        let dark = sela_theme_config(ThemeMode::Dark);
+        let dark = sela_theme_config(ThemeMode::Dark, DEFAULT_FONT_SIZE);
         assert!(dark.mode.is_dark());
         assert!(dark.colors.sidebar.is_some());
         assert!(dark.colors.table_even.is_some());
         assert!(dark.colors.table_active.is_some());
+
+        let large = sela_theme_config(ThemeMode::Light, 18);
+        assert_eq!(large.font_size, Some(18.));
+        assert_eq!(large.mono_font_size, Some(17.));
     }
 
     #[test]
@@ -230,7 +273,7 @@ mod tests {
         // and the selected pane button paint white text on a white fill.
         for mode in [ThemeMode::Light, ThemeMode::Dark] {
             let mut theme = Theme::from(ThemeColor::light().as_ref());
-            let config = Rc::new(sela_theme_config(mode));
+            let config = Rc::new(sela_theme_config(mode, DEFAULT_FONT_SIZE));
             theme.apply_config(&config);
             let label = if mode.is_dark() {
                 color("#171717")
