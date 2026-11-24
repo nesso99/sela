@@ -525,4 +525,12 @@ mod tests {
             "select * from books"
         );
     }
+
+    #[test]
+    fn sql_preview_keeps_full_failed_statement_text() {
+        // Regression #47: history must store and preview the whole statement
+        // (e.g. "SELEC 1"), not a truncated first token.
+        assert_eq!(history_sql_preview("SELEC 1"), "SELEC 1");
+        assert_eq!(history_sql_preview("  SELEC   1  "), "SELEC 1");
+    }
 }

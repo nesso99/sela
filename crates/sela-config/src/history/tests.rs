@@ -23,6 +23,25 @@ fn sample(id: &str, conn: &str, sql: &str, at: DateTime<Utc>) -> HistoryEntry {
 }
 
 #[test]
+fn stores_full_statement_text_including_failed_typos() {
+    // Regression #47: a failed "SELEC 1" must round-trip as the full statement.
+    let dir = tempfile::tempdir().unwrap();
+    let store = HistoryStore::open(dir.path().join("history.sqlite"))
+        .unwrap()
+        .store;
+    let t0 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let mut entry = sample("err", "c1", "SELEC 1", t0);
+    entry.outcome = HistoryOutcome::Error;
+    entry.rows_label.clear();
+    entry.error_message = "near \"SELEC\": syntax error".into();
+    store.insert(&entry).unwrap();
+    let rows = store.query(&HistoryFilter::default(), 10).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].sql, "SELEC 1");
+    assert_eq!(rows[0].outcome, HistoryOutcome::Error);
+}
+
+#[test]
 fn insert_query_and_mode_0600() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.sqlite");
