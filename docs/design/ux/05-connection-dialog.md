@@ -344,9 +344,10 @@ Focus order is the field order above, then Cancel, Test, Save, Save & connect. T
 3. No client-key passphrase in this dialog. It is backlog. The key file is an unencrypted PEM.
 4. The JSON names are `ca_path`, `client_cert_path`, and `client_key_path`.
 5. No separate certificate hostname field. Verify full checks the Host field. A hostname override is backlog.
-6. Color is a named swatch, not a hex the user picks. Red is the production mark.
+6. Color is a named swatch, not a hex the user picks. Red is the production tag. On a new connection it defaults Safe mode to Confirm writes until the user touches that select ([09-safe-mode.md](./09-safe-mode.md)).
 7. Import fills the form and clears the URL field. It does not connect.
+8. Duplicate does not copy the password. The new connection has no keychain item until the user saves one. See [01-main-window.md](./01-main-window.md#connection-color-and-groups).
 
 ## Open questions
 
-1. Duplicate copies the keychain password onto the new id when the source secret was readable. The alternative is to leave the copy without a password and make the user type it. This spec copies it. The sidebar behavior is in [01-main-window.md](./01-main-window.md#connection-color-and-groups).
+None.

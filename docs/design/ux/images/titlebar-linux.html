@@ -18,19 +18,19 @@ body {
   background: #161616; border: 1px solid #d0d0d0;
 }
 .tbar {
-  height: 32px; flex: none; display: grid; grid-template-columns: 1fr auto 1fr;
-  align-items: center; background: #1c1c1c; border-bottom: 1px solid #3a3a3a;
-  position: relative;
+  height: 34px; flex: none; display: flex; align-items: stretch;
+  background: #1c1c1c; border-bottom: 1px solid #3a3a3a;
+  padding-left: 12px;
 }
-.file { justify-self: start; padding-left: 10px; font-size: 12px; }
+.lead { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.file { font-size: 12px; }
 .file u { text-decoration: none; border-bottom: 1px solid #888; }
 .title { font-size: 12px; color: #d0d0d0; }
-.ctrls { justify-self: end; display: flex; height: 32px; }
+.ctrls { display: flex; height: 34px; flex: none; }
 .ctrls span {
-  width: 32px; display: flex; align-items: center; justify-content: center;
+  width: 34px; display: flex; align-items: center; justify-content: center;
   font-size: 13px; color: #e8e8e8; border-left: 1px solid #2a2a2a;
 }
-.ctrls span.close { font-size: 14px; }
 .body { flex: 1; min-height: 0; display: flex; }
 .side { width: 200px; flex: none; background: #1e1e1e; border-right: 1px solid #3a3a3a; padding: 10px; font-size: 12px; }
 .side .dim { color: #8d8d8d; font-size: 10px; margin-top: 4px; }
@@ -47,31 +47,21 @@ body {
 .callouts { flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 16px; font-size: 12px; color: #cfcfcf; }
 .callouts div { border-left: 2px solid #8a8a8a; padding-left: 8px; line-height: 1.35; }
 .callouts b { color: #f2f2f2; }
-.menu {
-  position: absolute; right: 8px; top: 36px; width: 160px; background: #1c1c1c; border: 1px solid #8a8a8a;
-  font-size: 12px; z-index: 2;
-}
-.menu div { height: 26px; display: flex; align-items: center; padding: 0 10px; }
-.menu .sep { height: 9px; border-top: 1px solid #3a3a3a; margin-top: 4px; }
 </style></head>
 <body>
-  <div class="kicker"><span>Linux · client decorations · GNOME Wayland</span><b>32px row, not the content toolbar</b></div>
+  <div class="kicker"><span>Linux · client decorations · as built in #66</span><b>TitleBar 34px · File and title on the left</b></div>
   <div class="win">
     <div class="tbar">
-      <div class="file"><u>File</u></div>
-      <div class="title">Sela</div>
-      <div class="ctrls"><span>−</span><span>□</span><span class="close">×</span></div>
-      <div class="menu">
-        <div>Minimize</div>
-        <div>Maximize</div>
-        <div class="sep"></div>
-        <div>Close</div>
+      <div class="lead">
+        <div class="file"><u>File</u></div>
+        <div class="title">Sela</div>
       </div>
+      <div class="ctrls"><span>−</span><span>□</span><span>×</span></div>
     </div>
     <div class="body">
       <div class="side">
         <div>Sela</div>
-        <div class="dim">sidebar is not the drag region</div>
+        <div class="dim">no separate 32px menu row</div>
       </div>
       <div class="main">
         <div class="toolbar">
@@ -85,11 +75,11 @@ body {
           <span class="btn">Data</span>
         </div>
         <div class="callouts">
-          <div><b>Drag</b> the empty title row, including the word Sela. File and the three controls do not drag.</div>
-          <div><b>Double-click</b> the drag region to maximize or restore.</div>
-          <div><b>Order</b> is minimize, maximize, close. Close is rightmost and calls the quit handler.</div>
-          <div><b>Right-click</b> the drag region for this menu. Close there also quits through the same handler.</div>
-          <div><b>No second close</b> on the 44px toolbar. The white edge is the connection-color strip.</div>
+          <div><b>34px TitleBar.</b> File and the word Sela sit on the left. Controls sit on the right: minimize, maximize, close.</div>
+          <div><b>Drag</b> the empty bar and the title. File and the three controls do not start a drag.</div>
+          <div><b>Double-click</b> the bar to maximize or restore. Close calls the quit handler.</div>
+          <div><b>No Sela right-click menu.</b> The kit still opens the platform window menu; that overlay is the remaining difference.</div>
+          <div><b>No close button</b> on the 44px toolbar. The white edge is the connection-color strip.</div>
         </div>
       </div>
     </div>

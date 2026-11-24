@@ -8,11 +8,12 @@ This spec matches the window in `crates/sela-app/src/ui/workspace/` and the shor
 
 ## Regions
 
-Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). Where the platform draws a server-side title bar, it says “Sela” and the workspace does not draw one. On client-side decorations the workspace draws the bar in [Client-side title bar](#client-side-title-bar).
+Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). Where the platform draws a server-side title bar, it says “Sela” and the workspace does not draw one. On client-side decorations the workspace draws gpui-component’s `TitleBar`. See [Client-side title bar](#client-side-title-bar).
 
 | Region | Size | Where it is set today | Resize |
 | --- | --- | --- | --- |
-| Menu / title row | 32px, Linux and Windows | `workspace/mod.rs` `menu_bar_row`, `h(px(32.))` | Fixed. Window controls only when decorations are client-side. See [Client-side title bar](#client-side-title-bar). |
+| SSD menu row | 32px, Linux and Windows, server decorations only | `workspace/mod.rs` `menu_bar_row`, `h(px(32.))` | Fixed. File menu only. Not drawn when the client title bar is shown. |
+| Client title bar | 34px | gpui-component `TitleBar` (`TITLE_BAR_HEIGHT`) | Fixed. Only when `Decorations::Client`. It replaces the 32px menu row. See [Client-side title bar](#client-side-title-bar). |
 | Sidebar | 292px default | `sidebar.rs`, `w(px(292.))`, `flex_shrink_0` | Drag the right edge. Min 200, max 480. Double-click returns to 292. |
 | Tab bar | 28px | `tabs.rs` `TabBar`, no explicit height | Fixed. |
 | Toolbar | 44px | `content.rs` `toolbar`, `h(px(44.))` | Fixed. Do not grow it. A later density pass may take it to 32px. Not part of M1-3. |
@@ -195,13 +196,13 @@ Filter and editor chords are in the other specs. They must be context-scoped so 
 
 ## Quit and window lifecycle
 
-The window always has a close control. Ask for server-side decorations (`WindowDecorations::Server` in `ui/mod.rs`). When `window.window_decorations()` is server-side, the platform draws the close control and the workspace does not. When it is client-side, the workspace draws the [client-side title bar](#client-side-title-bar). That bar's close control is the one close control. Do not also put a close button on the 44px content toolbar or on the empty-state strip. The close control shipped on that toolbar in #31 is replaced by the title bar, not kept beside it.
+The window always has a close control. Ask for server-side decorations (`WindowDecorations::Server` in `ui/mod.rs`). When `window.window_decorations()` is server-side, the platform draws the close control and the workspace does not. When it is client-side, the workspace draws the [client-side title bar](#client-side-title-bar). That bar's close control is the one close control. Do not put a close button on the 44px content toolbar or on the empty-state strip. #66 removes the toolbar × and `client_close_bar`.
 
-The close control is not a Quit button. Do not put the word Quit on the title bar or the toolbar. It calls `Workspace::request_quit`, the same handler as `secondary-q`.
+The close control is not a Quit button. Do not put the word Quit on the title bar or the toolbar. On Linux it calls `Workspace::request_quit`, the same handler as `secondary-q`.
 
 `secondary-q` quits. That is Command+Q on macOS and Control+Q on Linux and Windows. The binding is global: it works from the SQL editor and from dialogs. On Windows, Alt+F4 is the OS close and uses the same quit path. Register it once, with `bind_secondary`, not as a second `cmd-q` / `ctrl-q` pair.
 
-On macOS the app menu item is `Quit Sela`, last, after a separator. On Linux and Windows the File menu item is `Quit`, last, after a separator, with a Ctrl+Q hint. GPUI does not draw a native OS menu bar on Linux. The in-window File menu in the 32px row is the one those sessions show (`menu_bar_row` in `workspace/mod.rs`). On client-side decorations that same row is the title bar below.
+On macOS the app menu item is `Quit Sela`, last, after a separator. On Linux and Windows the File menu item is `Quit`, last, after a separator, with a Ctrl+Q hint. GPUI does not draw a native OS menu bar on Linux. Under server-side decorations the in-window File menu is the 32px `menu_bar_row`. Under client-side decorations that row is not drawn; the File menu is a child of `TitleBar`.
 
 Closing the last window quits on Linux and Windows. On macOS the app stays running after the last window closes, and Command+Q quits. That is gpui-pre 0.3.12 `QuitMode::Default` (`Explicit` on macOS, `LastWindowClosed` elsewhere). `ui/mod.rs` does not call `set_quit_mode`. Keep that default. The shortcut, the menu item, Alt+F4, and the close control go through one quit handler. Closing the window on macOS is not that handler.
 
@@ -223,36 +224,35 @@ M2-5, with the dialog fields in [05-connection-dialog.md](./05-connection-dialog
 
 Groups are one level. The sidebar keeps file order. Connections with an empty group stay a flat list at the top, in the order they have today. Each non-empty group is a parent row after that, in the order its first member appears in the file. Members stay in file order under the parent. A group row shows the group name and a disclosure triangle. It is not a connection: clicking it expands or collapses, and it does not connect. Empty groups are not shown. There is no nested group.
 
-Duplicate is a ghost `xsmall` button between Edit and Delete, enabled when Edit is enabled. No shortcut (`secondary-d` is duplicate-row on the grid). It saves a new connection immediately and does not connect and does not open the dialog. The name is `{name} copy`, then `{name} copy 2`, and so on. The new id is new. Engine, host, port, user, database, file, TLS, `record_history`, color, label, group, and safe mode are copied. When the source password was read from the keychain, write that secret under the new id. When it was not, the copy has no password. Status: `Duplicated {name}.`
+Duplicate is a ghost `xsmall` button between Edit and Delete, enabled when Edit is enabled. No shortcut (`secondary-d` is duplicate-row on the grid). It saves a new connection immediately and does not connect and does not open the dialog. The name is `{name} copy`, then `{name} copy 2`, and so on. The new id is new. Engine, host, port, user, database, file, TLS, `record_history`, color, label, group, and safe mode are copied. The password is not copied, and no keychain item is written for the new id. Status: `Duplicated {name}. Type the password to connect.`
 
 ## Client-side title bar
 
-Linux only, and only when `window.window_decorations()` is client-side. That is the GNOME Wayland case in #58: the window asks for server decorations, GNOME does not draw them, and GPUI reports client decorations. Windows, macOS, X11, and any compositor that actually draws server decorations stay as they are. Do not render these controls there. The 32px row on Windows with server decorations stays a menu bar: File on the left, no drag-to-move, no window buttons.
+This is what #66 builds. Show it only when `window.window_decorations()` is `Decorations::Client`, which is `should_show_client_title_bar` in `ui/decorations.rs`. The window still asks for `WindowDecorations::Server`. Windows, macOS, X11, and any compositor that draws server decorations stay on the native frame. On those Linux and Windows sessions the 32px `menu_bar_row` stays a File menu and is not a title bar.
 
-![Linux client title bar: File, the title, minimize, maximize, close](images/titlebar-linux.png)
+On client decorations, do not draw that 32px row. `client_title_bar` renders gpui-component `TitleBar` instead, full window width, above the sidebar and the content column. Height is the kit constant, 34px (`TITLE_BAR_HEIGHT`). It is not merged into the 44px content toolbar, and it is not a second strip under the menu row. The content toolbar is table actions and is absent when there are no tabs. The title bar is still there in that empty state, which is why the empty column has no close strip.
 
-The row is the existing `menu_bar_row`, 32px, full window width, above the sidebar and the content column. Do not merge it into the 44px content toolbar, and do not add a second strip. The content toolbar is table actions and is absent when there are no tabs. The title bar has to exist in that empty state too, which is why the empty column no longer grows its own close strip.
+![Linux client title bar: File and Sela on the left, minimize, maximize, close on the right](images/titlebar-linux.png)
 
-| Piece | Placement |
+| Piece | As built |
 | --- | --- |
-| File menu | Left, as today. |
-| Title | `Sela`, centered in the row. `text.secondary`. |
-| Window controls | Right. Order is minimize, then maximize, then close. Close is the rightmost control. This is the GNOME default (`:minimize,maximize,close`). |
-| Each control | 32×32 hit target, ghost, icon only. Tooltips `Minimize`, `Maximize`, `Restore`, `Close`. |
+| File menu | A child of `TitleBar`, on the leading side, Linux and Windows only (`AppMenuBar`). macOS keeps the native app menu and passes no menu child. |
+| Title | The text `Sela`, the next child, in the same leading group. Not centered. |
+| Window controls | Kit `WindowControls`, on the trailing side. Order is minimize, then maximize or restore, then close. Close is the outermost control. Each hit target is 34×34. |
+| Drag | The bar is `WindowControlArea::Drag`. A left-button move calls `start_window_move` unless the press called `prevent_default`. The File menu and the window controls do that, so clicking them does not drag. The title text does drag. |
+| Double-click | On Linux, double-click on the bar calls `zoom_window` (maximize or restore). |
 
-Maximize shows `Restore` while the window is maximized. The icons are a minus, a square, and `×`. None of them is labeled Quit.
+Minimize calls `minimize_window`. Maximize and restore call `zoom_window`. None of the controls is labeled Quit.
 
-**Drag.** Empty space in the row, including the title text, moves the window (`start_window_move`) after a few pixels of left-button drag. A left click that does not drag only focuses the window. These are not draggable: the File menu, an open menu, and the three window controls. A right-click does not start a move.
+**Close.** `TitleBar::on_close_window` is set to `Workspace::request_quit`. In gpui-component 0.10 that callback is stored only on Linux. A running query still confirms, as in the quit section. Minimize and maximize do not quit.
 
-**Double-click.** Double-click on the drag region toggles maximize and restore (`titlebar_double_click` or the kit equivalent). Double-click on the File menu or on a window control does not.
+**Which buttons appear.** The order does not follow GNOME `button-layout`. Close is always drawn. Minimize and maximize are drawn only when `window.window_controls()` says the compositor supports them, so a tiling session can omit one. When all three are shown, the order is the GNOME default: minimize, maximize, close, with close outermost.
 
-**Right-click.** On the drag region, a menu: `Minimize`, `Maximize` or `Restore`, a separator, `Close`. `Close` calls `request_quit`. The File menu and the window buttons do not open this menu. Ship the menu with the title bar. If a right-click cannot be separated from the drag gesture, omit the menu and do not make the buttons start a drag. That omission is the only fallback.
+**Edges.** Resize and the client-side shadow or border are not Sela code. gpui-component's `WindowBorder` already wraps the root: under `Decorations::Client` it calls `set_client_inset` and `start_window_resize`. Under server decorations that wrap is a no-op. Do not add a second border.
 
-**Close.** The close control and the menu's `Close` call `Workspace::request_quit`. They do not call `remove_window` directly. Minimize and maximize do not quit. A running query still confirms, as in the quit section.
+**Right-click.** There is no Sela menu on this bar. Do not add Minimize / Maximize / Close as a context menu.
 
-**Edges.** Client decorations keep edge resize. Draw a 1px `border.divider` around the window content so the edge is visible. Do not add a drop shadow on top of whatever the compositor already draws.
-
-gpui-component `TitleBar` is the right starting point when it can host the File menu, the drag region, and a close control that calls `request_quit`. If its close button only removes the window, do not use that button. Composing the existing 32px row is the fallback, and it is the layout either way.
+Remaining difference from #66: the kit `TitleBar` still covers the drag region with a right-click handler that calls `window.show_window_menu`. That is the platform window menu, not a menu this spec adds. Product decision is no title-bar right-click menu. Taking that overlay out is a follow-up on top of #66. Until then, a right-click on the drag region can still open the platform menu.
 
 ## Status text
 
@@ -287,8 +287,8 @@ gpui-component `TitleBar` is the right starting point when it can host the File 
 - Banner: keep `error_banner`. Add `max_h` around 60px and vertical scroll. Append SQLSTATE from `DbError` instead of only `Display`, which is the message alone (`error.rs`).
 - Load more footer: a sibling under the `DataTable` inside `results_area`, visible only when `GridSource::Sql` and `truncated`. It is not a row in `ResultWindow`.
 - Do not turn on `TableState::sortable(true)`. Header sort is specified in the filter spec and is server-side.
-- Quit goes through one handler (`Workspace::request_quit`), as in [Quit and window lifecycle](#quit-and-window-lifecycle). Cancel queries synchronously, then `cx.quit()`; pool close and history flush run from `on_app_quit` within `SHUTDOWN_TIMEOUT` (200 ms). The client title bar's close control uses that handler. Remove `client_close_bar` and the toolbar `window-close` button once the title bar is the close control.
-- Decide client decorations from `window.window_decorations()`, not from the `WindowDecorations::Server` request. The request stays.
+- Quit goes through one handler (`Workspace::request_quit`), as in [Quit and window lifecycle](#quit-and-window-lifecycle). Cancel queries synchronously, then `cx.quit()`; pool close and history flush run from `on_app_quit` within `SHUTDOWN_TIMEOUT` (200 ms). #66 wires `TitleBar::on_close_window` to that handler and removes `client_close_bar` and the toolbar `window-close` button.
+- Show the client title bar from `should_show_client_title_bar(window.window_decorations())`, not from the `WindowDecorations::Server` request. The request stays.
 
 ## Decisions
 
@@ -296,11 +296,9 @@ gpui-component `TitleBar` is the right starting point when it can host the File 
 2. **Keep both error surfaces.** The banner always shows the full message. The gutter marker and underline are drawn only when the engine reports a position.
 3. **M1-9 is done** (#13, `pg_decode.rs`). Text fallbacks are normal cells, as in the decode-error section. Do not edit `roadmap.md` for that status here. Engineering updates the roadmap, PRD, and SPECS status rows in the M1-3 pull request.
 4. **Quit cleanup uses GPUI’s `SHUTDOWN_TIMEOUT` (200 ms)** via `on_app_quit`, not a separate ~2 s wait before `cx.quit()`.
-5. **Client decorations use the 32px menu row as the title bar.** Window controls are not merged into the 44px toolbar. Close goes through `request_quit`.
+5. **Client decorations use gpui-component `TitleBar` (34px), as in #66.** The 32px menu row is the server-decoration File menu only. Close goes through `request_quit`. Button order is the kit's: minimize, maximize, close, close outermost. Do not read GNOME `button-layout`.
+6. **No Sela right-click menu on the title bar.** The kit still calls `show_window_menu` on right-click. That overlay is the remaining difference, noted in [Client-side title bar](#client-side-title-bar).
 
 ## Open questions
 
-None open for quit. See [Quit and window lifecycle](#quit-and-window-lifecycle) for the shipped confirm.
-
-1. The title-bar control order is fixed: minimize, maximize, close, on the right. The alternative is to read GNOME `org.gnome.desktop.wm.preferences button-layout` and follow that, including a left-side layout. This spec does not read the setting.
-2. The right-click menu ships in the same work as the title bar, and is omitted only when the gesture cannot be split from dragging. Confirm that omission is acceptable rather than blocking the bar.
+None. The quit confirm is the shipped one in [Quit and window lifecycle](#quit-and-window-lifecycle).

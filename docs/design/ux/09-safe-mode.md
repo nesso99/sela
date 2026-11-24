@@ -105,11 +105,10 @@ The dialogs take `Enter` and `Escape` as Cancel. There is no shortcut that confi
 
 1. The three levels are Off, Confirm writes, and Read-only. Off still warns on `UPDATE` / `DELETE` without `WHERE`.
 2. The level is stored per connection and shown on the toolbar engine line. The status bar does not repeat it.
-3. Red sets the default to Confirm writes only until the user touches the Safe mode select.
+3. Red is the production tag. It is the only one. On a new connection it sets Confirm writes until the user touches the Safe mode select, and then it stops driving the level.
 4. Unparseable SQL fails closed.
-5. A tautological `WHERE` is out of scope. Presence of the clause is the check.
+5. Warn only when a `WHERE` clause is missing. `WHERE 1=1` does not warn.
 
 ## Open questions
 
-1. Confirm that the Red swatch is the only production tag, and that it stops driving Safe mode once the user has touched the select.
-2. Confirm that `WHERE 1=1` does not warn. The alternative is a later predicate check, which this milestone does not include.
+None.

@@ -70,6 +70,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 - Optional OR combine / raw-WHERE mode for filters
 - Remaining Postgres `<TYPE>` placeholders (tsquery, polygon, composites, …)
 - TLS client-key passphrase. rustls needs an unencrypted PEM today. A passphrase, if added later, goes to the OS keychain and never into `connections.json`.
+- M2 follow-up: edit a table that has no primary key but has a unique NOT NULL key. v0.2 is primary-key only (`ChangeError::NoPrimaryKey`, #65). UX: [ux/07-grid-editing.md](./ux/07-grid-editing.md).
 
 ---
 

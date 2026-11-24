@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- UX specs for v0.2 safe editing: grid editing, preview and commit, safe mode ([docs/design/ux/07-grid-editing.md](docs/design/ux/07-grid-editing.md), [08](docs/design/ux/08-preview-commit.md), [09](docs/design/ux/09-safe-mode.md)), connection color, groups, duplicate, and import URL, font size (#39), and the Linux client-side title bar (#58). Indexed in [docs/design/ux/README.md](docs/design/ux/README.md).
+- UX specs for v0.2 safe editing: grid editing, preview and commit, safe mode ([docs/design/ux/07-grid-editing.md](docs/design/ux/07-grid-editing.md), [08](docs/design/ux/08-preview-commit.md), [09](docs/design/ux/09-safe-mode.md)), connection color, groups, duplicate, and import URL, font size (#39), and the Linux client-side title bar. Editing is primary-key only (a unique NOT NULL key is an M2 follow-up on the roadmap). The title bar matches gpui-component `TitleBar` as built in #66 (34px, File menu inside the bar, close through `request_quit`). Indexed in [docs/design/ux/README.md](docs/design/ux/README.md).
 
 ### Fixed
 

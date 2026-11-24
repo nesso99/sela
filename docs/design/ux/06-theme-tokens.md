@@ -288,7 +288,8 @@ These stay fixed at every step. Text inside them may grow until the largest step
 | status.height | 28 | `text_xs` at the top step is 16. |
 | tab.height | 28 | The strip does not grow. |
 | editor.header, history header | 28 | The header chrome. |
-| Menu / title row | 32 | [01-main-window.md](./01-main-window.md#client-side-title-bar). |
+| SSD menu row | 32 | Linux and Windows when the OS draws the frame. [01-main-window.md](./01-main-window.md#client-side-title-bar). |
+| Client title bar | 34 | gpui-component `TitleBar`. Does not scale. |
 | editor.band | 176 | The splitter default, not a font metric. Fewer lines fit when the line height grows. |
 | sidebar.width, dialog.width, window size | unchanged | Layout, not type. |
 | space.1–space.6, radius, border, focus | unchanged | The 4px scale. |
@@ -348,8 +349,8 @@ The theme menu has no shortcut. `secondary-,` stays reserved for a future settin
 1. The status menu offers Light, Dark, and System when `Window::appearance()` is available. System follows the OS through `Theme::sync_system_appearance`. If that API is missing on a platform, the menu is Light and Dark only. Dark is the default.
 2. Light-theme SQL comments stay `#525252`.
 3. Dark chrome (`#171717` on a `#0A0A0A` canvas) with a 13px UI font is the density. Do not keep the kit at 16px and only shrink the grid and the editor. `theme.rs` already ships these values.
-4. Font size is one UI step, 11–18, default 13. Mono is `max(11, ui - 1)`. Chrome heights in this file stay fixed. The step is written to both theme configs.
+4. Font size is one UI step, 11–18, default 13. Mono is `max(11, ui - 1)`. Chrome heights in this file stay fixed. The step is written to both theme configs. Separate UI and editor sizes are not in this setting.
 
 ## Open questions
 
-1. Issue #39 asks whether the UI and the grid/editor should zoom separately. This spec uses one step so the 13:12 relationship holds. Split controls are the alternative.
+None.

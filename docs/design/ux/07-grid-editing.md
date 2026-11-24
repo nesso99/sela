@@ -10,15 +10,15 @@ Editing is an overlay on the table Data grid. It does not write to the database 
 
 | Surface | Editing |
 | --- | --- |
-| Table Data, one primary key | Yes. |
-| Table Data, no primary key, exactly one unique NOT NULL constraint | Yes. That constraint is the row key. |
-| Table Data, no primary key and no such constraint | Read-only. See [Read-only](#read-only). |
-| Table Data, no primary key and two or more unique NOT NULL constraints | Read-only. Sela does not guess which constraint is the key. |
+| Table Data, with a primary key | Yes. A composite primary key is one key. Every key column is part of the later `WHERE`. |
+| Table Data, no primary key | Read-only. See [Read-only](#read-only). A unique NOT NULL constraint is not a key in v0.2. |
 | View | Read-only. |
 | Structure pane | No overlay. |
 | SQL result tab | Read-only. `Enter` does not open an editor. |
 
-The key is composite when the primary key (or the single unique constraint) has several columns. Every key column is part of the later `WHERE`. Generated and identity columns are not editable: `serial`, `IDENTITY`, `GENERATED`, `AUTO_INCREMENT`, and a SQLite `INTEGER PRIMARY KEY` rowid alias. They stay on screen. The tooltip is `Filled on commit.`
+v0.2 matches the core in #65: `ChangeSet` rejects a table with no primary key (`ChangeError::NoPrimaryKey`). Using a unique NOT NULL constraint as the row key is an M2 follow-up on the [roadmap backlog](../roadmap.md).
+
+Generated and identity columns are not editable: `serial`, `IDENTITY`, `GENERATED`, `AUTO_INCREMENT`, and a SQLite `INTEGER PRIMARY KEY` rowid alias. They stay on screen. The tooltip is `Filled on commit.`
 
 A decode-error cell and a `ColumnKind::Bytes` cell are not editable even on an editable table. `Enter` leaves them alone. Status: `This cell is read-only.` Blob status adds `Use SQL to change it.` `ColumnKind::Other` (arrays and other text fallbacks) is read-only the same way. `Space` still opens inspect, as in [01-main-window.md](./01-main-window.md).
 
@@ -80,7 +80,7 @@ These keys are for the open editor. They do not commit to the database. The chan
 | `secondary-z` | Undo typing inside the field. | Same. |
 | `secondary-shift-z` | Left to the field. On macOS that is redo. It does not discard. | Same. |
 
-`Escape` does not discard the pending set. Discard is `secondary-shift-z` when the editor is closed. US-05 names Esc as discard; the split is recorded under [Open questions](#open-questions). The default in this spec is the split above, so Esc can keep closing inspect, menus, and the quit dialog.
+`Escape` does not discard the pending set. Discard is `secondary-shift-z` when the editor is closed, and the Discard button on the pending bar. Both confirm. US-05 matches this split.
 
 Accepting a value equal to the server value removes that cell from the row's change. The triangle goes away. If the row has no remaining changes, the row mark goes away too.
 
@@ -119,8 +119,7 @@ The Data pane shows the first reason that applies:
 | --- | --- |
 | Safe mode is Read-only | `Read-only · safe mode on this connection.` |
 | View | `Read-only · views are read-only.` |
-| No usable key | `Read-only · no primary key or unique NOT NULL column.` |
-| Several unique keys and no primary key | `Read-only · more than one unique key and no primary key.` |
+| No primary key | `Read-only · this table has no primary key.` |
 
 `Enter`, double-click, Insert, Duplicate, and Delete do nothing. Status repeats the same sentence. `Space` still inspects. Filter and sort still run.
 
@@ -166,18 +165,17 @@ Grid focus context, editor closed. Full chords are also in [README.md](./README.
 - `Enter` to edit is the grid context. The cell editor's context does not include `RunQuery`.
 - The gutter is a 16px sticky column painted with the delegate, excluded from copy and from horizontal scroll of the data columns. If `DataTable` cannot pin it, paint the glyph in the first cell's leading padding and still exclude it from `cell_text`.
 - Generated-column detection uses the structure default and type name. The exact `INSERT` omission list belongs to M2-2. This file only decides which cells look unset and which ones block Commit.
-- A table with a primary key uses that key even if unique constraints also exist.
+- Editing requires a primary key, the same rule as `ChangeSet::try_new` in #65. Do not treat a unique constraint as a key.
 
 ## Decisions
 
-1. A single unique NOT NULL constraint is a key when there is no primary key. Two of them, and no primary key, stays read-only. US-05 says "no PK"; the SPECS `RowKey` is the wider rule, with the ambiguous case refused.
-2. `Escape` cancels the open cell editor or popover only. It does not discard the `ChangeSet`.
-3. Inserted and duplicated rows are marked on the row (wash and gutter). Per-cell triangles are only for edits to a row that already exists on the server.
-4. Deleting an inserted row drops it. Deleting a server row keeps it visible and strikethrough until Commit or Discard.
-5. NULL is an explicit control. An empty text field is `''`.
+1. v0.2 edits only a table with a primary key. No primary key is read-only, and the strip says why. A unique NOT NULL key is backlog ([roadmap.md](../roadmap.md)).
+2. `Escape` cancels the open cell editor or popover only. It does not discard the `ChangeSet`. Discard is `secondary-shift-z` (editor closed) and the Discard button, and it confirms.
+3. Duplicate leaves primary-key cells unset so an identity column can fill them. A non-generated key stays empty until the user types it. Commit stays disabled until those cells are set.
+4. Inserted and duplicated rows are marked on the row (wash and gutter). Per-cell triangles are only for edits to a row that already exists on the server.
+5. Deleting an inserted row drops it. Deleting a server row keeps it visible and strikethrough until Commit or Discard.
+6. NULL is an explicit control. An empty text field is `''`.
 
 ## Open questions
 
-1. Confirm decision 1. The alternative is primary key only, which matches the US-05 wording and would make unique-only tables read-only.
-2. Confirm decision 2. The alternative is US-05 read literally: `Escape` with the editor closed discards the whole pending set. That fights inspect, menus, and the quit dialog, which already use `Escape` to dismiss.
-3. Duplicate leaves primary-key cells unset so an identity column can fill them. Confirm that a non-generated key the user must retype is the right default, rather than copying the key and letting the database reject the duplicate.
+None.

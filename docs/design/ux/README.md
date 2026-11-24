@@ -186,4 +186,4 @@ Recorded from review. The screen specs repeat the items that change their behavi
 11. No `sqlformat` in M1-4. Format is backlog. `secondary-shift-f` is reserved and is not an M1-4 binding. The shortcut tables mark it reserved.
 12. Grid editing, preview, and safe mode are [07](./07-grid-editing.md), [08](./08-preview-commit.md), and [09](./09-safe-mode.md). `secondary-s`, `secondary-shift-p`, and `secondary-shift-z` are those actions.
 13. Font size is one UI step in [06](./06-theme-tokens.md#font-size). The chrome heights in that file stay fixed.
-14. Linux client decorations use the 32px menu row as the title bar ([01](./01-main-window.md#client-side-title-bar)). The content toolbar does not also draw a close button.
+14. Linux client decorations use gpui-component `TitleBar` at 34px ([01](./01-main-window.md#client-side-title-bar)), the bar #66 builds. The content toolbar does not also draw a close button.
