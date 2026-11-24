@@ -8,7 +8,7 @@ This spec matches the window in `crates/sela-app/src/ui/workspace/` and the shor
 
 ## Regions
 
-Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). The OS title bar says “Sela” and is not drawn by the workspace.
+Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). Under server-side decorations (Windows, macOS, X11, KDE, and other compositors that draw the frame), the OS title bar says “Sela” and the workspace does not draw one. On Linux when the compositor requires client-side decorations (for example GNOME Wayland), `window.window_decorations()` is `Decorations::Client` and the workspace renders gpui-component’s `TitleBar`: app title “Sela”, File menu, minimize / maximize / close, drag-to-move, and double-click maximize/restore. GPUI’s window border supplies resize edges and a shadow or border. Close goes through the same quit path as Ctrl+Q.
 
 | Region | Size | Where it is set today | Resize |
 | --- | --- | --- | --- |
@@ -40,7 +40,7 @@ Clicking another saved connection while one is active switches: Sela cancels run
 
 **Tab bar** (`tabs.rs`). One tab per table or query. The close control is on the tab. `+` creates a query tab. With no tabs the bar shows a disabled “No tabs” item, which is what the code does today.
 
-**Toolbar** (`content.rs`). Left: `TabView::source_label` (`schema.table`, `SQL result`, or `No table open`) and, under it, the engine and endpoint. Right, only when a table is open: Data, Structure, and Refresh while Structure is showing. On the Data pane: the page label, Previous, Next. Page label (`format_page_label`): `Page N of M` for paged tables when `total_rows` is known; `Page N · {total} rows` for SQL / non-paged results with a known total; `Page N · {page_len} rows` when the total is unknown (never a hardcoded 100). When the platform is not drawing a close button, a small close control sits at the right end of this bar. It is not a Quit button. See [Quit and window lifecycle](#quit-and-window-lifecycle).
+**Toolbar** (`content.rs`). Left: `TabView::source_label` (`schema.table`, `SQL result`, or `No table open`) and, under it, the engine and endpoint. Right, only when a table is open: Data, Structure, and Refresh while Structure is showing. On the Data pane: the page label, Previous, Next. Page label (`format_page_label`): `Page N of M` for paged tables when `total_rows` is known; `Page N · {total} rows` for SQL / non-paged results with a known total; `Page N · {page_len} rows` when the total is unknown (never a hardcoded 100). Window close is never on this bar; see [Quit and window lifecycle](#quit-and-window-lifecycle).
 
 **Grid** (`grid.rs`, gpui-component `DataTable`). Monospace. Header is the column name, then the type name when non-empty (`name` alone when the type is unknown — never `NULL` as a type). NULL is italic and `muted_foreground`. A loading cell is italic `…`. Other values use `foreground`. Cells are one line, truncated at `CELL_DISPLAY_MAX_CHARS` (200) by `truncate_one_line`. Shift-click / Shift+arrow grow `selection_rect` (painted with `table_active`; Shift+arrow is bound in the `DataTable` context because DataTable only handles plain arrows); Ctrl/Cmd+A selects all cells without collapsing via a deferred `SelectCell`. Right-click a cell (or a row header) for **Copy** and **Copy as TSV / CSV / JSON / INSERT** (TC-COPY-01). With cell selection on, the menu is attached on each cell because DataTable’s row-level `context_menu` does not open for cell right-clicks; opening the menu also selects that cell when it is outside the current selection so Copy never acts on a different cell or an empty selection, and a right-click inside a range keeps the range. Cmd/Ctrl+C still copies TSV. Details: [copying.md](../../user/copying.md).
 
@@ -194,11 +194,11 @@ Filter and editor chords are in the other specs. They must be context-scoped so 
 
 ## Quit and window lifecycle
 
-The window always has a close control. Use server-side decorations where the platform draws them. On Linux and Wayland, when the server does not draw decorations, show a small client-side close button at the right end of the 44px toolbar. GPUI draws no native menu bar on Linux, so that button is the close control on those sessions. It is not a Quit button. Do not put Quit on the toolbar.
+The window always has a close control. Use server-side decorations where the platform draws them (Windows, macOS, X11, KDE, and other SSD compositors). On Linux, when `window.window_decorations()` is `Decorations::Client` (typical on GNOME Wayland), render gpui-component’s `TitleBar` with minimize, maximize, and close; do not draw a separate toolbar ×. The TitleBar close control uses the same quit path as `secondary-q` (including the running-query confirm). Do not put Quit on the toolbar. Under server-side decorations the in-window File menu stays in its own 32px row; under client-side decorations that menu sits inside the TitleBar so menu clicks do not start a window drag.
 
 `secondary-q` quits. That is Command+Q on macOS and Control+Q on Linux and Windows. The binding is global: it works from the SQL editor and from dialogs. On Windows, Alt+F4 is the OS close and uses the same quit path. Register it once, with `bind_secondary`, not as a second `cmd-q` / `ctrl-q` pair.
 
-On macOS the app menu item is `Quit Sela`, last, after a separator. On Linux and Windows the File menu item is `Quit`, last, after a separator, with a Ctrl+Q hint. GPUI does not draw a native menu bar on Linux, so that item is not visible there.
+On macOS the app menu item is `Quit Sela`, last, after a separator. On Linux and Windows the File menu item is `Quit`, last, after a separator, with a Ctrl+Q hint. GPUI does not draw a native menu bar on Linux; the in-window `AppMenuBar` shows that item (inside the TitleBar when client-decorated, otherwise in the 32px menu row).
 
 Closing the last window quits on Linux and Windows. On macOS the app stays running after the last window closes, and Command+Q quits. That is gpui-pre 0.3.12 `QuitMode::Default` (`Explicit` on macOS, `LastWindowClosed` elsewhere). `ui/mod.rs` does not call `set_quit_mode`. Keep that default. The shortcut, the menu item, Alt+F4, and the close control go through one quit handler. Closing the window on macOS is not that handler.
 

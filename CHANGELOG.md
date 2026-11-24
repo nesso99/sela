@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Linux client-side title bar when the compositor requires CSD (e.g. GNOME Wayland): gpui-component `TitleBar` with app title, File menu, minimize / maximize / close, drag-to-move, and double-click maximize/restore. Shown only when `window.window_decorations()` is `Decorations::Client`; Windows, macOS, and SSD Linux (X11 / KDE) stay on the native title bar. Close uses the same quit path as Ctrl+Q (#58).
+
 ### Fixed
 
 - Result grid range selection: Shift+click and Shift+arrow extend `selection_rect` (highlighted), Ctrl/Cmd+A selects all cells, and right-click inside a range still keeps the range for Copy (#59).

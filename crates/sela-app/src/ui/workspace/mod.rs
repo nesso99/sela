@@ -24,9 +24,11 @@ use std::sync::Arc;
 
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::tree::{TreeEvent, TreeState};
-use gpui_kit::component::{v_flex, ActiveTheme};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window};
+
+use super::decorations::should_show_client_title_bar;
 
 use sela_config::{
     warn_if_mock_credential_store, CachingSecrets, ConfigStore, HistoryStore, KeyringStore,
@@ -100,7 +102,7 @@ pub struct Workspace {
     close_tabs_confirm_open: bool,
     /// Action to run after the user confirms closing tabs with typed SQL / busy work.
     pending_close_tabs: Option<PendingCloseTabs>,
-    /// Updated each frame from `window.window_decorations()` for the toolbar ×.
+    /// Updated each frame from `window.window_decorations()` for the CSD title bar.
     client_decorations: bool,
     #[cfg(not(target_os = "macos"))]
     menu_bar: Entity<gpui_kit::component::menu::AppMenuBar>,
@@ -291,8 +293,10 @@ impl Workspace {
         )
     }
 
-    /// Linux/Windows in-window File menu. Height is fixed because `AppMenuBar`
-    /// paints `size_full()`; an unbounded slot swallows the column.
+    /// Linux/Windows in-window File menu under server-side decorations.
+    /// Height is fixed because `AppMenuBar` paints `size_full()`; an unbounded
+    /// slot swallows the column. When client-side decorations are active, the
+    /// menu lives inside [`Self::client_title_bar`] instead.
     #[cfg(not(target_os = "macos"))]
     fn menu_bar_row(&self, cx: &Context<Self>) -> impl IntoElement {
         div()
@@ -304,6 +308,40 @@ impl Workspace {
             .border_color(cx.theme().title_bar_border)
             .bg(cx.theme().title_bar)
             .child(self.menu_bar.clone())
+    }
+
+    /// Client-side title bar (GNOME Wayland and other CSD sessions): app title,
+    /// window controls, drag-to-move, and double-click maximize/restore via
+    /// gpui-component `TitleBar`. Menu items sit in the bar so they keep working
+    /// without starting a drag (`TitleBar` honors `prevent_default` on controls).
+    fn client_title_bar(&self, cx: &Context<Self>) -> impl IntoElement {
+        let this = cx.entity();
+        TitleBar::new()
+            .on_close_window(move |_, window, cx| {
+                this.update(cx, |workspace, cx| {
+                    workspace.request_quit(window, cx);
+                });
+            })
+            .child(
+                h_flex()
+                    .id("sela-csd-title")
+                    .items_center()
+                    .gap_2()
+                    .h_full()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .map(|row| {
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            row.child(self.menu_bar.clone())
+                        }
+                        #[cfg(target_os = "macos")]
+                        {
+                            row
+                        }
+                    })
+                    .child(div().id("sela-csd-app-title").child("Sela")),
+            )
     }
 }
 
@@ -337,11 +375,8 @@ impl Render for Workspace {
             .active_view()
             .map(|view| view.table_pane)
             .unwrap_or(TablePane::Data);
-        self.client_decorations = matches!(
-            window.window_decorations(),
-            gpui_kit::Decorations::Client { .. }
-        );
-        let client_close = self.client_decorations;
+        self.client_decorations = should_show_client_title_bar(window.window_decorations());
+        let client_title_bar = self.client_decorations;
 
         div()
             .id("sela-root")
@@ -661,13 +696,17 @@ impl Render for Workspace {
                 }
             })
             .map(|root| {
-                #[cfg(not(target_os = "macos"))]
-                {
-                    root.child(self.menu_bar_row(cx))
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    root
+                if client_title_bar {
+                    root.child(self.client_title_bar(cx))
+                } else {
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        root.child(self.menu_bar_row(cx))
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        root
+                    }
                 }
             })
             .child(
@@ -716,9 +755,6 @@ impl Render for Workspace {
                             })
                             .when(!has_tabs, |column| {
                                 column
-                                    .when(client_close, |column| {
-                                        column.child(self.client_close_bar(cx))
-                                    })
                                     .when_some(self.boot_error.clone(), |column, error| {
                                         column.child(self.error_banner(cx, error))
                                     })
