@@ -213,15 +213,15 @@ impl Workspace {
                 use gpui_kit::component::table::TableEvent;
                 match event {
                     TableEvent::SelectCell(row, col) => {
-                        // Prefer Shift captured on cell mouse-down; fall back to
-                        // window modifiers for keyboard (Shift+arrow) selection.
+                        // Prefer Shift captured on cell mouse-down / Shift+arrow
+                        // before set_selected_cell; fall back to window modifiers.
+                        // Select-All sets suppress so a deferred SelectCell from
+                        // set_selected_cell cannot collapse the full range.
                         let window_shift = window.modifiers().shift;
                         grid.update(cx, |state, cx| {
-                            let shift = state
+                            state
                                 .delegate_mut()
-                                .take_shift_for_select()
-                                .unwrap_or(window_shift);
-                            state.delegate_mut().note_cell_focus(*row, *col, shift);
+                                .apply_select_cell_event(*row, *col, window_shift);
                             // Re-paint so selection_rect wash updates for the range.
                             state.refresh(cx);
                         });
