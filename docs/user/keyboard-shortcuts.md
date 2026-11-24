@@ -34,7 +34,7 @@ The design target for shortcuts that are not built yet is [docs/design/ux/README
 | Close history / clear search | Escape (history panel) |
 | Copy selection as TSV | Cmd/Ctrl+C (grid focused) |
 | Previous / next SQL result | Left / Right (result strip focused) |
-| Quit | Cmd+Q |
+| Quit | Cmd/Ctrl+Q (File ▸ Quit / Quit Sela; confirms only while a query or Count is running) |
 
 Run (Cmd/Ctrl+Enter) runs the statement at the caret, the selected text split into statements, or the whole buffer when using Run all. It only fires when the SQL editor has focus; filter fields still use Enter / Cmd/Ctrl+Enter to apply. Cancel stops the running query for that tab (server-side cancel on Postgres/MySQL; SQLite drops the stream). Closing a tab cancels its in-flight work. Global Cmd/Ctrl+F toggles the filter bar on table tabs; with the SQL editor focused, the same chord opens find-in-SQL; with the history panel focused, it focuses the history search field.
 
@@ -46,4 +46,4 @@ With the grid focused, **Cmd/Ctrl+C** copies the current cell or range as TSV. R
 
 The SQL result strip (between the grid and the editor after a multi-statement run) is a tab stop. With the strip focused, **Left** / **Right** move Prev / Next. Theme (Light / Dark / System) is the status-bar menu — no shortcut. See [Themes](./themes.md).
 
-The chords above are the ones registered in `ui/mod.rs`. `secondary` in [docs/design/ux/README.md](../design/ux/README.md) means ⌘ on macOS and Ctrl on Linux and Windows. Quit is registered as `cmd-q` only (Command+Q on macOS). The design target is `secondary-q`, including Ctrl+Q on Linux and Windows, from the SQL editor and from dialogs: [Quit and window lifecycle](../design/ux/01-main-window.md#quit-and-window-lifecycle).
+The chords above are the ones registered in `ui/mod.rs`. `secondary` in [docs/design/ux/README.md](../design/ux/README.md) means ⌘ on macOS and Ctrl on Linux and Windows. Quit is `secondary-q` (global, including the SQL editor and dialogs): [Quit and window lifecycle](../design/ux/01-main-window.md#quit-and-window-lifecycle).

@@ -482,6 +482,10 @@ impl DatabaseSession for PostgresSession {
         )
         .await
     }
+
+    async fn close(&self) {
+        self.pool.close().await;
+    }
 }
 
 #[cfg(test)]

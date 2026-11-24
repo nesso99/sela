@@ -24,6 +24,10 @@ No unlocked Secret Service was available when you saved the connection. Sela kep
 
 Yes: **Stop** or Cmd/Ctrl+.. Postgres and MySQL cancel on the server via a second connection; SQLite only stops consuming the local stream. See [ADR 0003](../adr/0003-cancel-second-connection.md).
 
+## How do I quit?
+
+Cmd/Ctrl+Q, or **Quit Sela** (macOS app menu) / File ▸ **Quit** (Linux/Windows). If a query or Count is still running, Sela asks before quitting. On Linux and Windows, closing the last window also quits; on macOS the app stays open until you Quit.
+
 ## Why did Load more say the result is capped?
 
 Arbitrary SQL streams up to 1 000 rows. Load more re-runs only when the statement is classified as safe read-only. Otherwise re-run the query yourself. See [ADR 0004](../adr/0004-safe-load-more.md).

@@ -5,6 +5,7 @@ mod copy_selection;
 mod filter_bar;
 mod history;
 mod query;
+mod quit;
 mod result_strip;
 mod sidebar;
 mod sql_editor;
@@ -39,7 +40,7 @@ use super::{
     ActivateTab, CancelQuery, CloseTab, CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv,
     CopySelection, EscapeFilterBar, EscapeHistory, FindInSql, FindNext, FindPrevious,
     FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun,
-    HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab, RemoveFilterRow,
+    HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab, Quit, RemoveFilterRow,
     ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, ShowTableData, ShowTableStructure,
     ToggleEditor, ToggleFilterBar, ToggleHistory,
 };
@@ -80,6 +81,12 @@ pub struct Workspace {
     history_reset_notice: bool,
     history_write_failed_once: bool,
     history_focus_restore: HistoryFocusRestore,
+    /// True while the "Quit Sela?" confirm dialog is open (blocks repeat Quit).
+    quit_confirm_open: bool,
+    /// Updated each frame from `window.window_decorations()` for the toolbar ×.
+    client_decorations: bool,
+    #[cfg(not(target_os = "macos"))]
+    menu_bar: Entity<gpui_kit::component::menu::AppMenuBar>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -191,13 +198,29 @@ impl Workspace {
             history_reset_notice,
             history_write_failed_once: false,
             history_focus_restore: HistoryFocusRestore::None,
+            quit_confirm_open: false,
+            client_decorations: false,
+            #[cfg(not(target_os = "macos"))]
+            menu_bar: gpui_kit::component::menu::AppMenuBar::new(cx),
             _subscriptions: vec![
                 tree_events,
                 tree_selection,
                 history_search_events,
                 appearance,
+                Self::subscribe_app_quit(cx),
             ],
         };
+        // Linux/Windows: OS close / Alt+F4 go through the same quit path.
+        // macOS: closing the window is allowed; the app stays running until Quit
+        // (GPUI QuitMode::Default → Explicit on macOS).
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            let entity = cx.entity();
+            window.on_window_should_close(cx, move |window, cx| {
+                entity.update(cx, |workspace, cx| workspace.request_quit(window, cx));
+                false
+            });
+        }
         workspace.restore_tabs(window, cx);
         workspace.rebuild_tree(cx);
         // Reconnect the active restored tab's connection when possible.
@@ -271,14 +294,25 @@ impl Render for Workspace {
             .map(|view| view.table_pane)
             .unwrap_or(TablePane::Data);
         let _ = page_len;
+        self.client_decorations = matches!(
+            window.window_decorations(),
+            gpui_kit::Decorations::Client { .. }
+        );
+        let client_close = self.client_decorations;
 
         div()
             .id("sela-root")
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action({
+                let this = this.clone();
+                move |_: &Quit, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.request_quit(window, cx));
+                }
+            })
             .on_action({
                 let this = this.clone();
                 move |_: &RunQuery, window, cx| {
@@ -545,48 +579,71 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| workspace.step_result_strip(1, cx));
                 }
             })
-            .child(self.sidebar(cx))
+            .map(|root| {
+                #[cfg(not(target_os = "macos"))]
+                {
+                    root.child(self.menu_bar.clone())
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    root
+                }
+            })
             .child(
-                v_flex()
+                div()
+                    .id("sela-body")
                     .flex_1()
-                    .min_w(px(0.))
-                    .h_full()
-                    .child(self.tab_bar(cx))
-                    .when(has_tabs, |column| {
-                        column
-                            .child(self.toolbar(
-                                cx,
-                                &endpoint,
-                                &page_label,
-                                can_prev,
-                                can_next,
-                                connected,
-                            ))
-                            .when(matches!(table_pane, TablePane::Data), |column| {
-                                column.child(self.filter_bar(cx, connected))
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_row()
+                    .child(self.sidebar(cx))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .h_full()
+                            .child(self.tab_bar(cx))
+                            .when(has_tabs, |column| {
+                                column
+                                    .child(self.toolbar(
+                                        cx,
+                                        &endpoint,
+                                        &page_label,
+                                        can_prev,
+                                        can_next,
+                                        connected,
+                                    ))
+                                    .when(matches!(table_pane, TablePane::Data), |column| {
+                                        column.child(self.filter_bar(cx, connected))
+                                    })
+                                    .when_some(self.banner_error(), |column, error| {
+                                        column.child(self.error_banner(cx, error))
+                                    })
+                                    .child(match table_pane {
+                                        TablePane::Data => self.results_area().into_any_element(),
+                                        TablePane::Structure => {
+                                            self.structure_area(cx).into_any_element()
+                                        }
+                                    })
+                                    .when(matches!(table_pane, TablePane::Data), |column| {
+                                        column.child(self.predicate_strip(cx))
+                                    })
+                                    .child(self.result_strip(cx))
+                                    .child(self.sql_editor(window, cx))
+                                    .child(self.history_panel(window, cx))
+                                    .child(self.status_bar(cx))
                             })
-                            .when_some(self.banner_error(), |column, error| {
-                                column.child(self.error_banner(cx, error))
-                            })
-                            .child(match table_pane {
-                                TablePane::Data => self.results_area().into_any_element(),
-                                TablePane::Structure => self.structure_area(cx).into_any_element(),
-                            })
-                            .when(matches!(table_pane, TablePane::Data), |column| {
-                                column.child(self.predicate_strip(cx))
-                            })
-                            .child(self.result_strip(cx))
-                            .child(self.sql_editor(window, cx))
-                            .child(self.history_panel(window, cx))
-                            .child(self.status_bar(cx))
-                    })
-                    .when(!has_tabs, |column| {
-                        column
-                            .when_some(self.boot_error.clone(), |column, error| {
-                                column.child(self.error_banner(cx, error))
-                            })
-                            .child(self.empty_content(cx))
-                    }),
+                            .when(!has_tabs, |column| {
+                                column
+                                    .when(client_close, |column| {
+                                        column.child(self.client_close_bar(cx))
+                                    })
+                                    .when_some(self.boot_error.clone(), |column, error| {
+                                        column.child(self.error_banner(cx, error))
+                                    })
+                                    .child(self.empty_content(cx))
+                            }),
+                    ),
             )
     }
 }

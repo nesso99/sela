@@ -360,6 +360,10 @@ impl DatabaseSession for SqliteSession {
         )
         .await
     }
+
+    async fn close(&self) {
+        self.pool.close().await;
+    }
 }
 
 #[cfg(test)]

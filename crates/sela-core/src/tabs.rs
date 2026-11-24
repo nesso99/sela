@@ -235,6 +235,13 @@ impl TabList {
         self.get(id).is_some_and(|tab| tab.dirty)
     }
 
+    /// Cancel every tab's in-flight work (used on app quit).
+    pub fn cancel_all(&mut self) {
+        for tab in &mut self.tabs {
+            tab.cancel_running();
+        }
+    }
+
     /// Close a tab, cancelling its running query. Focus moves to the tab that
     /// took this index (the old right neighbour), or the new last tab.
     pub fn close(&mut self, id: TabId) -> Option<Tab> {
