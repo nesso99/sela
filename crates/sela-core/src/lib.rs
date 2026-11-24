@@ -5,10 +5,12 @@
 
 mod column_kind;
 mod connection;
+mod copy_format;
 mod error;
 mod filter;
 mod history;
 mod result_window;
+mod selection;
 mod session;
 mod sql;
 mod structure;
@@ -17,6 +19,10 @@ mod types;
 
 pub use column_kind::{ColumnKind, MAX_SORT_KEYS};
 pub use connection::{SavedConnection, TlsMode, TlsSettings};
+pub use copy_format::{
+    escape_csv_field, escape_sql_string, extract_selection_matrix, format_selection,
+    value_to_copy_cell, CopyCell, CopyError, CopyFormat, CopyScalarKind,
+};
 pub use error::DbError;
 pub use filter::{
     bool_filter_menu_index, bool_filter_menu_value, build_table_count, build_table_page,
@@ -32,6 +38,7 @@ pub use history::{
     HISTORY_PASSWORD_SKIP_NOTE, HISTORY_ROW_CAP,
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
+pub use selection::{step_result_index, CellPos, SelectionRect};
 pub use session::{
     default_page_size, default_sql_row_cap, exact_table_rows, preview_table, run_user_sql,
     DatabaseSession, LoadedSchema, TablePreview,

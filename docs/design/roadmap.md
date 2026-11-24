@@ -33,8 +33,8 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | 4 | M1-6 | Structure view | US-11 on 3 engines | Done (#11) |
 | 5 | M1-3 | Filter and sort | US-04. UX review: [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md) | This PR |
 | 6 | M1-4 | Editor (highlight, statement-at-cursor, multi-statement) | US-08 minus autocomplete. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Done (no tree-sitter SQL grammar; no autocomplete) |
-| 7 | M1-5 | History | US-10 | This PR |
-| 8 | M1-7 | Selection, copy, themes | US-14 + light/dark | Backlog |
+| 7 | M1-5 | History | US-10 | Done (#25) |
+| 8 | M1-7 | Selection, copy, themes | US-14 + light/dark; result-strip keyboard | This PR |
 | 9 | M1-8 | TLS + config v2 | TLS modes; `schema_version` → 2 with **no migration code**; Postgres TLS CI | Done (#15) |
 | 10 | M1-9 | Postgres text-cast fallback | Own dedicated PR | Done (#13) |
 
@@ -70,7 +70,16 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 - Optional OR combine / raw-WHERE mode for filters
 - Remaining Postgres `<TYPE>` placeholders (tsquery, polygon, composites, …)
 - TLS client-key passphrase. rustls needs an unencrypted PEM today. A passphrase, if added later, goes to the OS keychain and never into `connections.json`.
-- **M1-7:** Keyboard and accessibility pass on the SQL result strip (Prev/Next and tab order so the strip is a proper focus target, not only clickable buttons).
+
+---
+
+### M1-7 details
+
+- Grid selection via gpui-component `DataTable` (`cell_selectable`): cell / row / column, plus Shift-click range tracked on `GridDelegate`.
+- Clipboard formats in `sela-core` (`CopyFormat` + typed `CopyCell`: TSV default on `secondary-c`, CSV, JSON, INSERT). Context menu on the grid. Unloaded rows and decode cells refuse copy/INSERT with a status message. Unit tests cover NULL-vs-text-`NULL`, MySQL backslash escaping, and selection math.
+- Light and dark `ThemeConfig`s from [ux/06-theme-tokens.md](./ux/06-theme-tokens.md); preference in `{config_dir}/settings.json` (`light` / `dark` / `system`). System follows `Window::appearance` / `Theme::sync_system_appearance`.
+- Result strip: `ResultStrip` key context, tab stop, Left/Right for Prev/Next (roadmap backlog item closed here).
+- User docs: [copying.md](../user/copying.md), [themes.md](../user/themes.md), [keyboard-shortcuts.md](../user/keyboard-shortcuts.md).
 
 ---
 

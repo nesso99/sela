@@ -108,7 +108,7 @@ impl ConfigStore {
     }
 }
 
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

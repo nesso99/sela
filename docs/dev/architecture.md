@@ -32,7 +32,7 @@ The UI never talks to sqlx directly. Library crates stay free of GPUI so CI can 
 crates/
   sela-core/     # DatabaseSession, Value, ResultWindow, SQL builder, structure, tabs
   sela-drivers/  # postgres, mysql, sqlite, stream, decode, runtime
-  sela-config/   # connections.json, tabs.json, SecretStore / keyring
+  sela-config/   # connections.json, tabs.json, settings.json, SecretStore / keyring
   sela-app/      # GPUI binary `sela`
 ```
 

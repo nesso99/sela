@@ -32,6 +32,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Tabs (open / close / switch / restore) | Done |
 | Filter bar + column sort (table tabs) | Done |
 | Query history (FTS, per-connection scope) | Done (M1-5) |
+| Grid selection + copy (TSV/CSV/JSON/INSERT); light/dark/system themes | Done (M1-7) |
 | Inline edit, safe mode, SSH, export | Planned — [roadmap](docs/design/roadmap.md) |
 
 ## Documentation
@@ -43,6 +44,8 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Keyboard shortcuts | [docs/user/keyboard-shortcuts.md](docs/user/keyboard-shortcuts.md) |
 | Filtering & sorting | [docs/user/filtering.md](docs/user/filtering.md) |
 | Query history | [docs/user/query-history.md](docs/user/query-history.md) |
+| Copying grid data | [docs/user/copying.md](docs/user/copying.md) |
+| Themes | [docs/user/themes.md](docs/user/themes.md) |
 | FAQ | [docs/user/faq.md](docs/user/faq.md) |
 | Architecture | [docs/dev/architecture.md](docs/dev/architecture.md) |
 | Building & testing | [docs/dev/building-and-testing.md](docs/dev/building-and-testing.md) |

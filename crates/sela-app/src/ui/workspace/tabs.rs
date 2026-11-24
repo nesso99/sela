@@ -196,7 +196,34 @@ impl Workspace {
                 this.apply_column_sort(id, col_ix, shift, cx);
             }
         });
+        let selection = cx.subscribe_in(
+            &grid,
+            window,
+            move |_this, grid, event: &gpui_kit::component::table::TableEvent, window, cx| {
+                use gpui_kit::component::table::TableEvent;
+                match event {
+                    TableEvent::SelectCell(row, col) => {
+                        let shift = window.modifiers().shift;
+                        grid.update(cx, |state, _| {
+                            state.delegate_mut().note_cell_focus(*row, *col, shift);
+                        });
+                    }
+                    TableEvent::SelectRow(_) | TableEvent::SelectColumn(_) => {
+                        grid.update(cx, |state, _| {
+                            state.delegate_mut().clear_selection_range();
+                        });
+                    }
+                    TableEvent::ClearSelection => {
+                        grid.update(cx, |state, _| {
+                            state.delegate_mut().clear_selection_range();
+                        });
+                    }
+                    _ => {}
+                }
+            },
+        );
         self._subscriptions.push(subscription);
+        self._subscriptions.push(selection);
     }
 
     pub(super) fn on_tab_activated(&mut self, cx: &mut Context<Self>) {

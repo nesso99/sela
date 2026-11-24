@@ -262,7 +262,7 @@ Rule: tests assert **observable behavior**; every bugfix gets a regression test.
 ## Grid
 
 - **Decision:** keep gpui-component `DataTable` (row + column virtualization). Do not rewrite for virtualization; memory was the risk ([benchmarks.md](../dev/benchmarks.md), [ADR 0001](../adr/0001-keep-datatable.md)).
-- Selection / copy / themes: M1-7.
+- Selection / copy / themes: M1-7 (done — grid selection + clipboard formats; `settings.json` theme preference).
 - Pending-change overlay: M2.
 - Column width: auto-fit from first ~100 rows; remember per table (planned).
 
@@ -333,8 +333,8 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 | M1-6 Structure view | `describe_table` / `TableStructure` | Done (#11) |
 | M1-3 Filter / sort | [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md); `filter.rs` + bound stream/count | This PR |
 | M1-4 Editor | [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Implemented (Editor UI; highlight via default monospace, not tree-sitter SQL) |
-| M1-5 History | `history.sqlite` FTS; [ux/04-query-history.md](./ux/04-query-history.md) | This PR |
-| M1-7 Selection / copy / themes | Grid selection model | Backlog |
+| M1-5 History | `history.sqlite` FTS; [ux/04-query-history.md](./ux/04-query-history.md) | Done (#25) |
+| M1-7 Selection / copy / themes | Grid selection + TSV/CSV/JSON/INSERT; light/dark/system themes; result-strip a11y | This PR |
 | M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done (#15) |
 | M1-9 PG text-cast fallback | `pg_decode` strategies | Done (#13) |
 

@@ -1,0 +1,29 @@
+# Copying grid data
+
+Select cells in the results grid, then copy them to the clipboard. This covers US-14 (clipboard copy of a selection). Full-table export is a later milestone.
+
+## Selecting
+
+- Click a cell to focus it.
+- Shift-click another cell to grow a rectangular range from the first focus.
+- Click a row or column header when the table offers that selection (same as the DataTable selection model).
+
+## Copy formats
+
+With the grid focused (`DataTable` key context):
+
+| Action | Shortcut / control |
+| --- | --- |
+| Copy as TSV (default) | Cmd/Ctrl+C |
+| Copy as TSV / CSV / JSON / INSERT | Right-click context menu |
+
+- **TSV** — tab-separated values with a header row. Default for Cmd/Ctrl+C so spreadsheets paste cleanly.
+- **CSV** — comma-separated values; fields with commas, quotes, or newlines are quoted (RFC 4180-style).
+- **JSON** — a pretty-printed array of objects keyed by column name. SQL NULL becomes JSON `null`. A text cell whose value is the four characters `NULL` stays a JSON string.
+- **INSERT** — one `INSERT INTO … VALUES (…);` statement. On a table Data tab the target is `schema.table` with dialect quoting (`quote_ident`). Numbers and booleans are unquoted; strings are quoted (`'` → `''`; on MySQL `\` → `\\`). On a SQL result tab the placeholder name is `table`, followed by `-- replace table name`.
+
+SQL NULL copies as the keyword `NULL` in TSV/CSV/INSERT (and as JSON `null`). A text value equal to `NULL` copies as ordinary text / a quoted string / a JSON string — it is never treated as SQL NULL.
+
+If the selection includes rows that are not loaded yet, copy is refused and the status bar shows how many rows are missing (scroll or narrow the selection). INSERT is also refused when a selected cell is a decode error or unsupported type; the status bar names that column.
+
+Copy uses rows already present in the result window. Full-table export remains a later milestone.
