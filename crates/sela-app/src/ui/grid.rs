@@ -829,7 +829,10 @@ mod tests {
         // Armed right before a set_selected_cell that emits SelectCell.
         grid.suppress_next_select_collapse();
         grid.apply_select_cell_event(2, 1, false);
-        assert_eq!(grid.selection_rect.expect("kept").normalized(), (0, 2, 0, 1));
+        assert_eq!(
+            grid.selection_rect.expect("kept").normalized(),
+            (0, 2, 0, 1)
+        );
         // A later plain SelectCell still collapses.
         grid.apply_select_cell_event(1, 0, false);
         assert_eq!(
