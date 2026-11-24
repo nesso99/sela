@@ -176,7 +176,7 @@ Future variants considered earlier (Ssh, Syntax { position }, Constraint, Permis
 | Streaming | `sqlx` `fetch()` → batches (`STREAM_BATCH_SIZE`) over `async_channel` → `ResultWindow`; columns from first row (describe when 0 rows) |
 | Cancel | `CancellationToken`; Stop + Cmd+./Ctrl+.; PG `pg_cancel_backend(pid)` / MySQL `KILL QUERY` from a **second** pool connection; then close the cancelled connection so the next checkout is clean |
 | SQLite cancel | Drop the fetch stream only (sqlx has no interrupt) — documented limitation |
-| Multi-statement | Currently one statement in the editor; split via `split_statements` when M1-4 lands |
+| Multi-statement | Sequential run via `split_statements`; up to 8 result snapshots per tab |
 
 **Known limitation:** text classifier treats `SELECT my_func()` as safe for load-more re-run even if the function has side effects.
 
@@ -270,7 +270,7 @@ Rule: tests assert **observable behavior**; every bugfix gets a regression test.
 
 ## SQL editor
 
-- Today: multi-line `Textarea`, one statement, Cmd/Ctrl+Enter.
+- Today: GPUI `Editor`, statement-at-caret / selection / run-all, multi-result strip; autocomplete is M3-2.
 - M1-4: code editor with highlight, statement-at-cursor, multi-statement (via `split_statements`). Format (`sqlformat`) is backlog, not M1-4. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md).
 - M3-2: autocomplete from `SchemaCache` + dialect keywords.
 
@@ -332,7 +332,7 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 | M1-1 Tabs | Per-tab state, cancel-on-close, `tabs.json` | Done (#12) |
 | M1-6 Structure view | `describe_table` / `TableStructure` | Done (#11) |
 | M1-3 Filter / sort | [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md); `filter.rs` + bound stream/count | This PR |
-| M1-4 Editor | [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Backlog |
+| M1-4 Editor | [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Implemented (Editor UI; highlight via default monospace, not tree-sitter SQL) |
 | M1-5 History | `history.sqlite` FTS | Backlog |
 | M1-7 Selection / copy / themes | Grid selection model | Backlog |
 | M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done (#15) |
