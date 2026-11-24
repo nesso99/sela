@@ -23,8 +23,8 @@ use sela_config::{CachingSecrets, ConfigStore, KeyringStore, SavedConnection, Ta
 use sela_core::{DatabaseSession, LoadedSchema, TabId, TabList};
 
 use super::{
-    ActivateTab, CancelQuery, CloseTab, NewQueryTab, RunQuery, ShowTableData, ShowTableStructure,
-    ToggleFilterBar,
+    ActivateTab, CancelQuery, CloseTab, EscapeFilterBar, InsertFilterRow, NewQueryTab,
+    RemoveFilterRow, RunQuery, ShowTableData, ShowTableStructure, ToggleFilterBar,
 };
 use tab_view::TabView;
 
@@ -230,6 +230,28 @@ impl Render for Workspace {
                 let this = this.clone();
                 move |_: &ToggleFilterBar, window, cx| {
                     this.update(cx, |workspace, cx| workspace.toggle_filter_bar(window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &InsertFilterRow, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.insert_filter_row_after_focused(window, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &RemoveFilterRow, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.remove_focused_filter_row(window, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &EscapeFilterBar, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.escape_filter_bar(window, cx));
                 }
             })
             .child(self.sidebar(cx))

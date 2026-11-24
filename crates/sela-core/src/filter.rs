@@ -411,6 +411,81 @@ fn parse_bool(raw: &str) -> Option<bool> {
     }
 }
 
+/// Labels offered by the bool filter value menu (index 0 = true, 1 = false).
+pub const BOOL_FILTER_VALUES: &[&str] = &["true", "false"];
+
+/// Map a stored / typed bool filter string to a menu index (`0` = true, `1` = false).
+///
+/// Accepts the same aliases as Apply validation (`t`/`1`, `f`/`0`, …). Empty or
+/// unrecognized input returns `None` (the menu stays unselected).
+pub fn bool_filter_menu_index(raw: &str) -> Option<usize> {
+    match parse_bool(raw) {
+        Some(true) => Some(0),
+        Some(false) => Some(1),
+        None => None,
+    }
+}
+
+/// Canonical menu label (`"true"` / `"false"`) for a bool filter string.
+pub fn bool_filter_menu_value(raw: &str) -> Option<&'static str> {
+    bool_filter_menu_index(raw).map(|ix| BOOL_FILTER_VALUES[ix])
+}
+
+/// Draft filter row used for keyboard insert/remove logic (no GPUI).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterDraft {
+    pub column: String,
+    pub op: FilterOp,
+    pub value: String,
+}
+
+impl FilterDraft {
+    pub fn empty() -> Self {
+        Self {
+            column: String::new(),
+            op: FilterOp::Eq,
+            value: String::new(),
+        }
+    }
+
+    /// True when the row has no column name and no value (operator ignored).
+    pub fn is_blank(&self) -> bool {
+        self.column.trim().is_empty() && self.value.is_empty()
+    }
+}
+
+/// Insert an empty draft row after `after`. Returns the new row's index.
+///
+/// When `rows` is empty, inserts at 0. `after` past the last index appends.
+pub fn insert_filter_draft_after(rows: &mut Vec<FilterDraft>, after: usize) -> usize {
+    let at = if rows.is_empty() {
+        0
+    } else {
+        after.saturating_add(1).min(rows.len())
+    };
+    rows.insert(at, FilterDraft::empty());
+    at
+}
+
+/// Remove the draft at `index`, or clear the sole row in place (UX §10).
+///
+/// Removing the only row leaves one empty draft; it does not leave `rows` empty.
+pub fn remove_filter_draft(rows: &mut Vec<FilterDraft>, index: usize) {
+    if rows.len() <= 1 {
+        rows.clear();
+        rows.push(FilterDraft::empty());
+        return;
+    }
+    if index < rows.len() {
+        rows.remove(index);
+    }
+}
+
+/// True when every draft row is blank (used by Escape to hide an unused bar).
+pub fn filter_drafts_are_empty(rows: &[FilterDraft]) -> bool {
+    rows.is_empty() || rows.iter().all(FilterDraft::is_blank)
+}
+
 /// Human-readable `WHERE … ORDER BY …` fragment for the status strip (placeholders only).
 pub fn format_predicate_preview(
     dialect: Dialect,
@@ -921,5 +996,67 @@ mod tests {
         assert!(preview.starts_with("WHERE "));
         assert!(preview.contains("ORDER BY"));
         assert!(!preview.contains("SELECT"));
+    }
+
+    #[test]
+    fn bool_menu_maps_aliases_to_true_false() {
+        assert_eq!(bool_filter_menu_index("true"), Some(0));
+        assert_eq!(bool_filter_menu_index("TRUE"), Some(0));
+        assert_eq!(bool_filter_menu_index("t"), Some(0));
+        assert_eq!(bool_filter_menu_index("1"), Some(0));
+        assert_eq!(bool_filter_menu_index("false"), Some(1));
+        assert_eq!(bool_filter_menu_index("f"), Some(1));
+        assert_eq!(bool_filter_menu_index("0"), Some(1));
+        assert_eq!(bool_filter_menu_index(""), None);
+        assert_eq!(bool_filter_menu_index("maybe"), None);
+        assert_eq!(bool_filter_menu_value("yes"), Some("true"));
+        assert_eq!(bool_filter_menu_value("no"), Some("false"));
+        assert_eq!(BOOL_FILTER_VALUES, &["true", "false"]);
+
+        let ok = FilterCondition::new("flag", FilterOp::Eq, "true").with_type("bool");
+        assert!(validate_filter_condition(&ok).is_ok());
+        let empty = FilterCondition::new("flag", FilterOp::Eq, "").with_type("bool");
+        assert_eq!(
+            validate_filter_condition(&empty).unwrap_err(),
+            "Enter a value"
+        );
+        let bad = FilterCondition::new("flag", FilterOp::Eq, "maybe").with_type("bool");
+        assert_eq!(
+            validate_filter_condition(&bad).unwrap_err(),
+            "Not a boolean"
+        );
+        assert_eq!(
+            parse_filter_value("false", Some("boolean")),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn filter_draft_insert_and_remove_match_ux() {
+        let mut rows = vec![FilterDraft {
+            column: "a".into(),
+            op: FilterOp::Eq,
+            value: "1".into(),
+        }];
+        let ix = insert_filter_draft_after(&mut rows, 0);
+        assert_eq!(ix, 1);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[1].is_blank());
+
+        // Remove the blank row; the original stays.
+        remove_filter_draft(&mut rows, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].column, "a");
+
+        // Sole row: clear in place.
+        remove_filter_draft(&mut rows, 0);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_blank());
+        assert!(filter_drafts_are_empty(&rows));
+
+        let ix = insert_filter_draft_after(&mut rows, 0);
+        assert_eq!(ix, 1);
+        rows[0].column = "x".into();
+        assert!(!filter_drafts_are_empty(&rows));
     }
 }

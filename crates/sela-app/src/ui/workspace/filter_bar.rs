@@ -1,25 +1,29 @@
 //! Filter bar UI for table Data tabs (M1-3 / US-04).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Input, InputState};
+use gpui_kit::component::input::{Enter, Escape, Input, InputState};
+use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, IndexPath, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     div, px, ClipboardItem, Context, Entity, Focusable, IntoElement, SharedString, Window,
 };
 
 use sela_core::{
-    format_predicate_preview, validate_filter_condition, ColumnKind, FilterCondition, FilterOp,
-    SortDirection, SortSpec, MAX_SORT_KEYS,
+    bool_filter_menu_index, filter_drafts_are_empty, format_predicate_preview,
+    validate_filter_condition, ColumnKind, FilterCondition, FilterDraft, FilterOp, SortDirection,
+    SortSpec, BOOL_FILTER_VALUES, MAX_SORT_KEYS,
 };
 
-use super::Workspace;
+use super::{EscapeFilterBar, InsertFilterRow, RemoveFilterRow, Workspace};
 
 /// One editable filter row (column / op / value inputs).
 pub(super) struct FilterRowUi {
     pub column: Entity<InputState>,
     pub value: Entity<InputState>,
+    /// Two-item true/false menu for [`ColumnKind::Bool`] (hidden for null ops).
+    pub bool_value: Entity<SelectState<Vec<&'static str>>>,
     pub op: FilterOp,
     /// Validation message from the last Apply attempt (cleared on edit / success).
     pub error: Option<String>,
@@ -37,21 +41,55 @@ impl FilterRowUi {
                 .default_value(&seed.value)
                 .placeholder("value")
         });
+        let selected = bool_filter_menu_index(&seed.value).map(IndexPath::new);
+        let bool_value =
+            cx.new(|cx| SelectState::new(BOOL_FILTER_VALUES.to_vec(), selected, window, cx));
         Self {
             column,
             value,
+            bool_value,
             op: seed.op,
             error: None,
         }
     }
 
-    pub fn to_condition(&self, cx: &gpui_kit::App) -> FilterCondition {
+    pub fn to_condition(&self, kind: ColumnKind, cx: &gpui_kit::App) -> FilterCondition {
+        let value = if kind == ColumnKind::Bool && self.op.needs_value() {
+            self.bool_value
+                .read(cx)
+                .selected_value()
+                .map(|s| (*s).to_string())
+                .unwrap_or_default()
+        } else {
+            self.value.read(cx).value().to_string()
+        };
         FilterCondition {
             column: self.column.read(cx).value().to_string(),
             op: self.op,
-            value: self.value.read(cx).value().to_string(),
+            value,
             column_type: None,
         }
+    }
+
+    fn to_draft(&self, kind: ColumnKind, cx: &gpui_kit::App) -> FilterDraft {
+        let value = if kind == ColumnKind::Bool && self.op.needs_value() {
+            self.bool_value
+                .read(cx)
+                .selected_value()
+                .map(|s| (*s).to_string())
+                .unwrap_or_default()
+        } else {
+            self.value.read(cx).value().to_string()
+        };
+        FilterDraft {
+            column: self.column.read(cx).value().to_string(),
+            op: self.op,
+            value,
+        }
+    }
+
+    fn focus_column(&self, window: &mut Window, cx: &mut gpui_kit::App) {
+        self.column.read(cx).focus_handle(cx).focus(window, cx);
     }
 }
 
@@ -80,14 +118,18 @@ impl Workspace {
             .get(&tab_id)
             .map(|view| view.filter_bar_open)
             .unwrap_or(false);
+        let opening = !open;
         if let Some(view) = self.view_mut(tab_id) {
-            view.filter_bar_open = !open;
+            view.filter_bar_open = opening;
             if view.filter_bar_open && view.filter_rows.is_empty() {
                 let seed = FilterCondition::new("", FilterOp::Eq, "");
                 view.filter_rows.push(FilterRowUi::new(window, cx, &seed));
             }
         }
         self.refresh_filter_placeholders(window, cx);
+        if opening {
+            self.focus_filter_row_column(0, window, cx);
+        }
         self.persist_tabs(cx);
         cx.notify();
     }
@@ -96,28 +138,170 @@ impl Workspace {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
+        let new_ix = self
+            .views
+            .get(&tab_id)
+            .map(|view| view.filter_rows.len())
+            .unwrap_or(0);
         if let Some(view) = self.view_mut(tab_id) {
             view.filter_bar_open = true;
             let seed = FilterCondition::new("", FilterOp::Eq, "");
             view.filter_rows.push(FilterRowUi::new(window, cx, &seed));
         }
         self.refresh_filter_placeholders(window, cx);
+        self.focus_filter_row_column(new_ix, window, cx);
         cx.notify();
     }
 
-    pub(super) fn remove_filter_row(&mut self, index: usize, cx: &mut Context<Self>) {
+    /// Insert a row after the focused filter row (`secondary-shift-enter`).
+    pub(super) fn insert_filter_row_after_focused(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
+            return;
+        };
+        let Some(focused) = self.focused_filter_row_index(window, cx) else {
+            // No focused row: append like Add.
+            self.add_filter_row(window, cx);
+            return;
+        };
+        let insert_at = focused + 1;
+        if let Some(view) = self.view_mut(tab_id) {
+            view.filter_bar_open = true;
+            let seed = FilterCondition::new("", FilterOp::Eq, "");
+            let row = FilterRowUi::new(window, cx, &seed);
+            let at = insert_at.min(view.filter_rows.len());
+            view.filter_rows.insert(at, row);
+        }
+        self.refresh_filter_placeholders(window, cx);
+        self.focus_filter_row_column(insert_at, window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn remove_filter_row(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
         if let Some(view) = self.view_mut(tab_id) {
-            if index < view.filter_rows.len() {
+            if view.filter_rows.len() <= 1 {
+                // UX §10: sole row — clear fields and leave the row in place.
+                view.filter_rows.clear();
+                let seed = FilterCondition::new("", FilterOp::Eq, "");
+                view.filter_rows.push(FilterRowUi::new(window, cx, &seed));
+            } else if index < view.filter_rows.len() {
                 view.filter_rows.remove(index);
             }
-            if view.filter_rows.is_empty() {
-                // Leave one empty draft row; do not reload until Apply/Clear.
-            }
         }
+        self.refresh_filter_placeholders(window, cx);
+        let last = self
+            .views
+            .get(&tab_id)
+            .map(|v| v.filter_rows.len().saturating_sub(1))
+            .unwrap_or(0);
+        self.focus_filter_row_column(index.min(last), window, cx);
         cx.notify();
+    }
+
+    /// Remove the focused filter row (`secondary-backspace`).
+    pub(super) fn remove_focused_filter_row(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.focused_filter_row_index(window, cx) else {
+            return;
+        };
+        self.remove_filter_row(index, window, cx);
+    }
+
+    /// Escape: leave the bar (and hide it when the draft is unused).
+    ///
+    /// Open Select menus consume Escape themselves and stop propagation, so this
+    /// only runs after menus are closed.
+    pub(super) fn escape_filter_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
+            return;
+        };
+        if !self.filter_field_focused(window, cx) {
+            return;
+        }
+        let (hide, grid) = {
+            let Some(view) = self.views.get(&tab_id) else {
+                return;
+            };
+            let drafts: Vec<_> = view
+                .filter_rows
+                .iter()
+                .map(|row| {
+                    let kind = self.row_column_kind(tab_id, row, cx);
+                    row.to_draft(kind, cx)
+                })
+                .collect();
+            let hide = filter_drafts_are_empty(&drafts) && view.filters.is_empty();
+            (hide, view.grid.clone())
+        };
+        if hide {
+            if let Some(view) = self.view_mut(tab_id) {
+                view.filter_bar_open = false;
+            }
+            self.persist_tabs(cx);
+        }
+        grid.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn row_column_kind(
+        &self,
+        tab_id: sela_core::TabId,
+        row: &FilterRowUi,
+        cx: &gpui_kit::App,
+    ) -> ColumnKind {
+        let Some(view) = self.views.get(&tab_id) else {
+            return ColumnKind::Other;
+        };
+        let col_name = row.column.read(cx).value().to_string();
+        view.grid
+            .read(cx)
+            .delegate()
+            .result
+            .columns()
+            .iter()
+            .find(|c| c.name == col_name)
+            .map(|c| ColumnKind::from_type_name(&c.type_name))
+            .unwrap_or(ColumnKind::Other)
+    }
+
+    fn focus_filter_row_column(&self, index: usize, window: &mut Window, cx: &mut gpui_kit::App) {
+        let Some(view) = self.active_view() else {
+            return;
+        };
+        if let Some(row) = view.filter_rows.get(index) {
+            row.focus_column(window, cx);
+        }
+    }
+
+    /// Index of the filter row that currently holds focus, if any.
+    pub(super) fn focused_filter_row_index(
+        &self,
+        window: &Window,
+        cx: &gpui_kit::App,
+    ) -> Option<usize> {
+        let view = self.active_view()?;
+        if !view.filter_bar_open {
+            return None;
+        }
+        view.filter_rows.iter().position(|row| {
+            row.column.read(cx).focus_handle(cx).is_focused(window)
+                || row.value.read(cx).focus_handle(cx).is_focused(window)
+                || row.bool_value.read(cx).focus_handle(cx).is_focused(window)
+        })
     }
 
     pub(super) fn cycle_filter_op(
@@ -136,16 +320,7 @@ impl Workspace {
             let Some(row) = view.filter_rows.get(index) else {
                 return;
             };
-            let col_name = row.column.read(cx).value().to_string();
-            view.grid
-                .read(cx)
-                .delegate()
-                .result
-                .columns()
-                .iter()
-                .find(|c| c.name == col_name)
-                .map(|c| ColumnKind::from_type_name(&c.type_name))
-                .unwrap_or(ColumnKind::Other)
+            self.row_column_kind(tab_id, row, cx)
         };
         if let Some(view) = self.view_mut(tab_id) {
             if let Some(row) = view.filter_rows.get_mut(index) {
@@ -211,7 +386,13 @@ impl Workspace {
             let mut conditions = Vec::new();
             let mut errors = Vec::new();
             for row in &view.filter_rows {
-                let mut cond = row.to_condition(cx);
+                let col_name = row.column.read(cx).value().to_string();
+                let kind = cols
+                    .iter()
+                    .find(|c| c.name == col_name)
+                    .map(|c| ColumnKind::from_type_name(&c.type_name))
+                    .unwrap_or(ColumnKind::Other);
+                let mut cond = row.to_condition(kind, cx);
                 if cond.column.trim().is_empty() && cond.value.is_empty() {
                     // Skip blank draft rows.
                     errors.push(None);
@@ -271,16 +452,7 @@ impl Workspace {
 
     /// True when a filter bar input on the active table tab has focus.
     pub(super) fn filter_field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
-        let Some(view) = self.active_view() else {
-            return false;
-        };
-        if !view.filter_bar_open {
-            return false;
-        }
-        view.filter_rows.iter().any(|row| {
-            row.column.read(cx).focus_handle(cx).is_focused(window)
-                || row.value.read(cx).focus_handle(cx).is_focused(window)
-        })
+        self.focused_filter_row_index(window, cx).is_some()
     }
 
     pub(super) fn filter_bar(&self, cx: &Context<Self>, connected: bool) -> impl IntoElement {
@@ -296,8 +468,10 @@ impl Workspace {
         }
 
         let rows = view.map(|v| v.filter_rows.len()).unwrap_or(0);
+        let tab_id = self.tabs.active().map(|tab| tab.id);
 
         v_flex()
+            .key_context("FilterBar")
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().muted)
@@ -310,6 +484,34 @@ impl Workspace {
                     // Plain Enter in a filter field applies (single-line Input
                     // propagates Enter after emitting PressEnter).
                     this.update(cx, |workspace, cx| workspace.apply_filters(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &Escape, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.escape_filter_bar(window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &InsertFilterRow, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.insert_filter_row_after_focused(window, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &RemoveFilterRow, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.remove_focused_filter_row(window, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &EscapeFilterBar, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.escape_filter_bar(window, cx));
                 }
             })
             .child(
@@ -375,6 +577,10 @@ impl Workspace {
                 let op_label = row.op.label().to_string();
                 let needs_value = row.op.needs_value();
                 let err = row.error.clone();
+                let kind = tab_id
+                    .map(|id| self.row_column_kind(id, row, cx))
+                    .unwrap_or(ColumnKind::Other);
+                let use_bool_menu = kind == ColumnKind::Bool && needs_value;
                 h_flex()
                     .gap_2()
                     .items_center()
@@ -403,7 +609,16 @@ impl Workspace {
                     .child(
                         div()
                             .flex_1()
-                            .when(needs_value, |el| {
+                            .when(use_bool_menu, |el| {
+                                el.child(
+                                    Select::new(&row.bool_value)
+                                        .placeholder("value")
+                                        .accessibility_label("Boolean value")
+                                        .xsmall()
+                                        .disabled(!connected || busy),
+                                )
+                            })
+                            .when(needs_value && !use_bool_menu, |el| {
                                 el.child(Input::new(&row.value).appearance(true))
                             })
                             .when(!needs_value, |el| {
@@ -423,9 +638,9 @@ impl Workspace {
                             .xsmall()
                             .label("×")
                             .disabled(!connected || busy)
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 this_rm.update(cx, |workspace, cx| {
-                                    workspace.remove_filter_row(index, cx)
+                                    workspace.remove_filter_row(index, window, cx)
                                 });
                             }),
                     )
@@ -524,6 +739,7 @@ impl Workspace {
                 }
             } else {
                 // Plain click: cycle when sole key; otherwise replace list with ASC.
+                // DataTable's built-in Desc-first cycle is ignored — Sela uses ASC → DESC → none.
                 if view.sorts.len() == 1 && view.sorts[0].column == column_name {
                     match view.sorts[0].direction {
                         SortDirection::Asc => {

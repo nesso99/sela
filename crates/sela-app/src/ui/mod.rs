@@ -4,10 +4,13 @@ mod form;
 mod grid;
 mod workspace;
 
+use std::rc::Rc;
+
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    actions, px, size, Action, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions,
+    actions, px, size, Action, Bounds, KeyBinding, KeyBindingContextPredicate, TitlebarOptions,
+    WindowBounds, WindowOptions,
 };
 
 pub use workspace::Workspace;
@@ -22,6 +25,9 @@ actions!(
         ShowTableData,
         ShowTableStructure,
         ToggleFilterBar,
+        InsertFilterRow,
+        RemoveFilterRow,
+        EscapeFilterBar,
         Quit
     ]
 );
@@ -72,16 +78,28 @@ pub fn run() {
                 KeyBinding::new("ctrl-shift-]", ShowTableStructure, None),
             ]);
             // Platform secondary modifier (⌘ on macOS, Ctrl elsewhere) — M1-3 filter bar.
-            if let Ok(binding) = KeyBinding::load(
-                "secondary-f",
-                Box::new(ToggleFilterBar),
-                None,
-                false,
-                None,
+            bind_secondary(cx, "secondary-f", Box::new(ToggleFilterBar), None);
+            // Filter-bar-only chords (UX §10). `FilterBar > Input` overrides the
+            // Input widget's cmd/ctrl-backspace so the row is removed instead.
+            bind_secondary(
                 cx,
-            ) {
-                cx.bind_keys([binding]);
-            }
+                "secondary-shift-enter",
+                Box::new(InsertFilterRow),
+                Some("FilterBar"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-backspace",
+                Box::new(RemoveFilterRow),
+                Some("FilterBar"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-backspace",
+                Box::new(RemoveFilterRow),
+                Some("FilterBar > Input"),
+            );
+            bind_secondary(cx, "escape", Box::new(EscapeFilterBar), Some("FilterBar"));
             cx.on_action(|_: &Quit, cx| cx.quit());
 
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
@@ -100,4 +118,17 @@ pub fn run() {
             )
             .expect("failed to open the Sela window");
         });
+}
+
+fn bind_secondary(
+    cx: &mut gpui_kit::App,
+    keystrokes: &str,
+    action: Box<dyn Action>,
+    context: Option<&str>,
+) {
+    let predicate =
+        context.and_then(|ctx| KeyBindingContextPredicate::parse(ctx).ok().map(Rc::new));
+    if let Ok(binding) = KeyBinding::load(keystrokes, action, predicate, false, None, cx) {
+        cx.bind_keys([binding]);
+    }
 }
