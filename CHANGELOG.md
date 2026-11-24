@@ -10,7 +10,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 
 ### Added
 
-- `sela --version` / `-V` prints `sela <version>` and `--help` / `-h` prints usage; both exit without opening a window.
+- `sela --version` / `-V` prints `sela <version> (<short git SHA>)` (SHA from `git rev-parse` at build time, or the `SELA_GIT_SHA` build env; omitted when neither is available) and `--help` / `-h` prints usage; both exit without opening a window.
 
 ### Fixed
 
