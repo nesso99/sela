@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Switching saved connections while one is active cancels and closes the previous connection’s tabs, then connects the chosen row; Edit targets the tree selection instead of only the live session (#45).
+- When the OS keychain / Secret Service is unavailable, the connection dialog and status bar warn that the password is kept for this session only and will not be saved after quit; in-memory passwords still work for connect, reconnect, and switch (#46).
+- Disconnect cancels running queries for the active connection and closes that connection’s tabs (persisting `tabs.json`) so stale tabs are not left open or restored for the wrong database (#48).
+
 ## [0.1.0] - 2026-11-24
 
 ### Fixed

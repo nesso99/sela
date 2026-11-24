@@ -18,7 +18,11 @@ Use the theme menu on the status bar (Light, Dark, or System). The choice is sav
 
 ## Why does Linux ask for my password again after restart?
 
-No unlocked Secret Service was available when you saved the connection. Sela kept the password in memory only. Unlock gnome-keyring / KWallet (or another Secret Service) and save the connection again.
+No unlocked Secret Service was available when you saved the connection. Sela kept the password in memory only for that session and warned in the connection dialog and status bar (*The OS keychain is unavailable, so the password is kept for this session only*). Unlock gnome-keyring / KWallet (or another Secret Service) and save the connection again so the password is stored in the keychain.
+
+## Why can’t I keep tabs after Disconnect?
+
+Disconnect closes that connection’s tabs on purpose so a later connect cannot restore or show tables from the wrong database. Save any SQL you need before disconnecting, or leave the connection connected.
 
 ## Can I cancel a long query?
 

@@ -7,12 +7,15 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{px, Context, SharedString, Window};
 
-use sela_config::{PasswordPersistence, SavedConnection};
+use sela_config::{
+    keychain_unavailable_dialog_warning, memory_only_password_warning, PasswordPersistence,
+    SavedConnection,
+};
 use sela_core::{DatabaseSession, DbError, Engine, LoadedSchema};
 use sela_drivers::{connect, create_sample_database, load_catalog};
 
 use super::super::form::{ConnectionDraft, ConnectionForm, FormEvent};
-use super::tree::{conn_key, parse_node, schema_key, NodeId};
+use super::tree::{conn_key, connection_id_from_selection, parse_node, schema_key, NodeId};
 use super::{GridSource, Workspace};
 
 // `open_table` lives in tabs.rs as `open_table_tab`.
@@ -31,6 +34,9 @@ impl Workspace {
         let Some(id) = id else {
             return;
         };
+        if let Some(connection_id) = connection_id_from_selection(&id) {
+            self.selected_connection_id = Some(connection_id);
+        }
         match parse_node(&id) {
             Some(NodeId::Connection(connection_id)) => self.connect_id(connection_id, cx),
             Some(NodeId::Table { schema, table }) => self.open_table_tab(schema, table, window, cx),
@@ -45,6 +51,20 @@ impl Workspace {
         let Some(saved) = self.connections.iter().find(|item| item.id == id).cloned() else {
             return;
         };
+        // One live session at a time: cancel and close tabs for every other
+        // connection so on_tab_activated cannot snap the session back.
+        let foreign: Vec<String> = self
+            .tabs
+            .tabs()
+            .iter()
+            .filter(|tab| !tab.connection_id.is_empty() && tab.connection_id != id)
+            .map(|tab| tab.connection_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for previous in foreign {
+            self.close_tabs_for_connection(&previous, cx);
+        }
         let password = match self.secrets.get(&saved.id) {
             Ok(password) => password,
             Err(err) => {
@@ -62,6 +82,7 @@ impl Workspace {
         let saved_id = saved.id.clone();
         let saved_name = saved.name.clone();
         self.active_id = Some(saved_id.clone());
+        self.selected_connection_id = Some(saved_id.clone());
         self.session = None;
         self.catalog.clear();
         if let Some(view) = self.active_view_mut() {
@@ -83,8 +104,12 @@ impl Workspace {
                         this.expanded.insert(schema_key(&saved_id, &schema.name));
                     }
                     let count: usize = this.catalog.iter().map(|schema| schema.tables.len()).sum();
+                    let mut status = format!("Connected to {saved_name} · {count} tables");
+                    if let Some(warning) = &this.keychain_session_warning {
+                        status = format!("{status} · {warning}");
+                    }
                     if let Some(view) = this.active_view_mut() {
-                        view.status = format!("Connected to {saved_name} · {count} tables");
+                        view.status = status;
                         view.error = None;
                     }
                     this.rebuild_tree(cx);
@@ -112,7 +137,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (password, warning) = match existing.as_ref() {
+        let (password, mut warning) = match existing.as_ref() {
             Some(connection) => match self.secrets.get(&connection.id) {
                 Ok(password) => (password, None),
                 Err(err) => (
@@ -122,12 +147,37 @@ impl Workspace {
             },
             None => (String::new(), None),
         };
+        let keychain_unavailable = match self.secrets.probe_keychain() {
+            Ok(()) => false,
+            Err(err) => {
+                if warning.is_none() {
+                    warning = Some(keychain_unavailable_dialog_warning(&err.to_string()));
+                }
+                true
+            }
+        };
+        if !keychain_unavailable {
+            if let Some(session_warning) = &self.keychain_session_warning {
+                if warning.is_none() {
+                    warning = Some(session_warning.clone());
+                }
+            }
+        }
         let title: SharedString = if existing.is_some() {
             "Edit connection".into()
         } else {
             "New connection".into()
         };
-        let form = cx.new(|cx| ConnectionForm::new(existing, password, warning, window, cx));
+        let form = cx.new(|cx| {
+            ConnectionForm::new(
+                existing,
+                password,
+                warning,
+                keychain_unavailable,
+                window,
+                cx,
+            )
+        });
         let subscription =
             cx.subscribe_in(&form, window, |this, _, event, window, cx| match event {
                 FormEvent::Submit(draft) => {
@@ -153,15 +203,30 @@ impl Workspace {
         } else {
             self.connections.push(draft.connection);
         }
-        let note = match persistence {
-            PasswordPersistence::Keychain => Some("Password saved in the OS keychain.".into()),
-            PasswordPersistence::MemoryOnly(message) => Some(format!(
-                "The OS keychain is unavailable, so the password is kept for this session only. {message}"
-            )),
-            PasswordPersistence::Empty => None,
+        let status_note = match persistence {
+            PasswordPersistence::Keychain => {
+                self.keychain_session_warning = None;
+                Some("Password saved in the OS keychain.".into())
+            }
+            PasswordPersistence::MemoryOnly(message) => {
+                let warning = memory_only_password_warning(&message);
+                self.keychain_session_warning = Some(warning.clone());
+                Some(warning)
+            }
+            PasswordPersistence::Empty => {
+                // Empty secret does not clear a prior memory-only warning for
+                // other connections; only clear when this write was intentional empty.
+                None
+            }
         };
         if let Some(view) = self.active_view_mut() {
-            view.note = note;
+            // Put the keychain sentence in status (status bar reads view.status).
+            if let Some(note) = status_note.clone() {
+                view.status = note.clone();
+                view.note = Some(note);
+            } else {
+                view.note = None;
+            }
         }
         if let Err(err) = self.store.save(&self.connections) {
             if let Some(view) = self.active_view_mut() {
@@ -176,12 +241,10 @@ impl Workspace {
     }
 
     pub(super) fn confirm_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.active_id.clone() else {
+        let Some(connection) = self.selected_or_active_connection().cloned() else {
             return;
         };
-        let Some(connection) = self.connections.iter().find(|item| item.id == id).cloned() else {
-            return;
-        };
+        let id = connection.id.clone();
         let this = cx.entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this = this.clone();
@@ -204,19 +267,10 @@ impl Workspace {
     pub(super) fn delete_connection(&mut self, id: &str, cx: &mut Context<Self>) {
         self.secrets.delete(id);
         self.connections.retain(|item| item.id != id);
-        // Close tabs that pointed at the deleted connection.
-        let doomed: Vec<_> = self
-            .tabs
-            .tabs()
-            .iter()
-            .filter(|tab| tab.connection_id == id)
-            .map(|tab| tab.id)
-            .collect();
-        for tab_id in doomed {
-            self.tabs.close(tab_id);
-            self.views.remove(&tab_id);
+        if self.selected_connection_id.as_deref() == Some(id) {
+            self.selected_connection_id = None;
         }
-        self.persist_tabs(cx);
+        self.close_tabs_for_connection(id, cx);
         if self.active_id.as_deref() == Some(id) {
             self.disconnect(cx);
         }
@@ -231,10 +285,30 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Cancel running work on tabs for `connection_id`, close them, and persist.
+    pub(super) fn close_tabs_for_connection(
+        &mut self,
+        connection_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let removed = self.tabs.close_for_connection(connection_id);
+        for tab in &removed {
+            self.views.remove(&tab.id);
+        }
+        if !removed.is_empty() {
+            self.persist_tabs(cx);
+        }
+    }
+
     pub(super) fn disconnect(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.active_id.clone() {
+            self.close_tabs_for_connection(&id, cx);
+        }
         self.session = None;
         self.catalog.clear();
+        self.active_id = None;
         self.clear_all_structure_caches();
+        // After closing this connection's tabs there is usually no active view.
         if let Some(view) = self.active_view_mut() {
             view.source = GridSource::Idle;
             view.table_pane = super::TablePane::Data;
@@ -249,6 +323,7 @@ impl Workspace {
                 state.refresh(cx);
             });
         }
+        cx.notify();
     }
 
     pub(super) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {

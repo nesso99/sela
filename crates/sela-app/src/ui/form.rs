@@ -26,6 +26,8 @@ pub struct ConnectionForm {
     tls_mode: TlsMode,
     record_history: bool,
     warning: Option<String>,
+    /// True when the OS keychain probe failed; changes the password helper copy.
+    keychain_unavailable: bool,
     error: Option<String>,
     name: Entity<InputState>,
     host: Entity<InputState>,
@@ -46,6 +48,7 @@ impl ConnectionForm {
         existing: Option<SavedConnection>,
         password: String,
         warning: Option<String>,
+        keychain_unavailable: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -67,6 +70,7 @@ impl ConnectionForm {
             tls_mode: seed.tls.mode,
             record_history: seed.record_history,
             warning,
+            keychain_unavailable,
             error: None,
             name: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -302,9 +306,11 @@ impl Render for ConnectionForm {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(
-                        "Passwords are stored in the OS keychain, not in the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only.",
-                    ),
+                    .child(if self.keychain_unavailable {
+                        "The OS keychain is unavailable, so the password will not be saved after you quit. It is kept in memory for this session only and is never written to the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only.".to_string()
+                    } else {
+                        "Passwords are stored in the OS keychain, not in the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only.".to_string()
+                    }),
             )
             .when_some(self.warning.clone(), |form, warning| {
                 form.child(

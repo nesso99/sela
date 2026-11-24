@@ -34,6 +34,10 @@ Column widths stay as they are: `GridDelegate::column` sizes from the header tex
 
 **Sidebar** (`sidebar.rs`). “Sela”, the engine line, New, Sample library, the connection tree, then Edit, Delete, Refresh, Disconnect. A connected row is `●` plus the engine short name. Schemas and tables render only under the active connection. Empty copy is the current sentence: “No saved connections yet. Create one, or open the sample SQLite library.”
 
+Clicking another saved connection while one is active switches: Sela cancels running work on the previous connection’s tabs, closes those tabs, then connects the chosen row. **Edit** and **Delete** target the tree selection (the clicked connection, or the connection that owns a selected schema/table), falling back to the active session when nothing is selected. **Refresh** and **Disconnect** act on the live session.
+
+**Disconnect** cancels any running queries on that connection’s tabs, closes those tabs (and persists `tabs.json`), drops the session, and clears the active connection. The content column returns to the empty “no tabs” state until the user connects again.
+
 **Tab bar** (`tabs.rs`). One tab per table or query. The close control is on the tab. `+` creates a query tab. With no tabs the bar shows a disabled “No tabs” item, which is what the code does today.
 
 **Toolbar** (`content.rs`). Left: `TabView::source_label` (`schema.table`, `SQL result`, or `No table open`) and, under it, the engine and endpoint. Right, only when a table is open: Data, Structure, and Refresh while Structure is showing. On the Data pane: the page label, Previous, Next. Page label logic in `Workspace::render` stays: `Page N of M` when `total_rows` is known, otherwise `Page N · 100 rows`. When the platform is not drawing a close button, a small close control sits at the right end of this bar. It is not a Quit button. See [Quit and window lifecycle](#quit-and-window-lifecycle).
@@ -42,7 +46,7 @@ Column widths stay as they are: `GridDelegate::column` sizes from the header tex
 
 **Editor.** Specified in [03-sql-editor.md](./03-sql-editor.md). Until that work lands it remains the monospace `Textarea` at 176px.
 
-**Status bar** (`status.rs`). Left: `TabView.status`. Right: the source label. Text size is `text_xs`. The exact strings for each state are in [Status text](#status-text).
+**Status bar** (`status.rs`). Left: `TabView.status` (or a workspace keychain session warning when there is no tab status). Right: the source label. Text size is `text_xs`. The exact strings for each state are in [Status text](#status-text). When the OS keychain cannot store a password, the left text includes `The OS keychain is unavailable, so the password is kept for this session only. {message}` (also after a successful connect).
 
 ## States
 

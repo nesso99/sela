@@ -34,7 +34,7 @@ Without a GPU, Mesa lavapipe can stand in for smoke checks:
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 ```
 
-Also expect the usual desktop stack at runtime: Wayland or X11, fontconfig/Freetype fonts (e.g. DejaVu), and D-Bus. Passwords use the Secret Service API (gnome-keyring or KWallet) over D-Bus. Without it, Sela keeps the password in memory for the session and never writes it to JSON.
+Also expect the usual desktop stack at runtime: Wayland or X11, fontconfig/Freetype fonts (e.g. DejaVu), and D-Bus. Passwords use the Secret Service API (gnome-keyring or KWallet) over D-Bus. Without it, Sela keeps the password in memory for the session, warns in the connection dialog and status bar that it will not be saved after quit, and never writes it to JSON.
 
 Fedora note: an RPM is not published for v0.1.0. Prefer the AppImage or tarball; Flatpak may come later.
 

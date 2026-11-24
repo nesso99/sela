@@ -67,7 +67,12 @@ pub struct Workspace {
     views: HashMap<TabId, TabView>,
     /// Workspace-level load error (e.g. connections.json), shown when no tab error.
     boot_error: Option<String>,
+    /// Shown in the status bar when a password is held in memory only this session.
+    keychain_session_warning: Option<String>,
     last_selection: Option<String>,
+    /// Connection id last chosen in the tree. Survives `rebuild_tree`, which
+    /// clears `last_selection` so Edit / Delete still target the clicked row.
+    selected_connection_id: Option<String>,
     history_open: bool,
     history_height: f32,
     history_scope: HistoryScope,
@@ -184,7 +189,9 @@ impl Workspace {
             tabs: TabList::new(),
             views: HashMap::new(),
             boot_error,
+            keychain_session_warning: None,
             last_selection: None,
+            selected_connection_id: None,
             history_open: false,
             history_height: DEFAULT_HISTORY_HEIGHT,
             history_scope: HistoryScope::ThisConnection,
@@ -239,6 +246,16 @@ impl Workspace {
         self.active_id
             .as_ref()
             .and_then(|id| self.connections.iter().find(|item| &item.id == id))
+    }
+
+    /// Connection the sidebar Edit / Delete buttons should target: the tree
+    /// selection when it names a connection (or a child under one), else the
+    /// active session connection.
+    fn selected_or_active_connection(&self) -> Option<&SavedConnection> {
+        self.selected_connection_id
+            .as_ref()
+            .and_then(|id| self.connections.iter().find(|item| &item.id == id))
+            .or_else(|| self.active_connection())
     }
 
     /// Dialect for statement splitting / quoting in the SQL editor.

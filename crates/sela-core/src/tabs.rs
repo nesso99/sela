@@ -242,6 +242,24 @@ impl TabList {
         }
     }
 
+    /// Close every tab for `connection_id`, cancelling each tab's in-flight
+    /// work. Used on Disconnect and when switching to another connection.
+    pub fn close_for_connection(&mut self, connection_id: &str) -> Vec<Tab> {
+        let ids: Vec<TabId> = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.connection_id == connection_id)
+            .map(|tab| tab.id)
+            .collect();
+        let mut removed = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(tab) = self.close(id) {
+                removed.push(tab);
+            }
+        }
+        removed
+    }
+
     /// Close a tab, cancelling its running query. Focus moves to the tab that
     /// took this index (the old right neighbour), or the new last tab.
     pub fn close(&mut self, id: TabId) -> Option<Tab> {
@@ -404,6 +422,34 @@ mod tests {
         tabs.close(id);
         assert!(watch.is_cancelled());
         assert!(tabs.is_empty());
+    }
+
+    #[test]
+    fn close_for_connection_cancels_and_removes_only_that_connection() {
+        let mut tabs = TabList::new();
+        let (a, _) = tabs.open_table("pg", "public", "big");
+        let b = tabs.open_query("pg", "select 1");
+        let (c, _) = tabs.open_table("mysql", "main", "likes");
+
+        let token_a = CancellationToken::new();
+        let watch_a = token_a.clone();
+        tabs.get_mut(a).unwrap().set_cancel(token_a);
+        let token_b = CancellationToken::new();
+        let watch_b = token_b.clone();
+        tabs.get_mut(b).unwrap().set_cancel(token_b);
+
+        let removed = tabs.close_for_connection("pg");
+        assert_eq!(removed.len(), 2);
+        assert!(watch_a.is_cancelled());
+        assert!(watch_b.is_cancelled());
+        assert!(tabs.get(a).is_none());
+        assert!(tabs.get(b).is_none());
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs.active().map(|t| t.id), Some(c));
+        assert_eq!(
+            tabs.active().map(|t| t.connection_id.as_str()),
+            Some("mysql")
+        );
     }
 
     /// Structure loads (and queries) share the per-tab cancel token + request id.

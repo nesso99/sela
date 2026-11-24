@@ -83,3 +83,51 @@ pub(super) fn parse_node(id: &str) -> Option<NodeId> {
         _ => None,
     }
 }
+
+/// Connection id from a tree selection (`c` / `s` / `t` node), if any.
+pub(super) fn connection_id_from_selection(id: &str) -> Option<String> {
+    let mut parts = id.split(SEP);
+    match parts.next()? {
+        "c" | "s" | "t" => {
+            let connection = parts.next()?.to_string();
+            if connection.is_empty() {
+                None
+            } else {
+                Some(connection)
+            }
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_id_from_selection_reads_connection_schema_and_table_nodes() {
+        let id = "abc-123";
+        assert_eq!(
+            connection_id_from_selection(&conn_key(id)).as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            connection_id_from_selection(&schema_key(id, "public")).as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            connection_id_from_selection(&table_key(id, "public", "books")).as_deref(),
+            Some(id)
+        );
+        assert_eq!(connection_id_from_selection("n\u{1f}noise"), None);
+    }
+
+    #[test]
+    fn edit_target_prefers_tree_selection_over_active_id() {
+        // Mirrors Workspace::selected_or_active_connection: selection wins.
+        let selected = connection_id_from_selection(&conn_key("mysql-qa"));
+        let active = Some("pg-qa".to_string());
+        let target = selected.or(active);
+        assert_eq!(target.as_deref(), Some("mysql-qa"));
+    }
+}
