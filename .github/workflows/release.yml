@@ -110,9 +110,12 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - name: macos-universal
-            os: macos-14
-            target: universal-apple-darwin
+          # macos-14 is rejected on this repo ("macos-14-arm64-us-default"
+          # not supported). macos-latest (arm64) matches CI and is enough
+          # for v0.1.0; Intel/universal is deferred.
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -122,7 +125,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.name == 'macos-universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+          targets: ${{ matrix.target }}
 
       - name: Install Linux GPUI dependencies
         if: runner.os == 'Linux'
@@ -145,19 +148,11 @@ jobs:
           SELA_GIT_SHA: ${{ needs.meta.outputs.git_sha }}
         run: cargo build --release -p sela-app
 
-      - name: Build (macOS universal)
+      - name: Build (macOS arm64)
         if: runner.os == 'macOS'
         env:
           SELA_GIT_SHA: ${{ needs.meta.outputs.git_sha }}
-        run: |
-          set -euo pipefail
-          cargo build --release -p sela-app --target aarch64-apple-darwin
-          cargo build --release -p sela-app --target x86_64-apple-darwin
-          mkdir -p target/release
-          lipo -create -output target/release/sela \
-            target/aarch64-apple-darwin/release/sela \
-            target/x86_64-apple-darwin/release/sela
-          lipo -info target/release/sela
+        run: cargo build --release -p sela-app
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
@@ -171,18 +166,21 @@ jobs:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          # Requires sela --version from PR #27 (feat/version-flag). Merge that
-          # before tagging v0.1.0; dry-run branches may cherry-pick it.
+          # Requires sela --version from PR #27 (feat/version-flag). Without it
+          # the binary ignores unknown args and opens a GPUI window (hangs or
+          # crashes headless); the timeout below fails the job instead.
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             BIN="target/release/sela.exe"
+            run_ver() { "$BIN" "$@"; }
           else
             BIN="target/release/sela"
+            run_ver() { timeout 15s "$BIN" "$@"; }
           fi
           test -f "$BIN"
-          out="$("$BIN" --version)"
+          out="$(run_ver --version)"
           echo "smoke: $out"
           echo "$out" | grep -E "^sela ${VERSION}( |$)"
-          out2="$("$BIN" -V)"
+          out2="$(run_ver -V)"
           echo "smoke -V: $out2"
           echo "$out2" | grep -E "^sela ${VERSION}( |$)"
 
@@ -204,7 +202,7 @@ jobs:
           BINARY: target/release/sela
           OUT_DIR: dist
           REPO_ROOT: ${{ github.workspace }}
-          ARCH_LABEL: universal
+          ARCH_LABEL: arm64
         run: |
           chmod +x scripts/package-macos.sh
           ./scripts/package-macos.sh
