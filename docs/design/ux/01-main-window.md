@@ -198,7 +198,7 @@ On macOS the app menu item is `Quit Sela`, last, after a separator. On Linux and
 
 Closing the last window quits on Linux and Windows. On macOS the app stays running after the last window closes, and Command+Q quits. That is gpui-pre 0.3.12 `QuitMode::Default` (`Explicit` on macOS, `LastWindowClosed` elsewhere). `ui/mod.rs` does not call `set_quit_mode`. Keep that default. The shortcut, the menu item, Alt+F4, and the close control go through one quit handler. Closing the window on macOS is not that handler.
 
-Confirm only while a query is running. Count is included: `spawn_work` sets `view.busy` for Count the same way it does for a query. If any tab is busy, confirm. Title `Quit Sela?`. Body `A query is still running. Quitting will cancel it.` Buttons are Cancel, then Quit. Cancel is the default and the focused button. Escape cancels. Quit is not primary-styled. A second `secondary-q` while this dialog is open does not quit.
+Confirm only while a query is running. Count is included: `spawn_work` sets `view.busy` for Count the same way it does for a query. If any tab is busy, confirm. Title `Quit Sela?`. Body `A query is still running. Quitting will cancel it.` Buttons are Cancel, then Quit. Cancel is the default (primary-styled) button. Initial keyboard focus may sit on the dialog rather than on the Cancel button; Enter or Escape still dismisses the dialog without quitting. Quit is not primary-styled. A second `secondary-q` while this dialog is open does not quit.
 
 On quit, cancel in-flight queries and close pools, then flush query history: WAL checkpoint and close `history.sqlite`. That cleanup runs from `Context::on_app_quit` and is capped by gpui-pre’s `SHUTDOWN_TIMEOUT` (200 ms) inside `App::shutdown`. After the timeout GPUI exits anyway.
 
