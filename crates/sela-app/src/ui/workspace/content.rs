@@ -111,13 +111,18 @@ impl Workspace {
                             .active_view()
                             .map(|view| view.filter_bar_open)
                             .unwrap_or(false);
+                        let filter_applied = self
+                            .active_view()
+                            .map(|view| !view.filters.is_empty())
+                            .unwrap_or(false);
                         row.when(self.table_open(), |row| {
                             row.child(
                                 Button::new("filter-toggle")
                                     .xsmall()
                                     .label(if filter_open { "Filter ▾" } else { "Filter" })
                                     .primary()
-                                    .when(!filter_open, |button| button.ghost())
+                                    // Stay selected when a filter is applied even if the bar is closed.
+                                    .when(!filter_open && !filter_applied, |button| button.ghost())
                                     .disabled(!connected)
                                     .tooltip("Toggle filter bar (Ctrl/⌘+F)")
                                     .on_click(move |_, window, cx| {

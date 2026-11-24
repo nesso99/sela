@@ -4,15 +4,15 @@ On a **table** tab (not an arbitrary SQL result), Sela can filter and sort rows 
 
 ## Filter bar
 
-- Open or close the filter bar with **Ctrl/⌘+F**, or the **Filter** button in the toolbar.
+- Open or close the filter bar with **Ctrl/⌘+F**, or the **Filter** button in the toolbar. When a filter is applied and the bar is closed, the button stays selected.
 - Each condition has a **column**, **operator**, and **value** (value is hidden for `is null` / `is not null`).
-- Conditions are combined with **AND** only in this release.
-- **Apply** (or Enter in a filter field) runs the filtered preview. Any invalid row refuses the whole Apply and leaves the previous page. **Clear** removes all conditions and reloads the unfiltered estimate. **Add** appends another row.
-- Operators depend on the column type. Pattern operators (**contains** / **not contains** / **starts with** / **ends with**) are only offered for text-like columns. Click the operator button to cycle legal operators for that column.
+- Conditions are combined with **AND** only in this release (no OR / groups).
+- **Apply** (or Enter / Ctrl/⌘+Enter in a filter field) runs the filtered preview. Any invalid row refuses the whole Apply and leaves the previous page. **Clear** removes all conditions and reloads the unfiltered estimate. **Add** appends another row.
+- Operators depend on the column type (`ColumnKind`). Text columns offer `=`, `≠`, `LIKE`, `NOT LIKE`, `in`, `is null`, `is not null`. Click the operator button to cycle legal operators for that column.
 - **in** takes a comma-separated list (each item is a bound parameter).
-- Pattern operators use `LIKE` / `ILIKE` with `ESCAPE '!'` (so `%`, `_`, and `!` in the value are literals). They do not auto-add wildcards beyond what the operator itself wraps (contains → `%value%`). Empty patterns are rejected; empty text for `=` binds a real empty string.
+- **LIKE** / **NOT LIKE** use `ESCAPE '!'`. `%` and `_` are wildcards; use `!` to escape them (and `!!` for a literal `!`). Empty patterns are rejected. Empty text for `=` binds a real empty string (`''`); the value field placeholder says `empty matches '' · IS NULL for nulls`.
 - Never emit `col = NULL` — use **is null**. On a text column, the characters `NULL` are a normal string.
-- Values are bound parameters; identifiers are quoted. Generated SQL is **not** written into the SQL editor (that would flip the tab to a capped SQL result). A muted strip under the grid shows the `WHERE` / `ORDER BY` fragment with placeholders.
+- Values are bound parameters; identifiers are quoted. Generated SQL is **not** written into the SQL editor (that would flip the tab to a capped SQL result). A muted strip under the grid shows the `WHERE` / `ORDER BY` fragment with placeholders; hover shows the full line, click copies it.
 
 Filter state for table tabs is saved in `tabs.json` and restored when you reopen Sela. Restoring a tab does **not** auto-run a query until you reconnect and open the table as usual.
 
@@ -27,7 +27,7 @@ Filter state for table tabs is saved in `tabs.json` and restored when you reopen
 
 Without a filter, table previews still show an engine estimate when available (Postgres / MySQL).
 
-When any filter is active, the estimate is invalid: status shows `unknown rows · N on this page · <ms>`. Use **Count** in the status bar to run `COUNT(*)` with the same `WHERE`. A failed count does not show an error banner over the grid.
+When any filter is active, the estimate is invalid: status shows `unknown rows · N on this page · <ms>`, the page label no longer shows a stale total, and **Count** in the status bar runs `COUNT(*)` with the same `WHERE`. While counting, status ticks `Counting… · 1.2 s`; Stop / Ctrl/⌘+. cancels with `Count cancelled` (grid unchanged, no error banner). A failed count shows `Count failed · …` without a banner.
 
 ## SQL tabs
 

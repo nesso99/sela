@@ -1,10 +1,13 @@
 //! Filter bar UI for table Data tabs (M1-3 / US-04).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Enter, Input, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, Entity, Focusable, IntoElement, Window};
+use gpui_kit::{
+    div, px, ClipboardItem, Context, Entity, Focusable, IntoElement, SharedString, Window,
+};
 
 use sela_core::{
     format_predicate_preview, validate_filter_condition, ColumnKind, FilterCondition, FilterOp,
@@ -52,6 +55,14 @@ impl FilterRowUi {
     }
 }
 
+fn empty_text_placeholder() -> SharedString {
+    SharedString::from("empty matches '' · IS NULL for nulls")
+}
+
+fn like_placeholder() -> SharedString {
+    SharedString::from("% and _ are wildcards")
+}
+
 impl Workspace {
     pub(super) fn toggle_filter_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
@@ -76,6 +87,7 @@ impl Workspace {
                 view.filter_rows.push(FilterRowUi::new(window, cx, &seed));
             }
         }
+        self.refresh_filter_placeholders(window, cx);
         self.persist_tabs(cx);
         cx.notify();
     }
@@ -89,6 +101,7 @@ impl Workspace {
             let seed = FilterCondition::new("", FilterOp::Eq, "");
             view.filter_rows.push(FilterRowUi::new(window, cx, &seed));
         }
+        self.refresh_filter_placeholders(window, cx);
         cx.notify();
     }
 
@@ -107,7 +120,12 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn cycle_filter_op(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn cycle_filter_op(
+        &mut self,
+        window: &mut Window,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
@@ -135,7 +153,50 @@ impl Workspace {
                 row.error = None;
             }
         }
+        self.refresh_filter_placeholders(window, cx);
         cx.notify();
+    }
+
+    /// Update value-field placeholders for `=` / `≠` on text and for LIKE.
+    pub(super) fn refresh_filter_placeholders(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
+            return;
+        };
+        let Some(view) = self.views.get(&tab_id) else {
+            return;
+        };
+        let cols = view.grid.read(cx).delegate().result.columns().to_vec();
+        let updates: Vec<_> = view
+            .filter_rows
+            .iter()
+            .map(|row| {
+                let col_name = row.column.read(cx).value().to_string();
+                let kind = cols
+                    .iter()
+                    .find(|c| c.name == col_name)
+                    .map(|c| ColumnKind::from_type_name(&c.type_name))
+                    .unwrap_or(ColumnKind::Other);
+                let placeholder = if matches!(row.op, FilterOp::Eq | FilterOp::Ne)
+                    && matches!(kind, ColumnKind::Text | ColumnKind::Other)
+                {
+                    empty_text_placeholder()
+                } else if matches!(row.op, FilterOp::Like | FilterOp::NotLike) {
+                    like_placeholder()
+                } else {
+                    SharedString::from("value")
+                };
+                (row.value.clone(), placeholder)
+            })
+            .collect();
+        for (entity, placeholder) in updates {
+            entity.update(cx, |state, cx| {
+                state.set_placeholder(placeholder, window, cx);
+            });
+        }
     }
 
     pub(super) fn apply_filters(&mut self, cx: &mut Context<Self>) {
@@ -203,6 +264,7 @@ impl Workspace {
             view.filter_rows.push(FilterRowUi::new(window, cx, &seed));
             view.page_offset = 0;
         }
+        self.refresh_filter_placeholders(window, cx);
         self.persist_tabs(cx);
         self.load_source_for(tab_id, cx);
     }
@@ -242,6 +304,14 @@ impl Workspace {
             .px_3()
             .py_2()
             .gap_2()
+            .on_action({
+                let this = this.clone();
+                move |_: &Enter, _, cx| {
+                    // Plain Enter in a filter field applies (single-line Input
+                    // propagates Enter after emitting PressEnter).
+                    this.update(cx, |workspace, cx| workspace.apply_filters(cx));
+                }
+            })
             .child(
                 h_flex()
                     .items_center()
@@ -314,14 +384,19 @@ impl Workspace {
                             .child(Input::new(&row.column).appearance(true)),
                     )
                     .child({
+                        let like_tip = matches!(row.op, FilterOp::Like | FilterOp::NotLike);
                         Button::new(("filter-op", index))
                             .xsmall()
                             .label(op_label)
                             .disabled(!connected || busy)
-                            .tooltip("Click to cycle operator for this column type")
-                            .on_click(move |_, _, cx| {
+                            .tooltip(if like_tip {
+                                "LIKE: % and _ are wildcards; use ! to escape (ESCAPE '!')"
+                            } else {
+                                "Click to cycle operator for this column type"
+                            })
+                            .on_click(move |_, window, cx| {
                                 this_op.update(cx, |workspace, cx| {
-                                    workspace.cycle_filter_op(index, cx)
+                                    workspace.cycle_filter_op(window, index, cx)
                                 });
                             })
                     })
@@ -386,7 +461,10 @@ impl Workspace {
         } else {
             preview.clone()
         };
+        let full = preview.clone();
+        let full_for_tip = preview;
         div()
+            .id("predicate-strip")
             .h(px(20.))
             .px_3()
             .flex()
@@ -398,6 +476,11 @@ impl Workspace {
             .font_family(cx.theme().mono_font_family.clone())
             .text_color(cx.theme().muted_foreground)
             .truncate()
+            .cursor_pointer()
+            .tooltip(move |window, cx| Tooltip::new(full_for_tip.clone()).build(window, cx))
+            .on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(full.clone()));
+            })
             .child(truncated)
             .into_any_element()
     }

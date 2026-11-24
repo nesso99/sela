@@ -53,13 +53,13 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 
 ### M1-3 details
 
-- Filter bar on table tabs only: column + operator + value, AND-combined; generated SQL with bound parameters; LIKE wildcards escaped; PG uses `ILIKE` for contains/starts/ends.
+- Filter bar on table tabs only: column + operator + value, AND-combined; generated SQL with bound parameters; text menu offers `LIKE` / `NOT LIKE` with `ESCAPE '!'` (`%`/`_` wildcards; `!` escapes). Legacy convenience ops (contains / starts / ends) still deserialize from `tabs.json` and use ILIKE on Postgres.
 - Header click cycles asc → desc → none via server-side `ORDER BY` on quoted identifiers. Shift-click adds up to 3 keys (▲1 / ▼2 marks). SQL result tabs have no header sort.
-- Operators depend on column kind (`ColumnKind`); pattern ops (contains / starts / ends) only on text. Apply validates every row; invalid Apply refuses the whole set.
-- Applying filter or sort re-queries from page 0 with a new request id (cancels in-flight work). Under a filter, row count is Unknown until Count runs `COUNT(*)` with the same WHERE (status bar).
+- Operators depend on column kind (`ColumnKind`). Apply validates every row; invalid Apply refuses the whole set. Empty text `=` binds `''`.
+- Applying filter or sort re-queries from page 0 with a new request id (cancels in-flight work). Under a filter, row count is Unknown until Count runs `COUNT(*)` with the same WHERE (status bar; cancellable with elapsed tick).
 - Filters/sorts persist on table tabs in `tabs.json` (serde defaults); restore never auto-runs beyond the normal table preview after reconnect.
-- Shortcut: Cmd/Ctrl+F (`secondary-f`) toggles the filter bar. Secondary-enter in a filter field Applies; in the editor it Runs.
-- User docs: [filtering.md](../user/filtering.md).
+- Shortcut: Cmd/Ctrl+F (`secondary-f`) toggles the filter bar. Enter / secondary-enter in a filter field Applies; in the editor secondary-enter Runs.
+- User docs: [filtering.md](../user/filtering.md). UX acceptance: [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md).
 
 ### M1 backlog (follow-ups)
 

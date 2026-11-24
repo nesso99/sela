@@ -102,17 +102,7 @@ impl ColumnKind {
                 &[Eq, Ne, Gt, Ge, Lt, Le, IsNull, IsNotNull]
             }
             Self::Interval => &[Eq, Ne, Gt, Lt, IsNull, IsNotNull],
-            Self::Text => &[
-                Eq,
-                Ne,
-                Contains,
-                NotContains,
-                StartsWith,
-                EndsWith,
-                In,
-                IsNull,
-                IsNotNull,
-            ],
+            Self::Text => &[Eq, Ne, Like, NotLike, In, IsNull, IsNotNull],
             Self::Uuid => &[Eq, Ne, In, IsNull, IsNotNull],
             Self::Json => &[Eq, IsNull, IsNotNull],
             Self::Bytes => &[IsNull, IsNotNull],
@@ -121,7 +111,19 @@ impl ColumnKind {
     }
 
     pub fn allows(self, op: FilterOp) -> bool {
-        self.operators().contains(&op)
+        if self.operators().contains(&op) {
+            return true;
+        }
+        // Legacy convenience pattern ops (tabs.json) remain valid on text even
+        // though the filter menu only offers LIKE / NOT LIKE.
+        self == Self::Text
+            && matches!(
+                op,
+                FilterOp::Contains
+                    | FilterOp::NotContains
+                    | FilterOp::StartsWith
+                    | FilterOp::EndsWith
+            )
     }
 
     /// Next operator in this kind's list (cycles).
@@ -176,10 +178,14 @@ mod tests {
 
     #[test]
     fn like_ops_only_on_text() {
+        assert!(ColumnKind::Text.allows(FilterOp::Like));
+        assert!(ColumnKind::Text.allows(FilterOp::NotLike));
+        assert!(!ColumnKind::Int.allows(FilterOp::Like));
+        assert!(!ColumnKind::Bool.allows(FilterOp::Like));
+        assert!(!ColumnKind::Json.allows(FilterOp::Like));
+        // Convenience wraps stay off the menu but remain allowed for restore.
         assert!(ColumnKind::Text.allows(FilterOp::Contains));
         assert!(!ColumnKind::Int.allows(FilterOp::Contains));
-        assert!(!ColumnKind::Bool.allows(FilterOp::StartsWith));
-        assert!(!ColumnKind::Json.allows(FilterOp::Contains));
         assert!(ColumnKind::Bytes.allows(FilterOp::IsNull));
         assert!(!ColumnKind::Bytes.allows(FilterOp::Eq));
     }

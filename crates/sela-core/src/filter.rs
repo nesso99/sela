@@ -23,6 +23,12 @@ pub enum FilterOp {
     Le,
     Gt,
     Ge,
+    /// SQL `LIKE` / Postgres `ILIKE` with user-supplied wildcards (`%` / `_`).
+    Like,
+    /// SQL `NOT LIKE` / Postgres `NOT ILIKE`.
+    NotLike,
+    /// Convenience: wraps the value in `%…%` and escapes wildcards (kept for
+    /// older `tabs.json`; not offered in the M1-3 filter menu).
     Contains,
     NotContains,
     StartsWith,
@@ -41,6 +47,8 @@ impl FilterOp {
             Self::Le => "≤",
             Self::Gt => ">",
             Self::Ge => "≥",
+            Self::Like => "LIKE",
+            Self::NotLike => "NOT LIKE",
             Self::Contains => "contains",
             Self::NotContains => "not contains",
             Self::StartsWith => "starts with",
@@ -62,6 +70,8 @@ impl FilterOp {
         FilterOp::Le,
         FilterOp::Gt,
         FilterOp::Ge,
+        FilterOp::Like,
+        FilterOp::NotLike,
         FilterOp::Contains,
         FilterOp::NotContains,
         FilterOp::StartsWith,
@@ -85,7 +95,12 @@ impl FilterOp {
     pub fn is_pattern(self) -> bool {
         matches!(
             self,
-            Self::Contains | Self::NotContains | Self::StartsWith | Self::EndsWith
+            Self::Like
+                | Self::NotLike
+                | Self::Contains
+                | Self::NotContains
+                | Self::StartsWith
+                | Self::EndsWith
         )
     }
 }
@@ -174,7 +189,8 @@ pub struct BoundSql {
 /// an unterminated literal).
 pub const LIKE_ESCAPE: char = '!';
 
-/// Escape `!`, `%`, and `_` for [`LIKE_ESCAPE`] patterns.
+/// Escape `!`, `%`, and `_` for [`LIKE_ESCAPE`] patterns (convenience ops that
+/// treat the user value as a literal substring).
 pub fn escape_like(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -184,6 +200,20 @@ pub fn escape_like(value: &str) -> String {
                 out.push(ch);
             }
             other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Escape only the [`LIKE_ESCAPE`] character so `%` / `_` stay wildcards (UX LIKE).
+pub fn escape_like_meta(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch == LIKE_ESCAPE {
+            out.push(LIKE_ESCAPE);
+            out.push(ch);
+        } else {
+            out.push(ch);
         }
     }
     out
@@ -482,7 +512,9 @@ fn append_where(
         .filter(|f| f.op.needs_value() || matches!(f.op, FilterOp::IsNull | FilterOp::IsNotNull))
         .filter(|f| {
             if f.op.needs_value() {
-                !f.value.is_empty() || matches!(f.op, FilterOp::In)
+                // Empty `=` / `≠` binds `''` (valid on text). Patterns require a
+                // non-empty value (validated before Apply). Empty IN is dropped below.
+                !f.value.is_empty() || matches!(f.op, FilterOp::Eq | FilterOp::Ne | FilterOp::In)
             } else {
                 true
             }
@@ -570,6 +602,19 @@ fn append_condition(
             let ph = placeholder(dialect, params.len());
             sql.push_str(&format!("{col} >= {ph}"));
             params.push(parse_filter_value(&filter.value, type_hint));
+        }
+        FilterOp::Like => {
+            let ph = placeholder(dialect, params.len());
+            let esc = like_escape_sql();
+            // UX asks for LIKE (not ILIKE). `%` / `_` stay wildcards.
+            sql.push_str(&format!("{col} LIKE {ph} {esc}"));
+            params.push(Value::text(escape_like_meta(&filter.value)));
+        }
+        FilterOp::NotLike => {
+            let ph = placeholder(dialect, params.len());
+            let esc = like_escape_sql();
+            sql.push_str(&format!("{col} NOT LIKE {ph} {esc}"));
+            params.push(Value::text(escape_like_meta(&filter.value)));
         }
         FilterOp::Contains => {
             let ph = placeholder(dialect, params.len());
@@ -842,15 +887,30 @@ mod tests {
             "Use IS NULL"
         );
 
-        let like_empty = FilterCondition::new("title", FilterOp::Contains, "").with_type("varchar");
+        let like_empty = FilterCondition::new("title", FilterOp::Like, "").with_type("varchar");
         assert_eq!(
             validate_filter_condition(&like_empty).unwrap_err(),
             "Enter a pattern"
         );
 
-        let contains_on_int =
-            FilterCondition::new("id", FilterOp::Contains, "1").with_type("integer");
-        assert!(validate_filter_condition(&contains_on_int).is_err());
+        let like_on_int = FilterCondition::new("id", FilterOp::Like, "%").with_type("integer");
+        assert!(validate_filter_condition(&like_on_int).is_err());
+
+        // Empty text `=` binds `''` and must appear in WHERE.
+        let empty_eq = [FilterCondition::new("title", FilterOp::Eq, "").with_type("text")];
+        let pg = build_table_select(Dialect::Postgres, "public", "t", &empty_eq, &[]).unwrap();
+        assert_eq!(
+            pg.sql,
+            "SELECT * FROM \"public\".\"t\" WHERE \"title\" = $1"
+        );
+        assert_eq!(pg.params, vec![Value::text("")]);
+
+        // LIKE keeps `%` / `_` as wildcards; only `!` is escaped.
+        let like = [FilterCondition::new("title", FilterOp::Like, r"a%!b")];
+        let pg = build_table_select(Dialect::Postgres, "public", "t", &like, &[]).unwrap();
+        assert!(pg.sql.contains("LIKE $1 ESCAPE '!'"));
+        assert!(!pg.sql.contains("ILIKE"));
+        assert_eq!(pg.params[0], Value::text(r"a%!!b"));
     }
 
     #[test]

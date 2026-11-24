@@ -201,12 +201,27 @@ impl Workspace {
             return;
         };
         if let Some(view) = self.view_mut(tab_id) {
-            view.status = "Counting rows…".into();
+            view.status = "Counting…".into();
         }
         self.spawn_work(
             Some(tab_id),
             cx,
-            |_| async move { exact_table_rows(session.as_ref(), &schema, &table, &filters).await },
+            |cancel| async move {
+                let work = exact_table_rows(session.as_ref(), &schema, &table, &filters);
+                futures_util::pin_mut!(work);
+                let aborted = cancel.cancelled();
+                futures_util::pin_mut!(aborted);
+                match select(work, aborted).await {
+                    Either::Left((result, _)) => {
+                        if cancel.is_cancelled() {
+                            Err(DbError::cancelled("count cancelled"))
+                        } else {
+                            result
+                        }
+                    }
+                    Either::Right((_, _)) => Err(DbError::cancelled("count cancelled")),
+                }
+            },
             move |this, result, cx| match result {
                 Ok(total) => {
                     if let Some(view) = this.view_mut(tab_id) {
@@ -221,15 +236,55 @@ impl Workspace {
                     cx.notify();
                 }
                 Err(err) => {
-                    // Count failure is not a data-query failure — keep the grid
-                    // and previous kind; do not set view.error (no banner).
+                    // Count failure/cancel is not a data-query failure — keep the
+                    // grid and previous kind; do not set view.error (no banner).
                     if let Some(view) = this.view_mut(tab_id) {
-                        view.status = format!("Count failed · {err}");
+                        view.error = None;
+                        view.status = if matches!(err, DbError::Cancelled { .. }) {
+                            "Count cancelled".into()
+                        } else {
+                            format!("Count failed · {err}")
+                        };
                     }
                     cx.notify();
                 }
             },
         );
+        // Tick Counting… · elapsed ~4×/sec while this request is busy.
+        let request = self.tabs.get(tab_id).map(|t| t.request).unwrap_or(0);
+        cx.spawn(async move |this, async_cx| loop {
+            async_cx
+                .background_executor()
+                .timer(std::time::Duration::from_millis(250))
+                .await;
+            let cont = this
+                .update(async_cx, |ws, cx| {
+                    let Some(tab) = ws.tabs.get(tab_id) else {
+                        return false;
+                    };
+                    if tab.request != request {
+                        return false;
+                    }
+                    let Some(view) = ws.views.get_mut(&tab_id) else {
+                        return false;
+                    };
+                    if !view.busy {
+                        return false;
+                    }
+                    let secs = view
+                        .query_started
+                        .map(|t| t.elapsed().as_secs_f32())
+                        .unwrap_or(0.0);
+                    view.status = format!("Counting… · {secs:.1} s");
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !cont {
+                break;
+            }
+        })
+        .detach();
     }
 
     pub(super) fn load_source_for(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
@@ -736,23 +791,14 @@ impl Workspace {
             .query_started
             .map(|t| t.elapsed().as_millis())
             .unwrap_or(0);
-        let page_len = view.page_len;
-        let rows = view.total_rows.unwrap_or(page_len as u64);
-        let count = match view.row_count_kind {
-            RowCountKind::Estimated => format!("~{rows} rows"),
-            RowCountKind::AtLeast if view.truncated => format!("{rows}+ rows"),
-            RowCountKind::Unknown => {
-                format!("unknown rows · {page_len} on this page")
-            }
-            _ => format!("{rows} rows"),
-        };
-        view.status = format!("{count} · {ms} ms");
-        if let Some(note) = &view.note {
-            // Avoid duplicating the unknown-rows sentence when a note is set.
-            if !matches!(view.row_count_kind, RowCountKind::Unknown) {
-                view.status = format!("{} · {note}", view.status);
-            }
-        }
+        view.status = format_status_line(
+            view.row_count_kind,
+            view.total_rows,
+            view.page_len,
+            view.truncated,
+            ms,
+            view.note.as_deref(),
+        );
     }
 
     pub(super) fn apply_outcome(
@@ -912,6 +958,34 @@ impl Workspace {
     }
 }
 
+/// Status-bar count sentence (extracted for unit tests / UX acceptance).
+pub(super) fn format_status_line(
+    kind: RowCountKind,
+    total_rows: Option<u64>,
+    page_len: usize,
+    truncated: bool,
+    ms: u128,
+    note: Option<&str>,
+) -> String {
+    let rows = total_rows.unwrap_or(page_len as u64);
+    let count = match kind {
+        RowCountKind::Estimated => format!("~{rows} rows"),
+        RowCountKind::AtLeast if truncated => format!("{rows}+ rows"),
+        RowCountKind::Unknown => {
+            format!("unknown rows · {page_len} on this page")
+        }
+        _ => format!("{rows} rows"),
+    };
+    let mut status = format!("{count} · {ms} ms");
+    if let Some(note) = note {
+        // Avoid duplicating the unknown-rows sentence when a note is set.
+        if !matches!(kind, RowCountKind::Unknown) {
+            status = format!("{status} · {note}");
+        }
+    }
+    status
+}
+
 pub(super) async fn run_source(
     session: Arc<dyn DatabaseSession>,
     source: GridSource,
@@ -937,5 +1011,31 @@ pub(super) async fn run_source(
         GridSource::Sql(sql) => run_user_sql(session.as_ref(), &sql, sql_cap, cancel)
             .await
             .map(Some),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_status_line;
+    use sela_core::RowCountKind;
+
+    #[test]
+    fn unknown_filtered_status_matches_ux() {
+        let s = format_status_line(RowCountKind::Unknown, None, 100, false, 18, None);
+        assert_eq!(s, "unknown rows · 100 on this page · 18 ms");
+    }
+
+    #[test]
+    fn unknown_does_not_append_note() {
+        let s = format_status_line(
+            RowCountKind::Unknown,
+            None,
+            50,
+            false,
+            3,
+            Some("Filtered results…"),
+        );
+        assert_eq!(s, "unknown rows · 50 on this page · 3 ms");
+        assert!(!s.contains("Filtered"));
     }
 }

@@ -20,7 +20,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 - Query cancel (Stop / Cmd/Ctrl+.) with server-side cancel on Postgres and MySQL; batched streaming and load-more for arbitrary SQL up to a 1 000-row cap (#10).
 - Read-only Structure view: columns, indexes, foreign keys, and DDL for all three engines (#11).
 - Tabs for tables and queries: open/close/switch (Cmd/Ctrl+T/W/1..9), per-tab cancel-on-close, restore from `tabs.json` without auto-running SQL (#12).
-- Filter bar and column-header sort for table Data tabs: AND conditions, bound parameters, `ESCAPE '!'` LIKE patterns, column-kind operators, status-bar Count over the filtered WHERE, multi-column Shift-click sort (max 3), predicate strip (M1-3 / US-04).
+- Filter bar and column-header sort for table Data tabs (M1-3 / US-04; UX: `docs/design/ux/02-filter-sort-review.md`): AND-only conditions, bound parameters + `quote_ident`, text `LIKE` / `NOT LIKE` with `ESCAPE '!'` (`%`/`_` wildcards), column-kind operators, status-bar Count over the filtered WHERE (cancellable; ticks `Counting… · elapsed`; failures/cancels do not set `view.error`), multi-column Shift-click sort (max 3, marks ▲1/▼2), read-only predicate strip under the grid (not written into `TabView.sql`). Filtered tables show `unknown rows · N on this page` and clear the page total.
 - Postgres text fallback for arrays, enums, inet/cidr, macaddr, money, bit, point, int4range, and tsvector; other undecodable binary types show `<TYPE>` (#13).
 - GPL-3.0-or-later license, `deny.toml`, and CI `cargo-deny` checks (#14).
 - GitHub Actions CI: fmt, clippy, tests (Linux/macOS; Windows on main), and Postgres/MySQL integration (#4, #6).
