@@ -12,8 +12,8 @@ use sela_core::{
     build_table_page, classify, exact_table_rows, history_rows_label_affected,
     history_rows_label_for_rows, is_safe_to_rerun_for_load_more, preview_table, run_user_sql,
     DatabaseSession, DbError, FilterCondition, HistoryOutcome, RowCountKind, SortSpec, SqlError,
-    StatementKind, StatementOutcome, StreamBatch, TabId, TablePreview, DEFAULT_SQL_ROW_CAP,
-    PAGE_SIZE, STREAM_BATCH_SIZE,
+    StatementKind, StatementOutcome, StreamBatch, StreamOutcome, TabId, TablePreview,
+    DEFAULT_SQL_ROW_CAP, PAGE_SIZE, STREAM_BATCH_SIZE,
 };
 use sela_drivers::drive;
 
@@ -235,7 +235,43 @@ impl Workspace {
         sqlstate: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        // Streamed SELECT/RawQuery never goes through apply_outcome, so history
+        // must be recorded here. Execute already cleared the flag in
+        // maybe_record_history_from_outcome.
+        let pending_history = {
+            let Some(view) = self.views.get(&tab_id) else {
+                return;
+            };
+            if !view.history_should_record {
+                None
+            } else if let GridSource::Sql(sql) = &view.source {
+                let outcome = if failed {
+                    HistoryOutcome::Error
+                } else {
+                    HistoryOutcome::Success
+                };
+                let rows_label = if failed {
+                    String::new()
+                } else {
+                    history_rows_label_for_rows(
+                        view.row_count_kind,
+                        view.total_rows,
+                        view.page_len,
+                        view.truncated,
+                    )
+                };
+                let error_message = if failed {
+                    view.error.clone().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                Some((sql.clone(), outcome, rows_label, error_message))
+            } else {
+                None
+            }
+        };
         if let Some(view) = self.view_mut(tab_id) {
+            view.history_should_record = false;
             if failed {
                 view.sql_failed_statement = Some(view.sql_run_statement_index);
                 view.last_error_sqlstate = sqlstate.clone();
@@ -249,6 +285,9 @@ impl Workspace {
                 view.sql_run_queue.remove(0);
             }
             view.sql_run_base_index += 1;
+        }
+        if let Some((sql, outcome, rows_label, error_message)) = pending_history {
+            self.record_finished_sql(tab_id, &sql, outcome, rows_label, error_message, cx);
         }
         self.push_result_snapshot(tab_id, cx);
         if failed {
@@ -619,7 +658,8 @@ impl Workspace {
                         async move {
                             session
                                 .stream_query(
-                                    &sql, &[],
+                                    &sql,
+                                    &[],
                                     STREAM_BATCH_SIZE,
                                     Some(cap),
                                     false,
@@ -636,6 +676,11 @@ impl Workspace {
                         futures_util::pin_mut!(recv);
                         match select(produce.as_mut(), recv).await {
                             Either::Left((outcome, _)) => {
+                                // Producer return can race ahead of buffered
+                                // StreamBatches still sitting in `rx`. Drain them
+                                // before applying the summary, or the status bar
+                                // shows N rows while the grid stays empty (#44).
+                                let pending = drain_pending_stream_batches(&rx);
                                 this.update(async_cx, |this, cx| {
                                     let Some(tab) = this.tabs.get(tab_id) else {
                                         return;
@@ -643,75 +688,10 @@ impl Workspace {
                                     if tab.request != request {
                                         return;
                                     }
-                                    if let Some(tab) = this.tabs.get_mut(tab_id) {
-                                        tab.clear_cancel();
+                                    for batch in pending {
+                                        this.apply_stream_batch(tab_id, batch, cx);
                                     }
-                                    if let Some(view) = this.view_mut(tab_id) {
-                                        view.busy = false;
-                                        view.live_row_cap = None;
-                                    }
-                                    match outcome {
-                                        Ok(summary) => {
-                                            if let Some(view) = this.view_mut(tab_id) {
-                                                view.truncated = summary.truncated;
-                                                view.can_load_more = summary.truncated
-                                                    && Self::sql_allows_load_more_rerun(
-                                                        &view.source,
-                                                    );
-                                                if summary.truncated {
-                                                    view.row_count_kind = RowCountKind::AtLeast;
-                                                    if view.can_load_more {
-                                                        view.note = Some(format!(
-                                                            "Showing the first {} rows. Use Load more to continue.",
-                                                            summary.rows_delivered
-                                                        ));
-                                                    } else {
-                                                        view.note = Some(format!(
-                                                            "Showing the first {} rows. Re-run manually to see more.",
-                                                            summary.rows_delivered
-                                                        ));
-                                                    }
-                                                } else {
-                                                    view.row_count_kind = RowCountKind::Exact;
-                                                }
-                                                view.total_rows =
-                                                    Some(summary.rows_delivered as u64);
-                                                view.page_len = summary.rows_delivered;
-                                                view.grid.update(cx, |state, cx| {
-                                                    state.delegate_mut().loading = false;
-                                                    state.delegate_mut().result.set_total_rows(
-                                                        summary.rows_delivered,
-                                                    );
-                                                    state.refresh(cx);
-                                                });
-                                            }
-                                            this.refresh_status_from_state(tab_id);
-                                            this.advance_sql_batch_after_stream(
-                                                tab_id, false, None, cx,
-                                            );
-                                        }
-                                        Err(err) if matches!(err, DbError::Cancelled { .. }) => {
-                                            this.apply_cancelled(tab_id, err, cx);
-                                        }
-                                        Err(err) => {
-                                            if let Some(view) = this.view_mut(tab_id) {
-                                                let stmt = view.sql_run_statement_index;
-                                                view.status = Self::format_query_failed_status(
-                                                    Some(stmt),
-                                                    err.sqlstate(),
-                                                );
-                                                view.error = Some(err.to_string());
-                                                view.grid.update(cx, |state, cx| {
-                                                    state.delegate_mut().loading = false;
-                                                    state.refresh(cx);
-                                                });
-                                            }
-                                            this.advance_sql_batch_after_stream(
-                                                tab_id, true, Some(&err), cx,
-                                            );
-                                        }
-                                    }
-                                    cx.notify();
+                                    this.finish_sql_stream(tab_id, outcome, cx);
                                 })
                                 .ok();
                                 break;
@@ -737,56 +717,7 @@ impl Workspace {
                                     if tab.request != request {
                                         return;
                                     }
-                                    if let Some(tab) = this.tabs.get_mut(tab_id) {
-                                        tab.clear_cancel();
-                                    }
-                                    if let Some(view) = this.view_mut(tab_id) {
-                                        view.busy = false;
-                                        view.live_row_cap = None;
-                                    }
-                                    match outcome {
-                                        Ok(summary) => {
-                                            if let Some(view) = this.view_mut(tab_id) {
-                                                view.truncated = summary.truncated;
-                                                view.can_load_more = summary.truncated
-                                                    && Self::sql_allows_load_more_rerun(
-                                                        &view.source,
-                                                    );
-                                                view.total_rows =
-                                                    Some(summary.rows_delivered as u64);
-                                                view.page_len = summary.rows_delivered;
-                                                view.grid.update(cx, |state, cx| {
-                                                    state.delegate_mut().loading = false;
-                                                    state.refresh(cx);
-                                                });
-                                            }
-                                            this.refresh_status_from_state(tab_id);
-                                            this.advance_sql_batch_after_stream(
-                                                tab_id, false, None, cx,
-                                            );
-                                        }
-                                        Err(err) if matches!(err, DbError::Cancelled { .. }) => {
-                                            this.apply_cancelled(tab_id, err, cx);
-                                        }
-                                        Err(err) => {
-                                            if let Some(view) = this.view_mut(tab_id) {
-                                                let stmt = view.sql_run_statement_index;
-                                                view.status = Self::format_query_failed_status(
-                                                    Some(stmt),
-                                                    err.sqlstate(),
-                                                );
-                                                view.error = Some(err.to_string());
-                                                view.grid.update(cx, |state, cx| {
-                                                    state.delegate_mut().loading = false;
-                                                    state.refresh(cx);
-                                                });
-                                            }
-                                            this.advance_sql_batch_after_stream(
-                                                tab_id, true, Some(&err), cx,
-                                            );
-                                        }
-                                    }
-                                    cx.notify();
+                                    this.finish_sql_stream(tab_id, outcome, cx);
                                 })
                                 .ok();
                                 break;
@@ -797,6 +728,75 @@ impl Workspace {
                 .detach();
             }
         }
+    }
+
+    fn finish_sql_stream(
+        &mut self,
+        tab_id: TabId,
+        outcome: Result<StreamOutcome, DbError>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.clear_cancel();
+        }
+        if let Some(view) = self.view_mut(tab_id) {
+            view.busy = false;
+            view.live_row_cap = None;
+        }
+        match outcome {
+            Ok(summary) => {
+                if let Some(view) = self.view_mut(tab_id) {
+                    view.truncated = summary.truncated;
+                    view.can_load_more =
+                        summary.truncated && Self::sql_allows_load_more_rerun(&view.source);
+                    if summary.truncated {
+                        view.row_count_kind = RowCountKind::AtLeast;
+                        if view.can_load_more {
+                            view.note = Some(format!(
+                                "Showing the first {} rows. Use Load more to continue.",
+                                summary.rows_delivered
+                            ));
+                        } else {
+                            view.note = Some(format!(
+                                "Showing the first {} rows. Re-run manually to see more.",
+                                summary.rows_delivered
+                            ));
+                        }
+                    } else {
+                        view.row_count_kind = RowCountKind::Exact;
+                    }
+                    view.total_rows = Some(summary.rows_delivered as u64);
+                    view.page_len = summary.rows_delivered;
+                    view.grid.update(cx, |state, cx| {
+                        state.delegate_mut().loading = false;
+                        state
+                            .delegate_mut()
+                            .result
+                            .set_total_rows(summary.rows_delivered);
+                        state.refresh(cx);
+                    });
+                }
+                self.refresh_status_from_state(tab_id);
+                self.advance_sql_batch_after_stream(tab_id, false, None, cx);
+            }
+            Err(err) if matches!(err, DbError::Cancelled { .. }) => {
+                self.apply_cancelled(tab_id, err, cx);
+            }
+            Err(err) => {
+                if let Some(view) = self.view_mut(tab_id) {
+                    let stmt = view.sql_run_statement_index;
+                    view.status = Self::format_query_failed_status(Some(stmt), err.sqlstate());
+                    view.error = Some(err.to_string());
+                    view.last_error_sqlstate = err.sqlstate().map(str::to_string);
+                    view.grid.update(cx, |state, cx| {
+                        state.delegate_mut().note_query_failed();
+                        state.refresh(cx);
+                    });
+                }
+                self.advance_sql_batch_after_stream(tab_id, true, Some(&err), cx);
+            }
+        }
+        cx.notify();
     }
 
     fn apply_stream_batch(&mut self, tab_id: TabId, batch: StreamBatch, cx: &mut Context<Self>) {
@@ -1108,7 +1108,7 @@ impl Workspace {
                     view.error = Some(err.to_string());
                     view.last_error_sqlstate = err.sqlstate().map(str::to_string);
                     view.grid.update(cx, |state, cx| {
-                        state.delegate_mut().loading = false;
+                        state.delegate_mut().note_query_failed();
                         state.refresh(cx);
                     });
                 }
@@ -1205,6 +1205,20 @@ impl Workspace {
     }
 }
 
+/// Take every `StreamBatch` still buffered after the producer future completed.
+///
+/// `futures_util::select` can observe producer completion while batches remain
+/// in the channel; skipping them leaves the grid empty with a non-zero status.
+pub(super) fn drain_pending_stream_batches(
+    rx: &async_channel::Receiver<StreamBatch>,
+) -> Vec<StreamBatch> {
+    let mut pending = Vec::new();
+    while let Ok(batch) = rx.try_recv() {
+        pending.push(batch);
+    }
+    pending
+}
+
 /// Status-bar count sentence (extracted for unit tests / UX acceptance).
 pub(super) fn format_status_line(
     kind: RowCountKind,
@@ -1263,8 +1277,8 @@ pub(super) async fn run_source(
 
 #[cfg(test)]
 mod tests {
-    use super::format_status_line;
-    use sela_core::RowCountKind;
+    use super::{drain_pending_stream_batches, format_status_line};
+    use sela_core::{RowCountKind, StreamBatch};
 
     #[test]
     fn unknown_filtered_status_matches_ux() {
@@ -1284,5 +1298,32 @@ mod tests {
         );
         assert_eq!(s, "unknown rows · 50 on this page · 3 ms");
         assert!(!s.contains("Filtered"));
+    }
+
+    #[test]
+    fn drain_pending_stream_batches_keeps_raced_rows() {
+        // Mirrors #44: producer finishes (drop tx) while a batch is still buffered.
+        let (tx, rx) = async_channel::bounded::<StreamBatch>(8);
+        tx.try_send(StreamBatch {
+            columns: None,
+            rows: vec![vec![sela_core::Value::Text("a".into())]],
+            start_index: 0,
+            paused_at_cap: false,
+        })
+        .unwrap();
+        tx.try_send(StreamBatch {
+            columns: None,
+            rows: vec![vec![sela_core::Value::Text("b".into())]],
+            start_index: 1,
+            paused_at_cap: false,
+        })
+        .unwrap();
+        drop(tx);
+
+        let pending = drain_pending_stream_batches(&rx);
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].rows.len(), 1);
+        assert_eq!(pending[1].start_index, 1);
+        assert!(drain_pending_stream_batches(&rx).is_empty());
     }
 }

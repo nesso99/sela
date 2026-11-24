@@ -122,7 +122,7 @@ Status: `Query failed · SQLSTATE 42601`, or `Query failed` when there is no cod
 
 Grid:
 
-- If this run has delivered no rows, clear the grid and set the empty message to `Query failed — see the error above.` A failed re-run must not leave the previous result looking current. `apply_outcome`’s error arm currently only sets `loading` to false, so the previous table page stays. Clear it when the failed request delivered nothing.
+- If this run has delivered no rows, clear the grid and set the empty message to `Query failed — see the error above.` A failed re-run must not leave the previous result looking current. `GridDelegate::note_query_failed` (from `apply_outcome` and the SQL stream error path) clears a stale `Running…` empty copy when this request delivered nothing.
 - If rows were streamed and then the server failed, keep those rows. Status: `Query failed · 340 rows received · SQLSTATE 42601`. The banner still has the full message.
 
 The banner always shows the full message. The editor gutter and underline are specified in [03-sql-editor.md](./03-sql-editor.md) and appear only when the engine reports a position. An error with no position is the banner and the status line, with no marker in the gutter.
@@ -231,7 +231,7 @@ On quit, cancel in-flight queries and close pools, then flush query history: WAL
 - Sidebar width is a field on `Workspace`, default 292, not written to disk. The drag handle is the existing `border_r_1`, with a 5px hit target. Double-click sets it back to 292. `secondary-b` toggles 0 vs the last width.
 - Editor height is a field on `TabView` (each tab remembers its split until quit), not written to disk. Default 176, matching `sql_editor`’s `h(px(176.))`. The splitter is the top border of that column. Collapsed is a bool that forces height 28 and hides the `Textarea`.
 - `render_empty` branches on `self.loading` and on a small empty-reason enum (`Idle`, `Running`, `Failed`, `Cancelled`) instead of overloading `empty_message` from every call site. `show_message` remains the path for `N rows affected`.
-- `apply_outcome` error arm: if the grid’s row count for this request is 0, call `show_message("Query failed — see the error above.")`. If rows were delivered, leave them and only clear `loading`.
+- Failed query empty state: `GridDelegate::note_query_failed` — if the grid’s row count for this request is 0, call `show_message("Query failed — see the error above.")`. If rows were delivered, leave them and only clear `loading`.
 - `apply_cancelled`: set the status string in the table above. Do not include `err.to_string()` unless it differs from the generic cancel text.
 - Decode-error styling belongs in `GridDelegate::render_td` after a method on `Value`. Do not paint every `Value::Other` with `danger`.
 - The running elapsed label needs a short GPUI timer while `busy` is true. Stop the timer in the same places that set `busy = false` (the request-id checks in `query.rs`). A stale timer must not update a tab whose request id has moved on.
