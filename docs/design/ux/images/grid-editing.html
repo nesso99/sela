@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Grid editing</title><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; color: #e8e8e8; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 14px 18px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; letter-spacing: 0.04em; }
+.win { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #161616; border: 1px solid #3a3a3a; }
+.titlebar {
+  height: 22px; flex: none; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #bdbdbd; border-bottom: 1px solid #3a3a3a; background: #1c1c1c;
+}
+.body { flex: 1; min-height: 0; display: flex; }
+.side {
+  width: 200px; flex: none; background: #1e1e1e; border-right: 1px solid #3a3a3a;
+  display: flex; flex-direction: column;
+}
+.side .brand { padding: 10px 10px 2px; font-size: 15px; font-weight: 600; }
+.side .sub { padding: 0 10px 8px; font-size: 10px; color: #8d8d8d; }
+.tree { padding: 4px 0; font-size: 12px; }
+.tree .item { height: 22px; display: flex; align-items: center; padding: 0 10px; gap: 6px; color: #d0d0d0; }
+.tree .item.l2 { padding-left: 26px; }
+.tree .item.sel { background: #2e2e2e; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tabs { height: 28px; flex: none; display: flex; background: #1c1c1c; border-bottom: 1px solid #3a3a3a; }
+.tab { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-right: 1px solid #333; font-size: 12px; color: #9a9a9a; }
+.tab.on { color: #f2f2f2; background: #161616; box-shadow: inset 0 -1px 0 #f2f2f2; }
+.toolbar {
+  height: 40px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; border-bottom: 1px solid #3a3a3a;
+}
+.tb-title { font-size: 12px; }
+.tb-sub { font-size: 10px; color: #8d8d8d; }
+.btn {
+  height: 20px; padding: 0 8px; border: 1px solid #555; background: #2a2a2a;
+  color: #e8e8e8; font: 11px/18px Inter, sans-serif; display: inline-flex; align-items: center;
+}
+.btn.primary { background: #e8e8e8; color: #161616; border-color: #e8e8e8; font-weight: 600; }
+.btn.ghost { background: transparent; border-color: transparent; color: #bdbdbd; }
+.rowbtns { display: flex; gap: 2px; align-items: center; }
+.gridwrap { flex: 1; min-height: 0; overflow: hidden; }
+table.grid { width: 100%; border-collapse: collapse; font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 11px; }
+table.grid th, table.grid td {
+  border-bottom: 1px solid #2e2e2e; border-right: 1px solid #2a2a2a;
+  height: 26px; padding: 0 8px; text-align: left; white-space: nowrap; font-weight: 400;
+}
+table.grid th { background: #242424; color: #cfcfcf; font-size: 10px; }
+table.grid td { color: #e8e8e8; position: relative; }
+table.grid td.gutter, table.grid th.gutter { width: 16px; padding: 0; text-align: center; color: #d0d0d0; background: #1c1c1c; }
+tr.ins td { background: #2a2a2a; }
+tr.del td { text-decoration: line-through; color: #bdbdbd; }
+tr.del td.gutter { text-decoration: none; color: #f2f2f2; font-weight: 650; }
+td.null { color: #8d8d8d; font-style: italic; }
+td.dirty::before {
+  content: ""; position: absolute; left: 0; top: 0;
+  border-top: 6px solid #f2f2f2; border-right: 6px solid transparent;
+}
+td.edit { padding: 0; background: #141414; }
+td.edit .field {
+  margin: 3px; height: 18px; border: 1px solid #d0d0d0; display: flex; align-items: center;
+  padding: 0 6px; justify-content: space-between; background: #101010;
+}
+td.edit .nullbtn { color: #8d8d8d; font-family: Inter, sans-serif; font-size: 10px; }
+.pending {
+  height: 26px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px; border-top: 1px solid #3a3a3a; background: #1c1c1c; font-size: 11px;
+}
+.pending .right { display: flex; gap: 6px; align-items: center; }
+.legend {
+  height: 22px; flex: none; display: flex; gap: 16px; align-items: center;
+  padding: 0 10px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: #8d8d8d;
+  border-top: 1px solid #3a3a3a;
+}
+.legend b { color: #d0d0d0; font-weight: 600; letter-spacing: 0; text-transform: none; font-size: 11px; }
+</style></head>
+<body>
+  <div class="kicker"><span>Grid editing · M2-1</span><b>Row states and the cell editor</b></div>
+  <div class="win">
+    <div class="titlebar">Sela</div>
+    <div class="body">
+      <div class="side">
+        <div class="brand">Sela</div>
+        <div class="sub">PostgreSQL, MySQL, and SQLite</div>
+        <div class="tree">
+          <div class="item">● PG local</div>
+          <div class="item l2">public</div>
+          <div class="item l2 sel">books</div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="tabs"><div class="tab on">public.books •</div></div>
+        <div class="toolbar">
+          <div>
+            <div class="tb-title">public.books</div>
+            <div class="tb-sub">PostgreSQL · sela@127.0.0.1:5432/sample · Safe: Off</div>
+          </div>
+          <div class="rowbtns">
+            <span class="btn ghost">Insert</span>
+            <span class="btn ghost">Duplicate</span>
+            <span class="btn ghost">Delete</span>
+            <span class="btn">Data</span>
+            <span class="btn ghost">Structure</span>
+          </div>
+        </div>
+        <div class="gridwrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th class="gutter"></th>
+                <th>id · int</th><th>title · text</th><th>pages · int</th><th>note · text</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="gutter"></td>
+                <td>1</td><td>The Hobbit</td><td>310</td><td class="null">NULL</td>
+              </tr>
+              <tr>
+                <td class="gutter">•</td>
+                <td>2</td><td class="dirty">The Silmarillion</td>
+                <td class="edit"><div class="field"><span>400</span><span class="nullbtn">NULL</span></div></td>
+                <td>revised</td>
+              </tr>
+              <tr class="ins">
+                <td class="gutter">+</td>
+                <td class="null">Required</td><td>New title</td><td class="null">NULL</td><td class="null">NULL</td>
+              </tr>
+              <tr class="ins">
+                <td class="gutter">++</td>
+                <td class="null">Required</td><td>The Hobbit</td><td>310</td><td class="null">NULL</td>
+              </tr>
+              <tr class="del">
+                <td class="gutter">−</td>
+                <td>4</td><td>Draft</td><td>12</td><td>drop me</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="legend">
+          <span><b>•</b> dirty cell</span>
+          <span><b>+</b> inserted</span>
+          <span><b>++</b> duplicated</span>
+          <span><b>−</b> deleted, strikethrough</span>
+        </div>
+        <div class="pending">
+          <span>4 pending · 1 updated, 2 inserted, 1 deleted</span>
+          <span class="right">
+            <span class="btn ghost">Preview</span>
+            <span class="btn ghost">Discard</span>
+            <span class="btn primary">Commit</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</body></html>

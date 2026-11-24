@@ -58,6 +58,8 @@ Several statements run one after another, not as a batch the server parses itsel
 
 `secondary-enter` is bound on the editor focus context, not on the window. The global binding in `ui/mod.rs` is why Run fires while the user is elsewhere.
 
+A write classified by safe mode confirms or refuses before it runs. The chords on this page do not change. See [09-safe-mode.md](./09-safe-mode.md).
+
 Empty buffer: keep the current status, `Write a SQL statement, then run it.`
 
 Unclosed quote: `split_statements` should return a distinct `SqlError::UnclosedQuote` instead of `Multiple`. The gutter marks the opening quote. The banner says `Unclosed quote`. Do not say `run one statement at a time`.

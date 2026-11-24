@@ -123,7 +123,7 @@ Rerun opens a new query tab on the row's connection and uses the normal run path
 | Cancel | Default button. Focused. `Enter` and `Escape` both cancel. |
 | Rerun | The other button. Click or `Tab` then `Enter`. It is not the default. |
 
-The dialog does not replace safe mode. Safe mode is still M2. The classifier's known limit stays: `SELECT my_func()` counts as safe. Do not add a second classifier for this dialog.
+The dialog does not replace safe mode. Safe mode is [09-safe-mode.md](./09-safe-mode.md). A write rerun on a read-only connection is refused there instead of this confirm. The classifier's known limit stays: `SELECT my_func()` counts as safe. Do not add a second classifier for this dialog.
 
 Open and Insert do not auto-run. Rerun is the action that runs.
 

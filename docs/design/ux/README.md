@@ -2,7 +2,7 @@
 
 Design specs for the desktop window. Product intent is in [PRD.md](../PRD.md), milestones in [roadmap.md](../roadmap.md), and the APIs in [SPECS.md](../SPECS.md). What is bound in the app today is listed in [keyboard-shortcuts.md](../../user/keyboard-shortcuts.md).
 
-These files specify M1-3 (filter and sort), M1-4 / M3-2 (SQL editor), M1-5 (query history), the connection dialog including TLS, and M1-7 theme tokens. They describe the window that already ships and the changes those milestones should make. They are not a new visual system.
+These files specify M1-3 (filter and sort), M1-4 / M3-2 (SQL editor), M1-5 (query history), the connection dialog including TLS, and M1-7 theme tokens. M2 safe editing is [07](./07-grid-editing.md), [08](./08-preview-commit.md), and [09](./09-safe-mode.md), plus the connection fields in [05](./05-connection-dialog.md), the sidebar and Linux title bar in [01](./01-main-window.md), and font size in [06](./06-theme-tokens.md). They describe the window that already ships and the changes those milestones should make. They are not a new visual system.
 
 | Doc | Covers |
 | --- | --- |
@@ -10,8 +10,11 @@ These files specify M1-3 (filter and sort), M1-4 / M3-2 (SQL editor), M1-5 (quer
 | [02-filter-sort-review.md](./02-filter-sort-review.md) | Review of the planned filter bar and header sort against the current grid, status bar, and count button. Fixes, not a redesign. |
 | [03-sql-editor.md](./03-sql-editor.md) | Editor/result split, run and cancel, autocomplete, error placement, multiple result sets. |
 | [04-query-history.md](./04-query-history.md) | Bottom history panel. Row contents, search, per-connection scope, actions, empty and error states, retention, shortcuts. |
-| [05-connection-dialog.md](./05-connection-dialog.md) | Postgres, MySQL, and SQLite fields, password display, Test connection, save and connect, TLS modes and certificate files. |
-| [06-theme-tokens.md](./06-theme-tokens.md) | Light and dark tokens, contrast, type, spacing, chrome sizes, gpui-kit field mapping. |
+| [05-connection-dialog.md](./05-connection-dialog.md) | Postgres, MySQL, and SQLite fields, password display, Test connection, save and connect, TLS modes and certificate files. M2-5 adds color, label, group, safe mode, and import from URL. |
+| [06-theme-tokens.md](./06-theme-tokens.md) | Light and dark tokens, contrast, type, spacing, chrome sizes, gpui-kit field mapping. Font size (#39) and the edit and connection marks. |
+| [07-grid-editing.md](./07-grid-editing.md) | Cell editors, NULL versus empty, inserted / duplicated / dirty / deleted rows, read-only without a key (M2-1, US-05). |
+| [08-preview-commit.md](./08-preview-commit.md) | Pending-changes bar, Preview SQL, commit, discard, rollback that keeps the edits (M2-3, US-06). |
+| [09-safe-mode.md](./09-safe-mode.md) | Off, Confirm writes, Read-only, and the no-WHERE warning (M2-4, US-07). |
 
 Wireframes are low-fidelity grayscale PNGs in [images/](./images/). The matching `.html` files are the source. Numbers in the specs are the ones to implement; the drawings are schematic. The theme swatch ([images/theme-swatches.png](./images/theme-swatches.png)) is the exception: it is in color, because it is the palette in [06-theme-tokens.md](./06-theme-tokens.md).
 
@@ -54,12 +57,11 @@ The user-facing shortcut page should keep saying “⌘ on macOS, Ctrl on Linux 
 | `secondary-y` | Redo in text fields on Windows and Linux |
 | `secondary-c` / `v` / `x` / `a` / `z` | Clipboard and undo inside text fields |
 | Option/Alt + letter | Option types characters on macOS. Do not bind those as global actions. |
-| `secondary-p` | Reserved for M3 quick open (PRD) |
-| `secondary-shift-p` | Reserved for M2 preview SQL (PRD) |
-| `secondary-s` | Reserved for M2 commit (PRD) |
-| `secondary-shift-z` | Reserved for M2 discard (PRD) |
+| `secondary-p` | Reserved for M3 quick open (PRD). |
 | `secondary-,` | Reserved for a future settings window. Unassigned. |
 | `secondary-shift-f` | Reserved for format (`sqlformat`). Backlog, not M1-4. Do not bind it yet. |
+
+Assigned, and not available for a second feature: `secondary-shift-p` (preview), `secondary-s` (commit), `secondary-shift-z` (discard outside a text field; inside a text field it stays with the field, which is redo on macOS), `secondary-=` and `secondary-+` (larger font), `secondary--` (smaller), `secondary-0` (reset font, not a tab). The tables below name the focus.
 
 `secondary-alt-left` and `secondary-alt-right` are used only when focus is not in a text field, so they do not fight word navigation.
 
@@ -73,8 +75,11 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 | `secondary-shift-enter` | Run every statement in the buffer | Add a filter row | Rerun. Read-only statements run immediately. Anything else confirms first. Cancel is the default button. | No action | No action |
 | `secondary-shift-h` | Toggle the history panel | Toggle the history panel | Close the panel | No action. The dialog eats the key. | Toggle the history panel |
 | `secondary-f` | Find in the editor | Focus the first column field | Focus the history search | No action | Toggle the filter bar |
-| `Enter` | New line in the editor. Accepts autocomplete when the popup is open. | Apply the filter | Open the selected row in a new query tab. Do not run it. | Activate the focused button. A text field does not insert a newline. | Open cell inspect until M2, then edit (see the main-window spec) |
-| `Escape` | Close find, then close autocomplete | Close the open menu, then leave the bar | Clear the search text if it is non-empty, otherwise close the panel | Cancel the dialog | Close inspect |
+| `Enter` | New line in the editor. Accepts autocomplete when the popup is open. | Apply the filter | Open the selected row in a new query tab. Do not run it. | Activate the focused button, except Import URL, which parses. A text field does not insert a newline. | Edit the focused cell ([07-grid-editing.md](./07-grid-editing.md)). `Space` stays inspect. |
+| `Escape` | Close find, then close autocomplete | Close the open menu, then leave the bar | Clear the search text if it is non-empty, otherwise close the panel | Cancel the dialog | Close inspect, then cancel an open cell editor. Does not discard the pending set. |
+| `secondary-s` | No action | No action | No action | No action | Commit pending edits. Accepts an open cell editor first. |
+| `secondary-shift-z` | Left to the field (redo on macOS). Does not discard. | No action | No action | No action | Discard pending edits. Confirms. Cancel is the default. |
+| `secondary-shift-p` | No action | No action | No action | No action | Preview SQL. |
 
 `secondary-q` is not in this table. It quits from every column, including the SQL editor and the connection dialog. The quit confirm swallows a second `secondary-q`.
 
@@ -92,6 +97,7 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 | Cancel the running query | `secondary-.` | yes |
 | Toggle sidebar | `secondary-b` | no |
 | Toggle editor collapsed | `secondary-shift-e` | no |
+| Larger / smaller / reset font | `secondary-=` or `secondary-+` / `secondary--` / `secondary-0` | no. [06-theme-tokens.md](./06-theme-tokens.md#font-size). |
 | Show table Data | `secondary-shift-[` | yes |
 | Show table Structure | `secondary-shift-]` | yes |
 
@@ -126,7 +132,10 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 | Action | Shortcut | Until |
 | --- | --- | --- |
 | Move the focused cell | Arrow keys, once a cell is focused | M1-7 owns selection |
-| Inspect the focused cell | `Space`. `Enter` does the same until cell editing exists. | M2 reassigns `Enter` to edit. `Space` stays inspect. |
+| Inspect the focused cell | `Space` | Stays inspect after M2. |
+| Edit the focused cell | `Enter` or double-click | M2-1. [07-grid-editing.md](./07-grid-editing.md). |
+| Insert / duplicate / delete row | `secondary-i` / `secondary-d` / `secondary-backspace` | M2-1. Grid focused, editor closed. |
+| Preview / commit / discard | `secondary-shift-p` / `secondary-s` / `secondary-shift-z` | M2-3. [08-preview-commit.md](./08-preview-commit.md). |
 | Copy | `secondary-c` | M1-7. Today `cell_text` already returns the full value. |
 
 ### Query history
@@ -175,3 +184,6 @@ Recorded from review. The screen specs repeat the items that change their behavi
 9. Run-all stops at the first error, names the failing statement, and keeps earlier results.
 10. Cap stored result sets at 8 and evict the oldest.
 11. No `sqlformat` in M1-4. Format is backlog. `secondary-shift-f` is reserved and is not an M1-4 binding. The shortcut tables mark it reserved.
+12. Grid editing, preview, and safe mode are [07](./07-grid-editing.md), [08](./08-preview-commit.md), and [09](./09-safe-mode.md). `secondary-s`, `secondary-shift-p`, and `secondary-shift-z` are those actions.
+13. Font size is one UI step in [06](./06-theme-tokens.md#font-size). The chrome heights in that file stay fixed.
+14. Linux client decorations use gpui-component `TitleBar` at 34px ([01](./01-main-window.md#client-side-title-bar)), the bar #66 builds. The content toolbar does not also draw a close button.
