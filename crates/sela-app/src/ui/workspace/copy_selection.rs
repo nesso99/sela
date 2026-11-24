@@ -24,8 +24,9 @@ impl Workspace {
             // after this update returns; the subscriber would then run
             // note_cell_focus(..., shift=false) and collapse the full range to
             // the focus cell (RC6 Ctrl+A failure). Keep the current focus cell
-            // so arrow keys still navigate from where the user was.
-            state.delegate_mut().suppress_next_select_collapse();
+            // so arrow keys still navigate from where the user was. No
+            // SelectCell follows, so do not arm suppress_next_select_collapse:
+            // a stale flag would swallow the user's next plain click.
             state.refresh(cx);
         });
         cx.notify();
@@ -66,7 +67,8 @@ impl Workspace {
             // set_selected_cell emits SelectCell after this update returns. Arm
             // suppress so that deferred handler cannot collapse the range if
             // window.modifiers().shift is already false by then; apply the
-            // extend synchronously (same pattern as select_all_grid).
+            // extend synchronously. The flag is one-shot and is armed only
+            // because set_selected_cell below really emits SelectCell.
             state.delegate_mut().note_pointer_shift(true);
             state.delegate_mut().suppress_next_select_collapse();
             state.set_selected_cell(new_row, new_col, cx);

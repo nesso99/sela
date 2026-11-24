@@ -164,12 +164,12 @@ impl GridDelegate {
     /// `TableState::set_selected_cell` emits `SelectCell` after the current
     /// update returns; without this flag, that deferred handler would call
     /// [`Self::note_cell_focus`] with `shift = false` and wipe a range that was
-    /// just set (Select-All / Shift+arrow).
+    /// just set (Shift+arrow, right-click keep-range).
     pub fn suppress_next_select_collapse(&mut self) {
         self.suppress_select_collapse = true;
     }
 
-    /// Consume the Select-All / range-keep suppress flag.
+    /// Consume the range-keep suppress flag.
     pub fn take_suppress_select_collapse(&mut self) -> bool {
         let flag = self.suppress_select_collapse;
         self.suppress_select_collapse = false;
@@ -805,16 +805,32 @@ mod tests {
     }
 
     #[test]
-    fn select_all_with_suppress_survives_deferred_select_cell() {
+    fn select_all_then_plain_click_collapses_to_clicked_cell() {
         let mut grid = GridDelegate::empty();
         grid.show_page(multi_page());
         grid.note_cell_focus(1, 0, false);
+        // Ctrl/Cmd+A path: select_all_cells only, no suppress flag armed.
         grid.select_all_cells();
-        grid.suppress_next_select_collapse();
-        // Same deferred SelectCell(0, 0) as above — must keep the full range.
-        grid.apply_select_cell_event(0, 0, false);
         assert_eq!(grid.selection_rect.expect("all").normalized(), (0, 2, 0, 1));
-        // Suppress is one-shot; a later plain SelectCell still collapses.
+        // The user's next plain click must collapse to the clicked cell.
+        grid.apply_select_cell_event(2, 1, false);
+        assert_eq!(
+            grid.selection_rect.expect("single"),
+            SelectionRect::cell(2, 1)
+        );
+    }
+
+    #[test]
+    fn suppress_is_one_shot_after_deferred_select_cell() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.note_cell_focus(0, 0, false);
+        grid.note_cell_focus(2, 1, true);
+        // Armed right before a set_selected_cell that emits SelectCell.
+        grid.suppress_next_select_collapse();
+        grid.apply_select_cell_event(2, 1, false);
+        assert_eq!(grid.selection_rect.expect("kept").normalized(), (0, 2, 0, 1));
+        // A later plain SelectCell still collapses.
         grid.apply_select_cell_event(1, 0, false);
         assert_eq!(
             grid.selection_rect.expect("single"),
