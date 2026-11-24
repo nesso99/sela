@@ -191,7 +191,12 @@ impl Workspace {
             history_reset_notice,
             history_write_failed_once: false,
             history_focus_restore: HistoryFocusRestore::None,
-            _subscriptions: vec![tree_events, tree_selection, history_search_events, appearance],
+            _subscriptions: vec![
+                tree_events,
+                tree_selection,
+                history_search_events,
+                appearance,
+            ],
         };
         workspace.restore_tabs(window, cx);
         workspace.rebuild_tree(cx);
