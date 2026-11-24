@@ -85,6 +85,62 @@ fn default_true() -> bool {
     true
 }
 
+/// Per-connection write guard (M2-4). Missing JSON field loads as [`SafeMode::Off`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SafeMode {
+    /// Writes run immediately. `UPDATE` / `DELETE` without `WHERE` still confirm.
+    #[default]
+    Off,
+    /// Writes confirm before they run.
+    Confirm,
+    /// Writes are refused. Reads run.
+    ReadOnly,
+}
+
+impl SafeMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Confirm => "Confirm",
+            Self::ReadOnly => "Read-only",
+        }
+    }
+
+    /// Toolbar segment: `Safe: Off`, `Safe: Confirm`, or `Safe: Read-only`.
+    pub fn toolbar_segment(self) -> String {
+        format!("Safe: {}", self.label())
+    }
+
+    pub fn form_label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Confirm => "Confirm writes",
+            Self::ReadOnly => "Read-only",
+        }
+    }
+
+    pub fn helper(self) -> &'static str {
+        match self {
+            Self::Off => "Writes run without a confirm. UPDATE and DELETE without WHERE still ask.",
+            Self::Confirm => {
+                "Writes ask before they run. UPDATE and DELETE without WHERE still ask."
+            }
+            Self::ReadOnly => {
+                "Writes are refused in the UI and on the server. Saving reconnects so the level applies immediately."
+            }
+        }
+    }
+
+    pub fn all() -> &'static [SafeMode] {
+        &[Self::Off, Self::Confirm, Self::ReadOnly]
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::Off
+    }
+}
+
 /// A connection Sela can reopen. The password is not part of this value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SavedConnection {
@@ -107,6 +163,9 @@ pub struct SavedConnection {
     /// When false, editor runs on this connection are not written to history.
     #[serde(default = "default_true")]
     pub record_history: bool,
+    /// Write guard for the editor (and grid commit once that UI lands). Missing = Off.
+    #[serde(default, skip_serializing_if = "SafeMode::is_default")]
+    pub safe_mode: SafeMode,
 }
 
 impl<'de> Deserialize<'de> for SavedConnection {
@@ -135,6 +194,9 @@ impl<'de> Deserialize<'de> for SavedConnection {
             /// Missing field means record (M1-5). No schema_version bump.
             #[serde(default = "default_true")]
             record_history: bool,
+            /// Missing field means Off (M2-4). No schema_version bump.
+            #[serde(default)]
+            safe_mode: SafeMode,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -153,6 +215,7 @@ impl<'de> Deserialize<'de> for SavedConnection {
             file_path: raw.file_path,
             tls,
             record_history: raw.record_history,
+            safe_mode: raw.safe_mode,
         })
     }
 }
@@ -180,6 +243,7 @@ impl SavedConnection {
             file_path: String::new(),
             tls,
             record_history: true,
+            safe_mode: SafeMode::Off,
         }
     }
 
@@ -282,6 +346,53 @@ mod tests {
         assert!(!conn.record_history);
         let text = serde_json::to_string(&conn).unwrap();
         assert!(text.contains("\"record_history\":false"));
+    }
+
+    #[test]
+    fn missing_safe_mode_defaults_to_off() {
+        let raw = r#"{
+            "id": "c1",
+            "name": "Local",
+            "engine": "postgres",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "username": "sela",
+            "database": "sample"
+        }"#;
+        let conn: SavedConnection = serde_json::from_str(raw).unwrap();
+        assert_eq!(conn.safe_mode, SafeMode::Off);
+        let text = serde_json::to_string(&conn).unwrap();
+        assert!(
+            !text.contains("safe_mode"),
+            "Off must omit safe_mode on save: {text}"
+        );
+    }
+
+    #[test]
+    fn safe_mode_confirm_and_read_only_round_trip() {
+        for (mode, wire) in [
+            (SafeMode::Confirm, "confirm"),
+            (SafeMode::ReadOnly, "read-only"),
+        ] {
+            let raw = format!(
+                r#"{{
+                    "id": "c1",
+                    "name": "Prod",
+                    "engine": "mysql",
+                    "host": "127.0.0.1",
+                    "port": 3306,
+                    "username": "sela",
+                    "database": "sample",
+                    "safe_mode": "{wire}"
+                }}"#
+            );
+            let conn: SavedConnection = serde_json::from_str(&raw).unwrap();
+            assert_eq!(conn.safe_mode, mode);
+            let text = serde_json::to_string(&conn).unwrap();
+            assert!(text.contains(&format!("\"safe_mode\":\"{wire}\"")));
+            let back: SavedConnection = serde_json::from_str(&text).unwrap();
+            assert_eq!(back.safe_mode, mode);
+        }
     }
 
     #[test]

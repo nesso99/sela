@@ -10,7 +10,9 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, IntoElement, Window};
 
-use sela_core::{ChangePlan, DbError, TabId};
+use sela_core::{
+    decide_grid_commit_gate, truncate_one_line, ChangePlan, DbError, GridCommitGate, TabId,
+};
 use sela_drivers::drive;
 
 use super::edit_session::format_commit_failure;
@@ -27,6 +29,7 @@ impl Workspace {
         if !session.is_dirty() {
             return div().into_any_element();
         }
+        let safe_mode = self.active_safe_mode();
         let counts = session.pending_counts();
         let left = if session.commit_failed {
             format!("{} · Commit failed. Changes kept.", counts.summary_left())
@@ -34,7 +37,7 @@ impl Workspace {
             counts.summary_left()
         };
         let busy = view.map(|v| v.busy).unwrap_or(false) || session.committing;
-        let commit_block = session.commit_blocked_reason();
+        let commit_block = session.commit_blocked_reason_for(safe_mode);
         let commit_disabled = busy || commit_block.is_some();
         let commit_tooltip = commit_block.unwrap_or("Commit pending changes (Ctrl/⌘+S)");
         let commit_label = if session.committing {
@@ -119,10 +122,11 @@ impl Workspace {
 
     /// Read-only explanation strip (07-grid-editing.md).
     pub(super) fn read_only_strip(&self, cx: &Context<Self>) -> impl IntoElement {
+        let mode = self.active_safe_mode();
         let line = self
             .active_view()
             .and_then(|v| v.edit.as_ref())
-            .and_then(|s| s.strip_line());
+            .and_then(|s| s.strip_line_for(mode));
         let Some(line) = line else {
             return div().into_any_element();
         };
@@ -155,8 +159,9 @@ impl Workspace {
         let body = session
             .preview_sheet_text()
             .unwrap_or_else(|e| format!("-- preview failed: {e}"));
+        let safe_mode = self.active_safe_mode();
         let busy = view.map(|v| v.busy).unwrap_or(false) || session.committing;
-        let commit_block = session.commit_blocked_reason();
+        let commit_block = session.commit_blocked_reason_for(safe_mode);
         let commit_disabled = busy || commit_block.is_some();
         let commit_label = if session.committing {
             "Committing…"
@@ -372,6 +377,7 @@ impl Workspace {
     }
 
     pub(super) fn request_commit_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_active_edit_safe_mode();
         // Accept open cell editor first (08-preview-commit.md).
         if self
             .active_view()
@@ -386,13 +392,14 @@ impl Workspace {
                 return;
             }
         }
+        let mode = self.active_safe_mode();
         let Some(view) = self.active_view() else {
             return;
         };
         let Some(edit) = view.edit.as_ref() else {
             return;
         };
-        if edit.commit_blocked_reason().is_some() || view.busy {
+        if edit.commit_blocked_reason_for(mode).is_some() || view.busy {
             return;
         }
         let Ok(plan) = edit.build_plan() else {
@@ -401,8 +408,92 @@ impl Workspace {
         if plan.is_empty() {
             return;
         }
-        let _ = window;
-        self.perform_commit_changes(plan, cx);
+        match decide_grid_commit_gate(mode) {
+            GridCommitGate::Allow => self.perform_commit_changes(plan, cx),
+            GridCommitGate::RefuseReadOnly => {
+                // Commit button should already be disabled; keep edits.
+                if let Some(view) = self.active_view_mut() {
+                    view.status = "Safe mode is Read-only.".into();
+                }
+                cx.notify();
+            }
+            GridCommitGate::Confirm => {
+                self.show_grid_commit_confirm(window, cx, plan);
+            }
+        }
+    }
+
+    fn show_grid_commit_confirm(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        plan: ChangePlan,
+    ) {
+        if self.safe_mode_confirm_open {
+            return;
+        }
+        let n = plan.statements.len();
+        let table = self
+            .active_view()
+            .and_then(|v| v.edit.as_ref())
+            .map(|e| e.schema_table_label())
+            .unwrap_or_else(|| "table".into());
+        let first = plan
+            .statements
+            .first()
+            .map(|s| truncate_one_line(&s.sql, 120).into_owned())
+            .unwrap_or_default();
+        let title = format!("Commit {n} changes?");
+        let description = format!("{n} statements on {table}.\n\n{first}");
+        self.safe_mode_confirm_open = true;
+        let this = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let this_ok = this.clone();
+            let this_cancel = this.clone();
+            let this_commit = this.clone();
+            let plan_commit = plan.clone();
+            alert
+                .title(title.clone())
+                .description(description.clone())
+                .on_ok(move |_, _, cx| {
+                    this_ok.update(cx, |workspace, _| {
+                        workspace.safe_mode_confirm_open = false;
+                    });
+                    true
+                })
+                .on_cancel(move |_, _, cx| {
+                    this_cancel.update(cx, |workspace, _| {
+                        workspace.safe_mode_confirm_open = false;
+                    });
+                    true
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("grid-commit-cancel")
+                                .label("Cancel")
+                                .primary()
+                                .on_click({
+                                    let this = this.clone();
+                                    move |_, window, cx| {
+                                        this.update(cx, |workspace, _| {
+                                            workspace.safe_mode_confirm_open = false;
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        )
+                        .child(Button::new("grid-commit-ok").label("Commit").on_click(
+                            move |_, window, cx| {
+                                window.close_dialog(cx);
+                                this_commit.update(cx, |workspace, cx| {
+                                    workspace.safe_mode_confirm_open = false;
+                                    workspace.perform_commit_changes(plan_commit.clone(), cx);
+                                });
+                            },
+                        )),
+                )
+        });
     }
 
     fn perform_commit_changes(&mut self, plan: ChangePlan, cx: &mut Context<Self>) {

@@ -45,6 +45,10 @@ Optional paths (plain text in JSON):
 
 Handshake and certificate failures surface as a TLS error, distinct from a wrong password.
 
+## Safe mode
+
+**Safe mode** on the connection is Off (default), Confirm writes, or Read-only. The toolbar shows `Safe: …` on the engine line. Writes from the SQL editor are confirmed or refused according to that level; `UPDATE` / `DELETE` without `WHERE` always asks. See [Safe mode](./safe-mode.md).
+
 ## Query history
 
 **Record query history** (default on) stores statements you run from the SQL editor in `history.sqlite` next to `connections.json`. Turn it off for a connection when you do not want those runs recorded. See [Query history](./query-history.md).

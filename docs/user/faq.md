@@ -28,9 +28,13 @@ Disconnect closes that connection’s tabs on purpose so a later connect cannot 
 
 Yes: **Stop** or Cmd/Ctrl+.. Postgres and MySQL cancel on the server via a second connection; SQLite only stops consuming the local stream. See [ADR 0003](../adr/0003-cancel-second-connection.md).
 
+## What is Safe mode?
+
+A per-connection setting (Off / Confirm writes / Read-only) that gates writes from the SQL editor and warns on `UPDATE` / `DELETE` without `WHERE`. See [Safe mode](./safe-mode.md).
+
 ## Can I edit cells in the grid?
 
-Yes on a table Data tab that has a primary key: Enter or double-click a cell, then Commit from the pending bar (or Cmd/Ctrl+S). Tables without a primary key, views, and SQL result tabs stay read-only. Preview SQL and Discard are on the pending bar. Safe mode (Confirm writes / Read-only) is not in this build yet — see [grid editing](../design/ux/07-grid-editing.md) and [preview / commit](../design/ux/08-preview-commit.md).
+Yes on a table Data tab that has a primary key: Enter or double-click a cell, then Commit from the pending bar (or Cmd/Ctrl+S). Tables without a primary key, views, and SQL result tabs stay read-only. Preview SQL and Discard are on the pending bar. Safe mode gates editor writes and grid Commit — see [Safe mode](./safe-mode.md), [grid editing](../design/ux/07-grid-editing.md), and [preview / commit](../design/ux/08-preview-commit.md).
 
 ## How do I quit?
 

@@ -97,7 +97,7 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn run_all_editor(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn run_all_editor(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
@@ -106,11 +106,11 @@ impl Workspace {
             Err(SqlError::UnclosedQuote { offset }) => self.set_local_sql_error(tab_id, offset, cx),
             Err(_) => self.prompt_empty_sql(tab_id, cx),
             Ok(statements) if statements.is_empty() => self.prompt_empty_sql(tab_id, cx),
-            Ok(statements) => self.begin_sql_run(tab_id, statements, cx),
+            Ok(statements) => self.begin_sql_run_gated(tab_id, statements, window, cx),
         }
     }
 
-    pub(super) fn run_editor(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn run_editor(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
@@ -119,7 +119,24 @@ impl Workspace {
             Err(SqlError::UnclosedQuote { offset }) => self.set_local_sql_error(tab_id, offset, cx),
             Err(_) => self.prompt_empty_sql(tab_id, cx),
             Ok(statements) if statements.is_empty() => self.prompt_empty_sql(tab_id, cx),
-            Ok(statements) => self.begin_sql_run(tab_id, statements, cx),
+            Ok(statements) => self.begin_sql_run_gated(tab_id, statements, window, cx),
+        }
+    }
+
+    /// Apply safe-mode gating, then [`Self::begin_sql_run`] or a confirm/refusal.
+    fn begin_sql_run_gated(
+        &mut self,
+        tab_id: sela_core::TabId,
+        statements: Vec<String>,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dialect = self.active_dialect();
+        let (_classified, gate) = self.gate_statements(&statements, dialect);
+        match gate {
+            sela_core::EditorGate::Allow => self.begin_sql_run(tab_id, statements, cx),
+            sela_core::EditorGate::RefuseReadOnly => self.refuse_read_only_run(tab_id, cx),
+            gate => self.show_safe_mode_confirm(window, cx, tab_id, statements, gate),
         }
     }
 
