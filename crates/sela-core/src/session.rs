@@ -5,6 +5,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+use crate::change_plan::{ApplyChangesResult, ChangePlan};
 use crate::error::DbError;
 use crate::filter::{self, FilterCondition, SortSpec};
 use crate::sql::{self, StatementKind};
@@ -29,6 +30,12 @@ pub trait DatabaseSession: Send + Sync {
 
     /// Run a `COUNT(*)` (or similar) query, binding `params` in order.
     async fn count_query(&self, sql: &str, params: &[Value]) -> Result<u64, DbError>;
+
+    /// Apply a [`ChangePlan`] in a single transaction (commit on success,
+    /// rollback on any error). Empty plans are a no-op success.
+    ///
+    /// On failure the caller's [`crate::ChangeSet`] is left unchanged (M2-3).
+    async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyChangesResult, DbError>;
 
     /// Cheap row-count estimate for a table (Postgres `reltuples`, MySQL `table_rows`).
     /// SQLite returns `Ok(None)` — use [`exact_table_rows`] only on demand.

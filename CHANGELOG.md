@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- M2-1 / M2-2 safe-editing core (no UI): `ChangeSet` records pending cell updates, inserts, and deletes for tables with a primary key (merge rules for insert-edit, insert-delete, and revert-to-original); `ChangePlan` builds ordered DELETE → UPDATE → INSERT SQL for PostgreSQL, MySQL, and SQLite with dialect quoting and bind parameters only; `ChangePlan::preview_sql` / `preview_bound` for the upcoming preview dialog; `DatabaseSession::apply_changes` runs a plan in one transaction on all three engines. Golden SQL snapshots and driver integration tests included. No schema-migration code.
+
 ### Fixed
 
 - Result grid range selection: Shift+click and Shift+arrow extend `selection_rect` (highlighted), Ctrl/Cmd+A selects all cells, and right-click inside a range still keeps the range for Copy (#59).

@@ -35,8 +35,8 @@ UI never talks to sqlx directly. Library crates stay free of GPUI so CI can test
 
 ```text
 crates/
-  sela-core/     # DatabaseSession, Value, ResultWindow, SQL builder, structure types
-  sela-drivers/  # postgres.rs, mysql.rs, sqlite.rs, stream, decode, runtime
+  sela-core/     # DatabaseSession, Value, ResultWindow, SQL builder, ChangeSet/ChangePlan, structure types
+  sela-drivers/  # postgres.rs, mysql.rs, sqlite.rs, stream, decode, runtime, apply_changes
   sela-config/   # connections.json, SecretStore / keyring
   sela-app/      # GPUI binary `sela`: workspace/, grid/, form/, examples/grid_bench
   # planned:
@@ -82,7 +82,9 @@ pub trait DatabaseSession: Send + Sync {
 
 Helpers: `run_user_sql`, `preview_table`, `exact_table_rows`, `is_safe_to_rerun_for_load_more`.
 
-**Direction (M2+):** evolve toward a richer `Session` with `Capabilities`, `apply_changes`, and an optional `CancelHandle`, while keeping drivers behind this boundary.
+`DatabaseSession::apply_changes(&ChangePlan)` runs pending grid edits in one transaction (M2-2).
+
+**Direction (M2+):** evolve toward a richer `Session` with `Capabilities` and an optional `CancelHandle`, while keeping drivers behind this boundary.
 
 ### Async bridge
 
@@ -290,26 +292,31 @@ Rule: tests assert **observable behavior**; every bugfix gets a regression test.
 
 ## Pending edits and safe mode (M2)
 
+Core (M2-1 / M2-2) lives in `sela-core` (`change_set`, `change_plan`) and `DatabaseSession::apply_changes` in drivers. Grid overlay / commit UI is M2-3.
+
 ```rust
-pub struct ChangeSet {
-    pub table: TableRef,
-    pub key: RowKey, // PK or unique NOT NULL
-    pub edits: IndexMap<RowId, RowEdit>,
+pub struct ChangeSet { /* table, pk_columns, columns, pending RowChange list */ }
+pub enum RowChange {
+    Update { pk: Vec<Value>, cells: BTreeMap<String, CellChange> },
+    Insert { id: u64, values: BTreeMap<String, Value> },
+    Delete { pk: Vec<Value> },
 }
-pub enum RowEdit {
-    Update { original: Vec<Value>, changed: BTreeMap<ColIdx, Value> },
-    Insert { values: BTreeMap<ColIdx, Value> },
-    Delete { original: Vec<Value> },
+pub struct ChangePlan {
+    pub dialect: Dialect,
+    pub table: TableRef,
+    pub statements: Vec<PlannedStatement>, // DELETE, then UPDATE, then INSERT
 }
 ```
 
-- Edit only with PK/unique key; otherwise read-only with reason.
-- Always bound parameters; reuse `quote_ident` / `qualify`.
-- Commit: BEGIN → Delete, Update, Insert → COMMIT; on error ROLLBACK and keep `ChangeSet`.
-- Optional optimistic WHERE with old values.
-- Golden tests per dialect for generated SQL.
+- Edit only with a primary key (`ChangeSet::try_new` / `from_structure`); otherwise `ChangeError::NoPrimaryKey`.
+- Always bound parameters; reuse `quote_ident` / `qualify` / `bind_placeholder`.
+- `UPDATE`/`DELETE` `WHERE` uses only PK columns (`IS NULL` for null PK parts).
+- Commit: driver `apply_changes` → BEGIN → Delete, Update, Insert → COMMIT; on error ROLLBACK and keep `ChangeSet` (caller does not clear).
+- `ChangePlan::preview_sql` renders literals for the preview dialog; executable SQL stays bound.
+- Optional optimistic WHERE with old non-PK values: not implemented (backlog).
+- Golden tests per dialect under `crates/sela-core/tests/change_plan_snapshots/`; integration tests exercise `apply_changes` on all three engines.
 
-Safe mode per connection: Off / Confirm writes / Read-only. Classify with `classify` + `sqlparser` for no-WHERE writes and writes inside CTEs. Apply to editor and grid commit; production-tagged connections default to Confirm writes.
+Safe mode per connection: Off / Confirm writes / Read-only (M2-4). Classify with `classify` + `sqlparser` for no-WHERE writes and writes inside CTEs. Apply to editor and grid commit; production-tagged connections default to Confirm writes.
 
 ---
 

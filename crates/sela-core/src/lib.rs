@@ -3,6 +3,8 @@
 //! This crate has no GPUI or sqlx dependency. Drivers live in `sela-drivers`;
 //! saved-connection persistence lives in `sela-config`.
 
+mod change_plan;
+mod change_set;
 mod column_kind;
 mod connection;
 mod copy_format;
@@ -17,6 +19,8 @@ mod structure;
 mod tabs;
 mod types;
 
+pub use change_plan::{ApplyChangesResult, ChangePlan, PlanOp, PlannedStatement};
+pub use change_set::{CellChange, ChangeError, ChangeSet, RowChange, TableRef};
 pub use column_kind::{ColumnKind, MAX_SORT_KEYS};
 pub use connection::{SavedConnection, TlsMode, TlsSettings};
 pub use copy_format::{
@@ -44,10 +48,10 @@ pub use session::{
     DatabaseSession, LoadedSchema, TablePreview,
 };
 pub use sql::{
-    classify, first_keyword, is_safe_to_rerun_for_load_more, line_col_to_byte_range, normalize_sql,
-    parse_postgres_error_position, qualify, quote_ident, select_all, split_statements,
-    statement_index_at, strip_comments, wrap_count, wrap_page, SqlError, SqlStatement,
-    StatementKind,
+    bind_placeholder, classify, first_keyword, is_safe_to_rerun_for_load_more,
+    line_col_to_byte_range, normalize_sql, parse_postgres_error_position, qualify, quote_ident,
+    select_all, split_statements, statement_index_at, strip_comments, wrap_count, wrap_page,
+    SqlError, SqlStatement, StatementKind,
 };
 pub use structure::{ColumnStructure, ForeignKeyInfo, IndexInfo, TableStructure};
 pub use tabs::{

@@ -9,9 +9,9 @@ use tokio_util::sync::CancellationToken;
 use sqlx::Row;
 
 use sela_core::{
-    quote_ident, ColumnStructure, DatabaseSession, DbError, Dialect, ForeignKeyInfo, IndexInfo,
-    QueryPage, RelationKind, SchemaInfo, StreamBatch, StreamOutcome, TableInfo, TableStructure,
-    Value,
+    quote_ident, ApplyChangesResult, ChangePlan, ColumnStructure, DatabaseSession, DbError,
+    Dialect, ForeignKeyInfo, IndexInfo, QueryPage, RelationKind, SchemaInfo, StreamBatch,
+    StreamOutcome, TableInfo, TableStructure, Value,
 };
 
 pub const SAMPLE_SQL: &str = include_str!("../../../scripts/seed-sqlite.sql");
@@ -301,6 +301,10 @@ impl DatabaseSession for SqliteSession {
         crate::count_sql!(&self.pool, sql, params)
     }
 
+    async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyChangesResult, DbError> {
+        crate::change_exec::apply_change_plan!(&self.pool, plan, Dialect::Sqlite)
+    }
+
     async fn estimate_table_rows(
         &self,
         _schema: &str,
@@ -369,9 +373,11 @@ impl DatabaseSession for SqliteSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use sela_core::{
-        preview_table, run_user_sql, split_statements, Dialect, StatementOutcome, TablePreview,
-        Value, PAGE_SIZE,
+        preview_table, run_user_sql, split_statements, ChangePlan, ChangeSet, Dialect,
+        StatementOutcome, TablePreview, TableRef, Value, PAGE_SIZE,
     };
 
     async fn seeded() -> (tempfile::TempDir, SqliteSession) {
@@ -1258,5 +1264,90 @@ mod tests {
         };
         assert_eq!(rows.page.rows.len(), 1);
         assert_eq!(rows.page.rows[0][1], Value::text("wow!"));
+    }
+
+    #[tokio::test]
+    async fn apply_change_plan_commits_and_rolls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_changes (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    note TEXT
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO sela_changes (id, name, note) VALUES (1, 'a', NULL)")
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO sela_changes (id, name, note) VALUES (2, 'b', 'keep')")
+            .await
+            .unwrap();
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new("main", "sela_changes"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("alpha"),
+        )
+        .unwrap();
+        cs.delete_row(&[Value::Int(2)]).unwrap();
+        let mut values = BTreeMap::new();
+        values.insert("id".into(), Value::Int(3));
+        values.insert("name".into(), Value::text("c"));
+        values.insert("note".into(), Value::Null);
+        cs.insert_row(values).unwrap();
+
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        let result = session.apply_changes(&plan).await.unwrap();
+        assert_eq!(result.statements_executed, 3);
+
+        let page = session
+            .query("SELECT id, name, note FROM sela_changes ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0][0], Value::Int(1));
+        assert_eq!(page.rows[0][1], Value::text("alpha"));
+        assert_eq!(page.rows[1][0], Value::Int(3));
+
+        // Second statement fails (duplicate PK) → whole transaction rolls back.
+        let mut bad = ChangeSet::try_new(
+            TableRef::new("main", "sela_changes"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        bad.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("alpha"),
+            Value::text("should_rollback"),
+        )
+        .unwrap();
+        let mut dup = BTreeMap::new();
+        dup.insert("id".into(), Value::Int(3));
+        dup.insert("name".into(), Value::text("dup"));
+        bad.insert_row(dup).unwrap();
+        let bad_plan = ChangePlan::build(&bad, Dialect::Sqlite).unwrap();
+        assert!(session.apply_changes(&bad_plan).await.is_err());
+
+        let page = session
+            .query("SELECT name FROM sela_changes WHERE id = 1")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("alpha"));
     }
 }

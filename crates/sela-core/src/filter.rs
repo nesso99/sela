@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::column_kind::ColumnKind;
-use crate::sql::{qualify, quote_ident, SqlError};
+use crate::sql::{bind_placeholder, qualify, quote_ident, SqlError};
 use crate::types::{Dialect, Value};
 
 /// Comparison / pattern operator for one filter condition.
@@ -541,13 +541,6 @@ pub fn format_predicate_preview(
     }
 }
 
-fn placeholder(dialect: Dialect, index: usize) -> String {
-    match dialect {
-        Dialect::Postgres => format!("${}", index + 1),
-        Dialect::Mysql | Dialect::Sqlite => "?".into(),
-    }
-}
-
 fn like_op(dialect: Dialect, negated: bool) -> &'static str {
     match (dialect, negated) {
         (Dialect::Postgres, false) => "ILIKE",
@@ -680,50 +673,50 @@ fn append_condition(
     let type_hint = filter.column_type.as_deref();
     match filter.op {
         FilterOp::Eq => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             sql.push_str(&format!("{col} = {ph}"));
             params.push(parse_filter_value(&filter.value, type_hint));
         }
         FilterOp::Ne => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             sql.push_str(&format!("{col} <> {ph}"));
             params.push(parse_filter_value(&filter.value, type_hint));
         }
         FilterOp::Lt => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             sql.push_str(&format!("{col} < {ph}"));
             params.push(parse_filter_value(&filter.value, type_hint));
         }
         FilterOp::Le => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             sql.push_str(&format!("{col} <= {ph}"));
             params.push(parse_filter_value(&filter.value, type_hint));
         }
         FilterOp::Gt => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             sql.push_str(&format!("{col} > {ph}"));
             params.push(parse_filter_value(&filter.value, type_hint));
         }
         FilterOp::Ge => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             sql.push_str(&format!("{col} >= {ph}"));
             params.push(parse_filter_value(&filter.value, type_hint));
         }
         FilterOp::Like => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             let esc = like_escape_sql();
             // UX asks for LIKE (not ILIKE). `%` / `_` stay wildcards.
             sql.push_str(&format!("{col} LIKE {ph} {esc}"));
             params.push(Value::text(escape_like_meta(&filter.value)));
         }
         FilterOp::NotLike => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             let esc = like_escape_sql();
             sql.push_str(&format!("{col} NOT LIKE {ph} {esc}"));
             params.push(Value::text(escape_like_meta(&filter.value)));
         }
         FilterOp::Contains => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             let op = like_op(dialect, false);
             let esc = like_escape_sql();
             sql.push_str(&format!("{col} {op} {ph} {esc}"));
@@ -731,7 +724,7 @@ fn append_condition(
             params.push(Value::text(pattern));
         }
         FilterOp::NotContains => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             let op = like_op(dialect, true);
             let esc = like_escape_sql();
             sql.push_str(&format!("{col} {op} {ph} {esc}"));
@@ -739,7 +732,7 @@ fn append_condition(
             params.push(Value::text(pattern));
         }
         FilterOp::StartsWith => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             let op = like_op(dialect, false);
             let esc = like_escape_sql();
             sql.push_str(&format!("{col} {op} {ph} {esc}"));
@@ -747,7 +740,7 @@ fn append_condition(
             params.push(Value::text(pattern));
         }
         FilterOp::EndsWith => {
-            let ph = placeholder(dialect, params.len());
+            let ph = bind_placeholder(dialect, params.len());
             let op = like_op(dialect, false);
             let esc = like_escape_sql();
             sql.push_str(&format!("{col} {op} {ph} {esc}"));
@@ -770,7 +763,7 @@ fn append_condition(
                 if i > 0 {
                     sql.push_str(", ");
                 }
-                let ph = placeholder(dialect, params.len());
+                let ph = bind_placeholder(dialect, params.len());
                 sql.push_str(&ph);
                 params.push(parse_filter_value(item, type_hint));
             }
