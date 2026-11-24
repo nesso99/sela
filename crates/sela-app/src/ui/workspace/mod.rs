@@ -29,8 +29,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window};
 
 use sela_config::{
-    CachingSecrets, ConfigStore, HistoryStore, KeyringStore, SavedConnection, SettingsStore,
-    TabStore, ThemePreference,
+    warn_if_mock_credential_store, CachingSecrets, ConfigStore, HistoryStore, KeyringStore,
+    SavedConnection, SettingsStore, TabStore, ThemePreference,
 };
 use sela_core::{
     CopyFormat, DatabaseSession, HistoryEntry, HistoryOutcome, LoadedSchema, TabId, TabList,
@@ -170,6 +170,9 @@ impl Workspace {
         let theme_preference = settings.load();
         let system_theme_available = super::theme::system_appearance_available(window);
         super::theme::install_sela_themes(theme_preference, Some(window), cx);
+        // keyring v3 falls back to an in-process mock when no platform feature
+        // is enabled; fail loudly so passwords are not silently non-persistent.
+        warn_if_mock_credential_store();
         // Follow OS appearance only while the preference is System.
         let this = cx.weak_entity();
         let appearance = window.observe_window_appearance(move |window, cx| {
@@ -281,9 +284,10 @@ impl Workspace {
     }
 
     fn banner_error(&self) -> Option<String> {
-        self.active_view()
-            .and_then(|view| view.error.clone())
-            .or_else(|| self.boot_error.clone())
+        state::resolve_banner_error(
+            self.boot_error.as_deref(),
+            self.active_view().and_then(|view| view.error.as_deref()),
+        )
     }
 
     /// Linux/Windows in-window File menu. Height is fixed because `AppMenuBar`

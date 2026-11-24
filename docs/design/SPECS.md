@@ -196,7 +196,7 @@ Paths:
 
 `SELA_CONFIG_DIR` overrides the directory. File mode `0600` on Unix. Atomic write (temp + rename).
 
-Keychain: service `app.sela.database` via `keyring`. Account = connection id for the DB password. Fallback: keep the password in process memory and tell the user on the status bar (`MemorySecretStore` / `CachingSecrets`). Passwords never enter `connections.json`.
+Keychain: service `app.sela.database` via `keyring` v3 with platform features (`apple-native`, `windows-native`, `sync-secret-service` + `crypto-rust`). Account = connection id for the DB password. Fallback: keep the password in process memory and tell the user on the status bar (`MemorySecretStore` / `CachingSecrets`). Passwords never enter `connections.json`. Builds must not use keyring’s mock default store.
 
 ### Config schema v2 (M1-8) — done
 

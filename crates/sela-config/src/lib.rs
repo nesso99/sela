@@ -12,8 +12,9 @@ mod tabs;
 
 pub use history::{checkpoint_history_connection, HistoryOpen, HistoryStore};
 pub use secrets::{
-    keychain_unavailable_dialog_warning, memory_only_password_warning, CachingSecrets,
-    KeyringStore, MemorySecretStore, PasswordPersistence, SecretStore,
+    default_credential_store_is_mock, keychain_unavailable_dialog_warning,
+    memory_only_password_warning, warn_if_mock_credential_store, CachingSecrets, KeyringStore,
+    MemorySecretStore, PasswordPersistence, SecretStore,
 };
 pub use sela_core::{
     Engine, PersistedTab, PersistedTabs, SavedConnection, TabKind, TlsMode, TlsSettings,

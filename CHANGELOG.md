@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Saved passwords persist again: enable keyring v3 platform stores (`apple-native`, `windows-native`, `sync-secret-service` + `crypto-rust`) instead of the in-process mock; startup and tests fail loudly if the mock is still the default. When the OS keychain is unavailable at runtime, the #46 memory-only warning still applies (#51).
+- Connection error banner clears when connecting, switching connection, disconnecting, or after a successful connect, so a failed MySQL/Postgres auth message is not left over a working session (#52).
 - Switching saved connections while one is active cancels and closes the previous connection’s tabs, then connects the chosen row; Edit targets the tree selection instead of only the live session. If those tabs have typed SQL or a busy query, Switch asks first (Cancel keeps the current session) (#45).
 - When the OS keychain / Secret Service is unavailable, the connection dialog and status bar warn that the password is kept for this session only and will not be saved after quit; in-memory passwords still work for connect, reconnect, and switch (#46).
 - Disconnect cancels running queries for the active connection and closes that connection’s tabs (persisting `tabs.json`) so stale tabs are not left open or restored for the wrong database. Typed SQL or a busy query prompts before close; Cancel leaves the session unchanged (#48).

@@ -18,7 +18,7 @@ Use the theme menu on the status bar (Light, Dark, or System). The choice is sav
 
 ## Why does Linux ask for my password again after restart?
 
-No unlocked Secret Service was available when you saved the connection. Sela kept the password in memory only for that session and warned in the connection dialog and status bar (*The OS keychain is unavailable, so the password is kept for this session only*). Unlock gnome-keyring / KWallet (or another Secret Service) and save the connection again so the password is stored in the keychain.
+No unlocked Secret Service was available when you saved the connection. Sela kept the password in memory only for that session and warned in the connection dialog and status bar (*The OS keychain is unavailable, so the password is kept for this session only*). Unlock gnome-keyring / KWallet (or another Secret Service) and save the connection again so the password is stored in the keychain (service `app.sela.database`). A working Secret Service is required for the password to survive quit; the in-session memory fallback never writes to disk.
 
 ## Why can’t I keep tabs after Disconnect?
 
