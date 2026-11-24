@@ -4,11 +4,11 @@ On a **table** tab (not an arbitrary SQL result), Sela can filter and sort rows 
 
 ## Filter bar
 
-- Open or close the filter bar with **Ctrl/⌘+F**, or the **Filter** button in the toolbar. When a filter is applied and the bar is closed, the button stays selected.
-- Each condition has a **column**, **operator**, and **value** (value is hidden for `is null` / `is not null`).
+- Open or close the filter bar with **Ctrl/⌘+F**, or the **Filter** button in the toolbar. When a filter is applied and the bar is closed, the button stays selected. Opening focuses the first column field.
+- Each condition has a **column**, **operator**, and **value** (value is hidden for `is null` / `is not null`). Boolean columns use a two-item **true** / **false** menu instead of a text field; null operators still hide that control.
 - Conditions are combined with **AND** only in this release (no OR / groups).
-- **Apply** (or Enter / Ctrl/⌘+Enter in a filter field) runs the filtered preview. Any invalid row refuses the whole Apply and leaves the previous page. **Clear** removes all conditions and reloads the unfiltered estimate. **Add** appends another row.
-- Operators depend on the column type (`ColumnKind`). Text columns offer `=`, `≠`, `LIKE`, `NOT LIKE`, `in`, `is null`, `is not null`. Click the operator button to cycle legal operators for that column.
+- **Apply** (or Enter / Ctrl/⌘+Enter in a filter field) runs the filtered preview. Any invalid row refuses the whole Apply and leaves the previous page. **Clear** removes all conditions and reloads the unfiltered estimate. **Add** appends another row. **Ctrl/⌘+Shift+Enter** inserts a row after the focused one; **Ctrl/⌘+Backspace** removes it (or clears the only row in place). **Escape** returns focus to the grid and hides an unused empty bar.
+- Operators depend on the column type (`ColumnKind`). Text columns offer `=`, `≠`, `LIKE`, `NOT LIKE`, `in`, `is null`, `is not null`. Click the operator button to cycle legal operators for that column. Older saved tabs may still restore legacy `contains` / `starts with` / `ends with` filters; the menu no longer offers those.
 - **in** takes a comma-separated list (each item is a bound parameter).
 - **LIKE** / **NOT LIKE** use `ESCAPE '!'`. `%` and `_` are wildcards; use `!` to escape them (and `!!` for a literal `!`). Empty patterns are rejected. Empty text for `=` binds a real empty string (`''`); the value field placeholder says `empty matches '' · IS NULL for nulls`.
 - Never emit `col = NULL` — use **is null**. On a text column, the characters `NULL` are a normal string.
@@ -18,7 +18,7 @@ Filter state for table tabs is saved in `tabs.json` and restored when you reopen
 
 ## Column sort
 
-- Plain click on a header: if that column is the only sort key, cycle **asc → desc → none**; otherwise replace the list with that column ascending.
+- Plain click on a header: if that column is the only sort key, cycle **asc → desc → none**; otherwise replace the list with that column ascending. (Sela’s own cycle — not the DataTable default.)
 - **Shift-click** adds another key (or flips / removes that key), up to **3** columns. Headers show marks like `title ▲1` / `author ▼2`.
 - Sort is an `ORDER BY` on quoted identifiers (server-side). The grid does not sort the visible page client-side.
 - SQL result tabs do not get header sort in this release.

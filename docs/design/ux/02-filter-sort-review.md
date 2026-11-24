@@ -243,3 +243,11 @@ An empty applied filter omits WHERE and ORDER BY and is the `select_all` path `p
 2. **Header sort is for table Data only.** SQL result grids stay `sortable(false)`. Do not wrap user SQL in `ORDER BY` in M1-3.
 3. **`=` with an empty text value matches a real `''`.** Use `IS NULL` for nulls. The empty value field shows the hint `empty matches '' · IS NULL for nulls`. `LIKE` with an empty pattern stays invalid.
 4. **Count has no confirmation.** There is no production tagging yet. Count must be cancellable (Stop and `secondary-.`) and must show elapsed time in the status bar (`Counting… · 1.2 s`).
+
+## Accepted implementation notes
+
+These match the shipped M1-3 code and are recorded so the spec does not fight the crate:
+
+- **Header clicks need `sortable(true)`.** gpui-component 0.10 only delivers header clicks when `TableState.sortable(true)`, so it is enabled for table Data loads only. `perform_sort` only rebuilds `ORDER BY` and never reorders client-side. The default remains `sortable(false)` (SQL results and non-Data panes).
+- **Legacy pattern ops still deserialize.** Older `tabs.json` may contain `contains` / `starts_with` / `ends_with` (and the negated forms). Those still validate and build SQL on restore. The filter operator menu offers only `LIKE` / `NOT LIKE` for text.
+- **Sort cycle is Sela’s, not DataTable’s.** DataTable’s built-in Desc-first header cycle is ignored. Sela uses its own plain-click cycle: ASC → DESC → none (and Shift-click multi-sort as above).
