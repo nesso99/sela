@@ -2,12 +2,17 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputContentType, InputState};
+use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, Context, Entity, EventEmitter, IntoElement, Render, Window};
+use gpui_kit::{div, px, Context, Entity, EventEmitter, IntoElement, MouseButton, Render, Subscription, Window};
 
-use sela_core::{Engine, SavedConnection, TlsMode, TlsSettings};
+use sela_core::{
+    parse_connection_url, ConnectionColor, DefaultSafetyLevel, Engine, SavedConnection, TlsMode,
+    TlsSettings, default_safety_level_for_color,
+};
+
+use super::theme::SelaPalette;
 
 #[derive(Clone)]
 pub struct ConnectionDraft {
@@ -24,11 +29,18 @@ pub struct ConnectionForm {
     existing_id: Option<String>,
     engine: Engine,
     tls_mode: TlsMode,
+    color: ConnectionColor,
+    /// M2-4: set true when the user edits the Safe mode select; until then color→red uses [`default_safety_level_for_color`].
+    safe_mode_control_touched: bool,
+    /// Hook for M2-4 safe mode UI — suggested default from color, not persisted here.
+    _suggested_safe_mode: Option<DefaultSafetyLevel>,
     record_history: bool,
     warning: Option<String>,
     /// True when the OS keychain probe failed; changes the password helper copy.
     keychain_unavailable: bool,
     error: Option<String>,
+    import_note: Option<String>,
+    import_url: Entity<InputState>,
     name: Entity<InputState>,
     host: Entity<InputState>,
     port: Entity<InputState>,
@@ -36,9 +48,12 @@ pub struct ConnectionForm {
     database: Entity<InputState>,
     file_path: Entity<InputState>,
     password: Entity<InputState>,
+    conn_label: Entity<InputState>,
+    group: Entity<InputState>,
     ca_path: Entity<InputState>,
     client_cert_path: Entity<InputState>,
     client_key_path: Entity<InputState>,
+    _import_url_subscription: Option<Subscription>,
 }
 
 impl EventEmitter<FormEvent> for ConnectionForm {}
@@ -68,10 +83,18 @@ impl ConnectionForm {
             existing_id: existing.map(|item| item.id),
             engine,
             tls_mode: seed.tls.mode,
+            color: seed.color,
+            safe_mode_control_touched: false,
+            _suggested_safe_mode: None,
             record_history: seed.record_history,
             warning,
             keychain_unavailable,
             error: None,
+            import_note: None,
+            import_url: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("postgres://user:pass@host:5432/db")
+            }),
             name: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("Local library")
@@ -107,6 +130,14 @@ impl ConnectionForm {
                     .placeholder("Password")
                     .default_value(password)
             }),
+            conn_label: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("prod")
+                    .default_value(seed.label)
+            }),
+            group: cx.new(|cx| {
+                InputState::new(window, cx).default_value(seed.group)
+            }),
             ca_path: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("/path/to/ca.pem")
@@ -122,11 +153,41 @@ impl ConnectionForm {
                     .placeholder("/path/to/client.key (PEM, unencrypted)")
                     .default_value(seed.tls.client_key_path)
             }),
+            _import_url_subscription: None,
         }
+    }
+
+    fn ensure_import_url_subscription(
+        &mut self,
+        this: Entity<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self._import_url_subscription.is_some() {
+            return;
+        }
+        let import_url = self.import_url.clone();
+        let subscription = cx.subscribe_in(&import_url, window, move |_, _, event, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.update(cx, |form, cx| form.import_from_url(window, cx));
+            }
+        });
+        self._import_url_subscription = Some(subscription);
     }
 
     fn value(input: &Entity<InputState>, cx: &gpui_kit::App) -> String {
         input.read(cx).value().to_string()
+    }
+
+    fn set_value(
+        input: &Entity<InputState>,
+        value: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        input.update(cx, |state, cx| {
+            state.set_value(value.into(), window, cx);
+        });
     }
 
     fn set_engine(&mut self, engine: Engine, window: &mut Window, cx: &mut Context<Self>) {
@@ -161,6 +222,68 @@ impl ConnectionForm {
         cx.notify();
     }
 
+    fn set_color(&mut self, color: ConnectionColor, cx: &mut Context<Self>) {
+        if self.color == color {
+            return;
+        }
+        self.color = color;
+        // M2-4 reads `_suggested_safe_mode` when wiring Safe mode on new connections
+        // (docs/design/ux/09-safe-mode.md § Where it is set).
+        if self.existing_id.is_none() && !self.safe_mode_control_touched {
+            self._suggested_safe_mode = Some(default_safety_level_for_color(color));
+        }
+        cx.notify();
+    }
+
+    fn import_from_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = Self::value(&self.import_url, cx);
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        match parse_connection_url(trimmed) {
+            Ok(imported) => {
+                self.error = None;
+                Self::set_value(&self.import_url, String::new(), window, cx);
+                self.set_engine(imported.engine, window, cx);
+                Self::set_value(&self.host, imported.host, window, cx);
+                Self::set_value(&self.port, imported.port.to_string(), window, cx);
+                Self::set_value(&self.username, imported.username, window, cx);
+                Self::set_value(&self.database, imported.database, window, cx);
+                Self::set_value(&self.file_path, imported.file_path, window, cx);
+                if let Some(password) = imported.password {
+                    Self::set_value(&self.password, password, window, cx);
+                }
+                if imported.engine == Engine::Sqlite {
+                    self.tls_mode = TlsMode::Disable;
+                } else {
+                    self.tls_mode = imported.tls.mode;
+                    Self::set_value(&self.ca_path, imported.tls.ca_path, window, cx);
+                    Self::set_value(
+                        &self.client_cert_path,
+                        imported.tls.client_cert_path,
+                        window,
+                        cx,
+                    );
+                    Self::set_value(&self.client_key_path, imported.tls.client_key_path, window, cx);
+                }
+                let mut note =
+                    "Filled from the URL. The password is only in the password field.".to_string();
+                for extra in imported.notes {
+                    if !extra.is_empty() {
+                        note.push(' ');
+                        note.push_str(&extra);
+                    }
+                }
+                self.import_note = Some(note);
+            }
+            Err(err) => {
+                self.error = Some(err.message().into());
+            }
+        }
+        cx.notify();
+    }
+
     fn submit(&mut self, cx: &mut Context<Self>) {
         let mut connection = SavedConnection::new(self.engine);
         if let Some(id) = &self.existing_id {
@@ -173,6 +296,9 @@ impl ConnectionForm {
         connection.database = Self::value(&self.database, cx).trim().to_string();
         connection.file_path = Self::value(&self.file_path, cx).trim().to_string();
         connection.record_history = self.record_history;
+        connection.color = self.color;
+        connection.label = Self::value(&self.conn_label, cx).trim().to_string();
+        connection.group = Self::value(&self.group, cx).trim().to_string();
         let port_text = Self::value(&self.port, cx).trim().to_string();
         if self.engine == Engine::Sqlite {
             connection.port = 0;
@@ -210,13 +336,31 @@ impl ConnectionForm {
 }
 
 impl Render for ConnectionForm {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
+        self.ensure_import_url_subscription(this.clone(), window, cx);
         let network = self.engine != Engine::Sqlite;
+        let palette = SelaPalette::for_mode(cx.theme().mode);
+        let selected_color_label = self.color.label();
         v_flex()
             .w_full()
             .gap_2()
             .p_1()
+            .child(label("Import URL", cx))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().flex_1().child(Input::new(&self.import_url)))
+                    .child({
+                        let this = this.clone();
+                        Button::new("import-url")
+                            .label("Import")
+                            .ghost()
+                            .on_click(move |_, window, cx| {
+                                this.update(cx, |form, cx| form.import_from_url(window, cx));
+                            })
+                    }),
+            )
             .child(
                 h_flex().gap_2().child(engine_button(
                     this.clone(),
@@ -237,6 +381,49 @@ impl Render for ConnectionForm {
             )
             .child(label("Name", cx))
             .child(Input::new(&self.name))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_start()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap_1()
+                            .child(label("Color", cx))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .children(ConnectionColor::all().iter().copied().map(
+                                        |color| {
+                                            color_swatch(this.clone(), color, self.color, &palette, cx)
+                                        },
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().foreground)
+                                    .child(selected_color_label),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "Red marks production. A new connection set to Red starts in Confirm writes.",
+                                    ),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap_1()
+                            .child(label("Label", cx))
+                            .child(Input::new(&self.conn_label)),
+                    ),
+            )
+            .child(label("Group", cx))
+            .child(Input::new(&self.group))
             .when(network, |form| {
                 form.child(label("Host", cx))
                     .child(Input::new(&self.host))
@@ -312,6 +499,14 @@ impl Render for ConnectionForm {
                         "Passwords are stored in the OS keychain, not in the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only.".to_string()
                     }),
             )
+            .when_some(self.import_note.clone(), |form, note| {
+                form.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(note),
+                )
+            })
             .when_some(self.warning.clone(), |form, warning| {
                 form.child(
                     div()
@@ -350,6 +545,32 @@ fn label(text: &str, cx: &gpui_kit::App) -> impl IntoElement {
         .text_xs()
         .text_color(cx.theme().muted_foreground)
         .child(text.to_string())
+}
+
+fn color_swatch(
+    form: Entity<ConnectionForm>,
+    color: ConnectionColor,
+    current: ConnectionColor,
+    palette: &SelaPalette,
+    cx: &gpui_kit::App,
+) -> impl IntoElement {
+    let selected = color == current;
+    let fill = palette.connection_color(color);
+    let id = format!("conn-color-{}", color.as_str());
+    div()
+        .id(id)
+        .w(px(16.))
+        .h(px(16.))
+        .flex_shrink_0()
+        .cursor_pointer()
+        .when(selected, |swatch| swatch.border_2().border_color(cx.theme().ring))
+        .when(!selected, |swatch| {
+            swatch.border_1().border_color(cx.theme().border)
+        })
+        .when_some(fill, |swatch, hue| swatch.bg(hue))
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            form.update(cx, |form, cx| form.set_color(color, cx));
+        })
 }
 
 fn engine_button(
