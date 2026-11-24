@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Result grid range selection: Shift+click and Shift+arrow extend `selection_rect` (highlighted), Ctrl/Cmd+A selects all cells, and right-click inside a range still keeps the range for Copy (#59).
+- Result grid keyboard selection: Shift+arrow binds explicitly in the `DataTable` context (DataTable only handles plain arrows), and Ctrl/Cmd+A no longer collapses after a deferred `SelectCell` from `set_selected_cell` (#59).
 - SQLite: expression column headers show the runtime storage class (INTEGER / REAL / TEXT / BLOB) of the first non-NULL value, or no type when unknown / all NULL — never `NULL` as a type (#60).
 - SQL / result toolbar page label uses the real row count and page (`Page N · {n} rows` or `Page N of M`), not a hardcoded `Page 1 · 100 rows` (#61).
 - Postgres `void` (e.g. `SELECT pg_sleep(n)`) renders as a NULL-style cell with header type `void`, not a red `!<VOID>` decode marker (#62).

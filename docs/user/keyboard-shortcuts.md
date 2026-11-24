@@ -33,6 +33,7 @@ The design target for shortcuts that are not built yet is [docs/design/ux/README
 | Delete history row | Cmd/Ctrl+Backspace (history list) |
 | Close history / clear search | Escape (history panel) |
 | Select all cells | Cmd/Ctrl+A (grid focused) |
+| Extend selection | Shift+Arrow (grid focused) |
 | Copy selection as TSV | Cmd/Ctrl+C (grid focused) |
 | Previous / next SQL result | Left / Right (result strip focused) |
 | Quit | Cmd/Ctrl+Q (File ▸ Quit / Quit Sela; confirms only while a query or Count is running) |

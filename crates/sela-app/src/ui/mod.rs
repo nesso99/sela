@@ -54,6 +54,10 @@ actions!(
         CopyAsJson,
         CopyAsInsert,
         SelectAllGrid,
+        ExtendGridSelectionUp,
+        ExtendGridSelectionDown,
+        ExtendGridSelectionLeft,
+        ExtendGridSelectionRight,
         ResultStripPrev,
         ResultStripNext,
         Quit
@@ -220,6 +224,12 @@ pub fn run() {
             cx.bind_keys([
                 KeyBinding::new("cmd-a", SelectAllGrid, Some("DataTable")),
                 KeyBinding::new("ctrl-a", SelectAllGrid, Some("DataTable")),
+                // DataTable only binds plain arrows; Shift+arrow must be explicit
+                // or the keystroke never moves the cell / never extends the range.
+                KeyBinding::new("shift-up", ExtendGridSelectionUp, Some("DataTable")),
+                KeyBinding::new("shift-down", ExtendGridSelectionDown, Some("DataTable")),
+                KeyBinding::new("shift-left", ExtendGridSelectionLeft, Some("DataTable")),
+                KeyBinding::new("shift-right", ExtendGridSelectionRight, Some("DataTable")),
             ]);
             // Result strip Prev/Next when the strip itself is focused.
             bind_secondary(cx, "left", Box::new(ResultStripPrev), Some("ResultStrip"));

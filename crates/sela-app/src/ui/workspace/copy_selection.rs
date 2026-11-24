@@ -19,16 +19,59 @@ impl Workspace {
             return;
         };
         view.grid.update(cx, |state, cx| {
-            let rows = state.delegate().result.total_rows();
-            let cols = state.delegate().result.columns().len();
             state.delegate_mut().select_all_cells();
-            if rows > 0 && cols > 0 {
-                // Keep DataTable's focus cell so keyboard navigation still works.
-                state.set_selected_cell(0, 0, cx);
-                // set_selected_cell emits SelectCell which would collapse the
-                // range via note_cell_focus(false) — restore the full range.
-                state.delegate_mut().select_all_cells();
-            }
+            // Do not call set_selected_cell here. It emits TableEvent::SelectCell
+            // after this update returns; the subscriber would then run
+            // note_cell_focus(..., shift=false) and collapse the full range to
+            // the focus cell (RC6 Ctrl+A failure). Keep the current focus cell
+            // so arrow keys still navigate from where the user was.
+            state.delegate_mut().suppress_next_select_collapse();
+            state.refresh(cx);
+        });
+        cx.notify();
+    }
+
+    /// Shift+arrow: move the DataTable focus cell and extend `selection_rect`.
+    ///
+    /// DataTable only binds plain `up`/`down`/`left`/`right`, so Shift+arrow
+    /// never matches those keys. We bind `shift-*` to Sela actions and drive
+    /// `set_selected_cell` ourselves with a pending Shift flag so the deferred
+    /// SelectCell subscriber extends the range instead of resetting it.
+    pub(super) fn extend_grid_selection(
+        &mut self,
+        d_row: isize,
+        d_col: isize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
+            return;
+        };
+        let Some(view) = self.views.get(&tab_id) else {
+            return;
+        };
+        view.grid.update(cx, |state, cx| {
+            let (row, col) = state.selected_cell().unwrap_or_else(|| {
+                state
+                    .delegate()
+                    .selection_anchor
+                    .map(|p| (p.row, p.col))
+                    .unwrap_or((0, 0))
+            });
+            let Some((new_row, new_col)) = state
+                .delegate()
+                .focus_after_shift_step(row, col, d_row, d_col)
+            else {
+                return;
+            };
+            // set_selected_cell emits SelectCell after this update returns. Arm
+            // suppress so that deferred handler cannot collapse the range if
+            // window.modifiers().shift is already false by then; apply the
+            // extend synchronously (same pattern as select_all_grid).
+            state.delegate_mut().note_pointer_shift(true);
+            state.delegate_mut().suppress_next_select_collapse();
+            state.set_selected_cell(new_row, new_col, cx);
+            state.delegate_mut().note_cell_focus(new_row, new_col, true);
+            let _ = state.delegate_mut().take_shift_for_select();
             state.refresh(cx);
         });
         cx.notify();

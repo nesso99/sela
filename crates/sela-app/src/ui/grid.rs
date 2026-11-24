@@ -51,7 +51,13 @@ pub struct GridDelegate {
     /// Shift held on the last left mouse-down inside a cell. Prefer this over
     /// `window.modifiers()` when handling [`TableEvent::SelectCell`], because
     /// the click subscriber can run after modifiers have already changed.
+    /// Also set by Shift+arrow handlers before they call `set_selected_cell`.
     pointer_shift: Option<bool>,
+    /// When true, the next [`TableEvent::SelectCell`] must not call
+    /// [`Self::note_cell_focus`] with `shift = false` (which would collapse an
+    /// intentional range such as Select-All). Consumed by
+    /// [`Self::take_suppress_select_collapse`].
+    suppress_select_collapse: bool,
 }
 
 impl GridDelegate {
@@ -67,6 +73,7 @@ impl GridDelegate {
             selection_anchor: None,
             selection_rect: None,
             pointer_shift: None,
+            suppress_select_collapse: false,
         }
     }
 
@@ -138,6 +145,7 @@ impl GridDelegate {
         self.selection_anchor = None;
         self.selection_rect = None;
         self.pointer_shift = None;
+        self.suppress_select_collapse = false;
     }
 
     /// Remember whether Shift was held on the pointer press that is about to
@@ -149,6 +157,36 @@ impl GridDelegate {
     /// Consume a pointer-captured Shift flag, if any.
     pub fn take_shift_for_select(&mut self) -> Option<bool> {
         self.pointer_shift.take()
+    }
+
+    /// Ignore the next non-Shift [`TableEvent::SelectCell`] collapse.
+    ///
+    /// `TableState::set_selected_cell` emits `SelectCell` after the current
+    /// update returns; without this flag, that deferred handler would call
+    /// [`Self::note_cell_focus`] with `shift = false` and wipe a range that was
+    /// just set (Select-All / Shift+arrow).
+    pub fn suppress_next_select_collapse(&mut self) {
+        self.suppress_select_collapse = true;
+    }
+
+    /// Consume the Select-All / range-keep suppress flag.
+    pub fn take_suppress_select_collapse(&mut self) -> bool {
+        let flag = self.suppress_select_collapse;
+        self.suppress_select_collapse = false;
+        flag
+    }
+
+    /// Apply a [`TableEvent::SelectCell`] the same way the workspace subscriber
+    /// does: honor suppress, then pointer-captured Shift, then `window_shift`.
+    ///
+    /// Unit tests use this to drive the real post-`set_selected_cell` order
+    /// without a live GPUI window.
+    pub fn apply_select_cell_event(&mut self, row: usize, col: usize, window_shift: bool) {
+        if self.take_suppress_select_collapse() {
+            return;
+        }
+        let shift = self.take_shift_for_select().unwrap_or(window_shift);
+        self.note_cell_focus(row, col, shift);
     }
 
     /// Record a cell focus for Shift-range selection.
@@ -178,6 +216,30 @@ impl GridDelegate {
             CellPos::new(rows - 1, cols - 1),
         ));
         self.pointer_shift = None;
+    }
+
+    /// Move the focus cell by `(d_row, d_col)` and extend `selection_rect`.
+    ///
+    /// Used by Shift+arrow. Returns the new focus when the move (or a no-op at
+    /// the edge that still refreshes the range) should call
+    /// `TableState::set_selected_cell`. The caller must set
+    /// [`Self::note_pointer_shift`]`(true)` before `set_selected_cell` so the
+    /// deferred `SelectCell` subscriber extends instead of collapsing.
+    pub fn focus_after_shift_step(
+        &self,
+        row: usize,
+        col: usize,
+        d_row: isize,
+        d_col: isize,
+    ) -> Option<(usize, usize)> {
+        let rows = self.result.total_rows();
+        let cols = self.result.columns().len();
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+        let new_row = (row as isize + d_row).clamp(0, rows as isize - 1) as usize;
+        let new_col = (col as isize + d_col).clamp(0, cols as isize - 1) as usize;
+        Some((new_row, new_col))
     }
 
     /// Whether `(row, col)` lies inside the active Shift-range (if any).
@@ -723,5 +785,104 @@ mod tests {
         grid.note_pointer_shift(true);
         assert_eq!(grid.take_shift_for_select(), Some(true));
         assert_eq!(grid.take_shift_for_select(), None);
+    }
+
+    /// RC6 Ctrl+A failure: `set_selected_cell(0, 0)` emits `SelectCell` after
+    /// `select_all_cells` returns; without suppress, that collapses the range.
+    #[test]
+    fn select_all_then_deferred_select_cell_without_suppress_collapses() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.note_cell_focus(1, 0, false);
+        grid.select_all_cells();
+        assert_eq!(grid.selection_rect.expect("all").normalized(), (0, 2, 0, 1));
+        // Deferred SelectCell(0, 0) with shift=false — the RC6 bug path.
+        grid.apply_select_cell_event(0, 0, false);
+        assert_eq!(
+            grid.selection_rect.expect("collapsed"),
+            SelectionRect::cell(0, 0)
+        );
+    }
+
+    #[test]
+    fn select_all_with_suppress_survives_deferred_select_cell() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.note_cell_focus(1, 0, false);
+        grid.select_all_cells();
+        grid.suppress_next_select_collapse();
+        // Same deferred SelectCell(0, 0) as above — must keep the full range.
+        grid.apply_select_cell_event(0, 0, false);
+        assert_eq!(grid.selection_rect.expect("all").normalized(), (0, 2, 0, 1));
+        // Suppress is one-shot; a later plain SelectCell still collapses.
+        grid.apply_select_cell_event(1, 0, false);
+        assert_eq!(
+            grid.selection_rect.expect("single"),
+            SelectionRect::cell(1, 0)
+        );
+    }
+
+    /// RC6 Shift+Down failure: DataTable never sees `shift-down`, so we drive
+    /// the move ourselves with a pending Shift flag (or suppress + sync extend).
+    #[test]
+    fn shift_arrow_keyboard_path_extends_via_pending_shift() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.note_cell_focus(1, 1, false);
+        // First Shift+Down: pending shift + SelectCell to row 2.
+        let (r, c) = grid.focus_after_shift_step(1, 1, 1, 0).expect("step");
+        assert_eq!((r, c), (2, 1));
+        grid.note_pointer_shift(true);
+        // window_shift=false proves the pending flag is what extends the range.
+        grid.apply_select_cell_event(r, c, false);
+        assert_eq!(
+            grid.selection_rect.expect("range").normalized(),
+            (1, 2, 1, 1)
+        );
+        // Second Shift+Down: grow to rows 1..=2 still (already at last row).
+        let (r2, c2) = grid.focus_after_shift_step(2, 1, 1, 0).expect("edge");
+        assert_eq!((r2, c2), (2, 1));
+        grid.note_pointer_shift(true);
+        grid.apply_select_cell_event(r2, c2, false);
+        assert_eq!(
+            grid.selection_rect.expect("edge").normalized(),
+            (1, 2, 1, 1)
+        );
+    }
+
+    #[test]
+    fn shift_arrow_twice_from_row0_grows_two_rows() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.note_cell_focus(0, 0, false);
+        for step in 1..=2 {
+            let (r, c) = grid
+                .focus_after_shift_step(step - 1, 0, 1, 0)
+                .expect("step");
+            assert_eq!((r, c), (step, 0));
+            grid.note_pointer_shift(true);
+            grid.suppress_next_select_collapse();
+            // Production path: sync extend, then deferred SelectCell is suppressed.
+            grid.note_cell_focus(r, c, true);
+            let _ = grid.take_shift_for_select();
+            grid.apply_select_cell_event(r, c, false);
+        }
+        assert_eq!(
+            grid.selection_rect.expect("grown").normalized(),
+            (0, 2, 0, 0)
+        );
+    }
+
+    #[test]
+    fn shift_click_still_extends_after_keyboard_helpers() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.note_cell_focus(0, 0, false);
+        grid.note_pointer_shift(true);
+        grid.apply_select_cell_event(2, 1, false);
+        assert_eq!(
+            grid.selection_rect.expect("click range").normalized(),
+            (0, 2, 0, 1)
+        );
     }
 }

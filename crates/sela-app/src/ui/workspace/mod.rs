@@ -38,11 +38,12 @@ use sela_core::{
 
 use super::{
     ActivateTab, CancelQuery, CloseTab, CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv,
-    CopySelection, EscapeFilterBar, EscapeHistory, FindInSql, FindNext, FindPrevious,
-    FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun,
-    HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab, Quit, RemoveFilterRow,
-    ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, SelectAllGrid, ShowTableData,
-    ShowTableStructure, ToggleEditor, ToggleFilterBar, ToggleHistory,
+    CopySelection, EscapeFilterBar, EscapeHistory, ExtendGridSelectionDown,
+    ExtendGridSelectionLeft, ExtendGridSelectionRight, ExtendGridSelectionUp, FindInSql, FindNext,
+    FindPrevious, FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen,
+    HistoryRerun, HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab, Quit,
+    RemoveFilterRow, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, SelectAllGrid,
+    ShowTableData, ShowTableStructure, ToggleEditor, ToggleFilterBar, ToggleHistory,
 };
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
@@ -581,6 +582,38 @@ impl Render for Workspace {
                 let this = this.clone();
                 move |_: &SelectAllGrid, _, cx| {
                     this.update(cx, |workspace, cx| workspace.select_all_grid(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ExtendGridSelectionUp, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.extend_grid_selection(-1, 0, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ExtendGridSelectionDown, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.extend_grid_selection(1, 0, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ExtendGridSelectionLeft, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.extend_grid_selection(0, -1, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ExtendGridSelectionRight, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.extend_grid_selection(0, 1, cx)
+                    });
                 }
             })
             .on_action({
