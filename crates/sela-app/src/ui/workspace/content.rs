@@ -19,7 +19,6 @@ impl Workspace {
     pub(super) fn toolbar(
         &self,
         cx: &Context<Self>,
-        endpoint: &str,
         page_label: &str,
         can_prev: bool,
         can_next: bool,
@@ -41,6 +40,19 @@ impl Workspace {
             .unwrap_or(ConnectionColor::None);
         let palette = SelaPalette::for_mode(cx.theme().mode);
         let strip = palette.connection_color(conn_color);
+        let (endpoint, safe_mode_segment) = self
+            .active_connection()
+            .map(|connection| {
+                (
+                    format!(
+                        "{} · {}",
+                        connection.engine.label(),
+                        connection.endpoint_label()
+                    ),
+                    Some(connection.safe_mode.toolbar_segment()),
+                )
+            })
+            .unwrap_or_else(|| ("Choose a connection to browse its tables.".into(), None));
         h_flex()
             .h(px(44.))
             .items_stretch()
@@ -57,11 +69,33 @@ impl Workspace {
                     .items_center()
                     .justify_between()
                     .child(
-                        v_flex().child(label).child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(endpoint.to_string()),
+                        v_flex().min_w(px(0.)).flex_1().child(label).child(
+                            h_flex()
+                                .min_w(px(0.))
+                                .w_full()
+                                .gap_1()
+                                .items_center()
+                                .child(
+                                    // Endpoint ellipsizes before the Safe: segment.
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .min_w(px(0.))
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child(endpoint),
+                                )
+                                .when_some(safe_mode_segment, |row, safe| {
+                                    row.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .flex_shrink_0()
+                                            .child(format!("· {safe}")),
+                                    )
+                                }),
                         ),
                     )
                     .child(
@@ -160,14 +194,15 @@ impl Workspace {
                                     let this_ins = this.clone();
                                     let this_dup = this.clone();
                                     let this_del = this.clone();
+                                    let safe_mode = self.active_safe_mode();
                                     let edit_ro = self
                                         .active_view()
                                         .and_then(|v| v.edit.as_ref())
-                                        .is_none_or(|e| !e.is_editable());
+                                        .is_none_or(|e| !e.is_editable_for(safe_mode));
                                     let ro_tip = self
                                         .active_view()
                                         .and_then(|v| v.edit.as_ref())
-                                        .and_then(|e| e.strip_line())
+                                        .and_then(|e| e.strip_line_for(safe_mode))
                                         .unwrap_or("This table is read-only.");
                                     row.child(
                                         Button::new("edit-insert")
@@ -275,7 +310,7 @@ impl Workspace {
         } else {
             Size::Size(px(f32::from(row_h)))
         };
-        let _ = cx; // theme already applied; size comes from font_size setting
+        let _ = cx;
         div()
             .flex_1()
             .min_h(px(0.))

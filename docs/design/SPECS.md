@@ -317,7 +317,7 @@ pub struct ChangePlan {
 - Optional optimistic WHERE with old non-PK values: not implemented (backlog — see follow-up issue from M2-1/M2-2).
 - Golden tests per dialect under `crates/sela-core/tests/change_plan_snapshots/`; integration tests exercise `apply_changes` on all three engines.
 
-Safe mode per connection: Off / Confirm writes / Read-only (M2-4). Classify with `classify` + `sqlparser` for no-WHERE writes and writes inside CTEs. Apply to editor and grid commit; production-tagged connections default to Confirm writes.
+Safe mode per connection: Off / Confirm writes / Read-only (`safe_mode` on `SavedConnection`, M2-4). Classify with `classify_statement_safety` (`sqlparser`) for no-WHERE writes and writes inside CTEs. Apply to editor and history Rerun; `decide_grid_commit_gate` for grid Commit when that UI lands. Production-tagged (Red) connections default to Confirm writes when the color UI (M2-5) lands — see [09-safe-mode.md](./ux/09-safe-mode.md).
 
 ---
 

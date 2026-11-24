@@ -10,8 +10,8 @@ use gpui_kit::{
 };
 
 use sela_core::{
-    default_safety_level_for_color, parse_connection_url, ConnectionColor, DefaultSafetyLevel,
-    Engine, SavedConnection, TlsMode, TlsSettings,
+    parse_connection_url, safe_mode_driven_by_color, ConnectionColor, Engine, SafeMode,
+    SavedConnection, TlsMode, TlsSettings,
 };
 
 use super::theme::SelaPalette;
@@ -32,11 +32,10 @@ pub struct ConnectionForm {
     engine: Engine,
     tls_mode: TlsMode,
     color: ConnectionColor,
-    /// M2-4: set true when the user edits the Safe mode select; until then color→red uses [`default_safety_level_for_color`].
+    /// True after the user edits Safe mode; until then color drives the default on new connections.
     safe_mode_control_touched: bool,
-    /// Hook for M2-4 safe mode UI — suggested default from color, not persisted here.
-    _suggested_safe_mode: Option<DefaultSafetyLevel>,
     record_history: bool,
+    safe_mode: SafeMode,
     warning: Option<String>,
     /// True when the OS keychain probe failed; changes the password helper copy.
     keychain_unavailable: bool,
@@ -87,8 +86,8 @@ impl ConnectionForm {
             tls_mode: seed.tls.mode,
             color: seed.color,
             safe_mode_control_touched: false,
-            _suggested_safe_mode: None,
             record_history: seed.record_history,
+            safe_mode: seed.safe_mode,
             warning,
             keychain_unavailable,
             error: None,
@@ -226,11 +225,21 @@ impl ConnectionForm {
             return;
         }
         self.color = color;
-        // M2-4 reads `_suggested_safe_mode` when wiring Safe mode on new connections
-        // (docs/design/ux/09-safe-mode.md § Where it is set).
-        if self.existing_id.is_none() && !self.safe_mode_control_touched {
-            self._suggested_safe_mode = Some(default_safety_level_for_color(color));
+        // New connections only: Red → Confirm writes until the user touches Safe mode.
+        if self.existing_id.is_none() {
+            self.safe_mode =
+                safe_mode_driven_by_color(color, self.safe_mode_control_touched, self.safe_mode);
         }
+        cx.notify();
+    }
+
+    fn set_safe_mode(&mut self, mode: SafeMode, cx: &mut Context<Self>) {
+        if self.safe_mode == mode {
+            self.safe_mode_control_touched = true;
+            return;
+        }
+        self.safe_mode = mode;
+        self.safe_mode_control_touched = true;
         cx.notify();
     }
 
@@ -291,6 +300,7 @@ impl ConnectionForm {
         connection.color = self.color;
         connection.label = Self::value(&self.conn_label, cx).trim().to_string();
         connection.group = Self::value(&self.group, cx).trim().to_string();
+        connection.safe_mode = self.safe_mode;
         let port_text = Self::value(&self.port, cx).trim().to_string();
         if self.engine == Engine::Sqlite {
             connection.port = 0;
@@ -402,7 +412,7 @@ impl Render for ConnectionForm {
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(
-                                        "Red marks production.",
+                                        "Red marks production. A new connection set to Red starts in Confirm writes.",
                                     ),
                             ),
                     )
@@ -480,6 +490,19 @@ impl Render for ConnectionForm {
                     .child(
                         "Stores SQL you run on this connection in history.sqlite on this computer.",
                     ),
+            )
+            .child(label("Safe mode", cx))
+            .child(h_flex().gap_1().children(
+                SafeMode::all()
+                    .iter()
+                    .copied()
+                    .map(|mode| safe_mode_button(this.clone(), mode, self.safe_mode)),
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.safe_mode.helper()),
             )
             .child(
                 div()
@@ -604,5 +627,26 @@ fn tls_mode_button(
         .when(!selected, |button| button.ghost())
         .on_click(move |_, _, cx| {
             form.update(cx, |form, cx| form.set_tls_mode(mode, cx));
+        })
+}
+
+fn safe_mode_button(
+    form: Entity<ConnectionForm>,
+    mode: SafeMode,
+    current: SafeMode,
+) -> impl IntoElement {
+    let selected = mode == current;
+    let id = match mode {
+        SafeMode::Off => "safe-mode-off",
+        SafeMode::Confirm => "safe-mode-confirm",
+        SafeMode::ReadOnly => "safe-mode-read-only",
+    };
+    Button::new(id)
+        .small()
+        .label(mode.form_label())
+        .when(selected, |button| button.primary())
+        .when(!selected, |button| button.ghost())
+        .on_click(move |_, _, cx| {
+            form.update(cx, |form, cx| form.set_safe_mode(mode, cx));
         })
 }

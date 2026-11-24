@@ -4,9 +4,7 @@ use chrono::Utc;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::{ClipboardItem, Context, Focusable as _, Window};
 use sela_config::HistoryStore;
-use sela_core::{
-    history_rerun_needs_confirm, HistoryEntry, HistoryFilter, HistoryOutcome, HISTORY_ROW_CAP,
-};
+use sela_core::{HistoryEntry, HistoryFilter, HistoryOutcome, HISTORY_ROW_CAP};
 
 use super::{HistoryFocusRestore, HistoryScope, MIN_HISTORY_HEIGHT};
 use crate::ui::workspace::Workspace;
@@ -311,33 +309,58 @@ impl Workspace {
         let Some(entry) = self.selected_history_entry().cloned() else {
             return;
         };
-        if !self.connections.iter().any(|c| c.id == entry.connection_id) {
+        let Some(conn) = self
+            .connections
+            .iter()
+            .find(|c| c.id == entry.connection_id)
+            .cloned()
+        else {
             return;
+        };
+        // Writes follow safe mode (09-safe-mode.md). Off writes without extra
+        // warnings still fall through to the classic "Rerun this statement?" path.
+        match sela_core::decide_history_rerun(conn.safe_mode, &entry.sql, conn.engine.dialect()) {
+            sela_core::HistoryRerunGate::Run => {
+                self.open_query_tab_with_sql(&entry.connection_id, &entry.sql, true, window, cx);
+            }
+            sela_core::HistoryRerunGate::RefuseReadOnly => {
+                self.open_query_tab_with_sql(&entry.connection_id, &entry.sql, false, window, cx);
+                if let Some(tab_id) = self.tabs.active().map(|t| t.id) {
+                    self.refuse_read_only_run(tab_id, cx);
+                }
+            }
+            sela_core::HistoryRerunGate::ConfirmSafeMode(gate) => {
+                self.show_history_safe_mode_confirm(
+                    window,
+                    cx,
+                    entry.connection_id.clone(),
+                    entry.sql.clone(),
+                    gate,
+                );
+            }
+            sela_core::HistoryRerunGate::ConfirmRerun => {
+                let this = cx.entity();
+                let sql = entry.sql.clone();
+                let connection_id = entry.connection_id.clone();
+                window.open_alert_dialog(cx, move |alert, _, _| {
+                    let this = this.clone();
+                    let sql = sql.clone();
+                    let connection_id = connection_id.clone();
+                    alert
+                        .title("Rerun this statement?")
+                        .description(sql.clone())
+                        .confirm()
+                        .ok_text("Rerun")
+                        .cancel_variant(gpui_kit::component::button::ButtonVariant::Primary)
+                        .on_ok(move |_, window, cx| {
+                            this.update(cx, |ws, cx| {
+                                ws.open_query_tab_with_sql(&connection_id, &sql, true, window, cx);
+                            });
+                            true
+                        })
+                });
+            }
         }
-        if history_rerun_needs_confirm(&entry.sql) {
-            let this = cx.entity();
-            let sql = entry.sql.clone();
-            let connection_id = entry.connection_id.clone();
-            window.open_alert_dialog(cx, move |alert, _, _| {
-                let this = this.clone();
-                let sql = sql.clone();
-                let connection_id = connection_id.clone();
-                alert
-                    .title("Rerun this statement?")
-                    .description(sql.clone())
-                    .confirm()
-                    .ok_text("Rerun")
-                    .cancel_variant(gpui_kit::component::button::ButtonVariant::Primary)
-                    .on_ok(move |_, window, cx| {
-                        this.update(cx, |ws, cx| {
-                            ws.open_query_tab_with_sql(&connection_id, &sql, true, window, cx);
-                        });
-                        true
-                    })
-            });
-            return;
-        }
-        self.open_query_tab_with_sql(&entry.connection_id, &entry.sql, true, window, cx);
     }
 
     pub(in super::super) fn open_query_tab_with_sql(

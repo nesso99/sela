@@ -104,7 +104,12 @@ pub async fn connect(
                     as Box<dyn DatabaseSession>,
             ),
             Engine::Sqlite => Ok(Box::new(
-                SqliteSession::open(std::path::Path::new(&connection.file_path), false).await?,
+                SqliteSession::open_with_safe_mode(
+                    std::path::Path::new(&connection.file_path),
+                    false,
+                    connection.safe_mode,
+                )
+                .await?,
             ) as Box<dyn DatabaseSession>),
         }
     };

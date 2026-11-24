@@ -10,6 +10,7 @@ mod history;
 mod query;
 mod quit;
 mod result_strip;
+mod safe_mode;
 mod sidebar;
 mod sql_editor;
 mod sql_find;
@@ -105,6 +106,8 @@ pub struct Workspace {
     history_focus_restore: HistoryFocusRestore,
     /// True while the "Quit Sela?" confirm dialog is open (blocks repeat Quit).
     quit_confirm_open: bool,
+    /// True while a safe-mode confirm dialog is open (blocks stacked confirms).
+    safe_mode_confirm_open: bool,
     /// True while the Discard pending changes confirm is open.
     discard_confirm_open: bool,
     /// True while the close-tab-with-pending confirm is open.
@@ -241,6 +244,7 @@ impl Workspace {
             history_write_failed_once: false,
             history_focus_restore: HistoryFocusRestore::None,
             quit_confirm_open: false,
+            safe_mode_confirm_open: false,
             discard_confirm_open: false,
             close_tab_confirm_open: false,
             close_tabs_confirm_open: false,
@@ -394,16 +398,6 @@ impl Render for Workspace {
         let paged = self.active_view().map(|view| view.paged).unwrap_or(false);
         let page_number = page_offset / sela_core::PAGE_SIZE as u64 + 1;
         let page_label = format_page_label(page_number, page_len, total_rows, paged);
-        let endpoint = self
-            .active_connection()
-            .map(|connection| {
-                format!(
-                    "{} · {}",
-                    connection.engine.label(),
-                    connection.endpoint_label()
-                )
-            })
-            .unwrap_or_else(|| "Choose a connection to browse its tables.".into());
         let has_tabs = !self.tabs.is_empty();
         let table_pane = self
             .active_view()
@@ -451,7 +445,7 @@ impl Render for Workspace {
                         if workspace.filter_field_focused(window, cx) {
                             workspace.apply_filters(cx);
                         } else if workspace.editor_field_focused(window, cx) {
-                            workspace.run_editor(cx);
+                            workspace.run_editor(window, cx);
                         }
                     });
                 }
@@ -461,7 +455,7 @@ impl Render for Workspace {
                 move |_: &RunAllSql, window, cx| {
                     this.update(cx, |workspace, cx| {
                         if workspace.editor_field_focused(window, cx) {
-                            workspace.run_all_editor(cx);
+                            workspace.run_all_editor(window, cx);
                         }
                     });
                 }
@@ -852,7 +846,6 @@ impl Render for Workspace {
                                 column
                                     .child(self.toolbar(
                                         cx,
-                                        &endpoint,
                                         &page_label,
                                         can_prev,
                                         can_next,

@@ -69,7 +69,7 @@ pub fn next_duplicate_name<'a>(
 /// Duplicate a saved connection without copying the password / keychain secret.
 ///
 /// Copies engine, host, port, user, database, file, TLS, record_history, color,
-/// label, group. Assigns a new id and [`next_duplicate_name`].
+/// label, group, and safe mode. Assigns a new id and [`next_duplicate_name`].
 pub fn duplicate_connection(
     source: &SavedConnection,
     existing_names: impl IntoIterator<Item = impl AsRef<str>>,
@@ -181,6 +181,7 @@ mod tests {
         source.color = ConnectionColor::Red;
         source.label = "prod".into();
         source.group = "Work".into();
+        source.safe_mode = crate::SafeMode::Confirm;
         source.record_history = false;
         let copy = duplicate_connection(&source, ["Warehouse"]);
         assert_ne!(copy.id, source.id);
@@ -195,6 +196,7 @@ mod tests {
         assert_eq!(copy.color, ConnectionColor::Red);
         assert_eq!(copy.label, "prod");
         assert_eq!(copy.group, "Work");
+        assert_eq!(copy.safe_mode, crate::SafeMode::Confirm);
         // Password is not a field on SavedConnection; duplicate does not
         // create a keychain item (caller must not copy secrets).
     }

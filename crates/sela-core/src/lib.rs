@@ -15,6 +15,7 @@ mod error;
 mod filter;
 mod history;
 mod result_window;
+mod safe_mode;
 mod selection;
 mod session;
 mod sql;
@@ -25,7 +26,7 @@ mod types;
 pub use change_plan::{ApplyChangesResult, ChangePlan, PlanOp, PlannedStatement};
 pub use change_set::{CellChange, ChangeError, ChangeSet, RowChange, TableRef};
 pub use column_kind::{ColumnKind, MAX_SORT_KEYS};
-pub use connection::{SavedConnection, TlsMode, TlsSettings};
+pub use connection::{safe_mode_driven_by_color, SafeMode, SavedConnection, TlsMode, TlsSettings};
 pub use connection_color::{default_safety_level_for_color, ConnectionColor, DefaultSafetyLevel};
 pub use connection_org::{
     connection_color_is_visible, duplicate_connection, existing_group_names, next_duplicate_name,
@@ -51,6 +52,10 @@ pub use history::{
     HISTORY_PASSWORD_SKIP_NOTE, HISTORY_ROW_CAP,
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
+pub use safe_mode::{
+    classify_statement_safety, decide_editor_gate, decide_grid_commit_gate, decide_history_rerun,
+    EditorGate, GridCommitGate, HistoryRerunGate, NoWhereKind, StatementSafety,
+};
 pub use selection::{step_result_index, CellPos, SelectionRect};
 pub use session::{
     default_page_size, default_sql_row_cap, exact_table_rows, preview_table, run_user_sql,

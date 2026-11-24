@@ -181,6 +181,7 @@ impl Workspace {
     }
 
     pub(super) fn begin_cell_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_active_edit_safe_mode();
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return;
         };
@@ -367,6 +368,7 @@ impl Workspace {
     }
 
     pub(super) fn accept_cell_editor(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        self.sync_active_edit_safe_mode();
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return Err("No active tab.".into());
         };
@@ -424,6 +426,7 @@ impl Workspace {
     }
 
     pub(super) fn insert_edit_row(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_edit_safe_mode();
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return;
         };
@@ -442,6 +445,7 @@ impl Workspace {
     }
 
     pub(super) fn duplicate_edit_row(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_edit_safe_mode();
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return;
         };
@@ -511,6 +515,7 @@ impl Workspace {
     }
 
     pub(super) fn delete_edit_row(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_edit_safe_mode();
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return;
         };

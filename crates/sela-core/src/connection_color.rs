@@ -85,9 +85,9 @@ impl<'de> Deserialize<'de> for ConnectionColor {
 /// Default write-guard level suggested by a connection color.
 ///
 /// Red (production) defaults to Confirm writes. Every other swatch leaves Off.
-/// M2-4 owns the stored `safe_mode` field and confirm UI; call this when a
-/// **new** connection's color is set to Red before the user touches Safe mode
-/// (see docs/design/ux/09-safe-mode.md § Where it is set).
+/// Used for **new** connections before the user touches Safe mode
+/// (see docs/design/ux/09-safe-mode.md § Where it is set and
+/// [`crate::safe_mode_driven_by_color`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefaultSafetyLevel {
     Off,

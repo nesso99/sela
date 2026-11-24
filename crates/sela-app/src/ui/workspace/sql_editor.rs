@@ -176,8 +176,10 @@ impl Workspace {
                                     .primary()
                                     .label(if busy { "Running…" } else { "Run" })
                                     .disabled(busy || !connected || sql.is_none())
-                                    .on_click(move |_, _, cx| {
-                                        this.update(cx, |workspace, cx| workspace.run_editor(cx));
+                                    .on_click(move |_, window, cx| {
+                                        this.update(cx, |workspace, cx| {
+                                            workspace.run_editor(window, cx)
+                                        });
                                     })
                             })
                             .child({

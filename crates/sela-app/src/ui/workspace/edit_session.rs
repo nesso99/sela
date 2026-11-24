@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 use sela_core::{
     bind_placeholder, escape_sql_string, value_to_copy_cell, CellChange, ChangeError, ChangePlan,
     ChangeSet, ColumnKind, ColumnStructure, CopyCell, CopyScalarKind, DbError, Dialect, PlanOp,
-    PlannedStatement, RelationKind, RowChange, TableStructure, Value,
+    PlannedStatement, RelationKind, RowChange, SafeMode, TableStructure, Value,
 };
 use uuid::Uuid;
 
@@ -177,6 +177,8 @@ pub(crate) struct EditSession {
     pub commit_generation: u64,
     /// After a failed commit: pending bar shows "Commit failed. Changes kept."
     pub commit_failed: bool,
+    /// Latest connection safe-mode level (synced from the workspace before edits/commit).
+    pub connection_safe_mode: SafeMode,
 }
 
 /// Newtype so `Vec<Value>` can be a BTreeMap key via display+Debug-stable order.
@@ -206,6 +208,7 @@ impl EditSession {
             committing: false,
             commit_generation: 0,
             commit_failed: false,
+            connection_safe_mode: SafeMode::Off,
         }
     }
 
@@ -230,6 +233,7 @@ impl EditSession {
             committing: false,
             commit_generation: 0,
             commit_failed: false,
+            connection_safe_mode: SafeMode::Off,
         }
     }
 
@@ -254,6 +258,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                connection_safe_mode: SafeMode::Off,
             };
         }
         let generated = detect_generated_columns(structure, dialect);
@@ -273,6 +278,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                connection_safe_mode: SafeMode::Off,
             },
             Err(ChangeError::NoPrimaryKey) => Self {
                 relation_kind,
@@ -288,6 +294,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                connection_safe_mode: SafeMode::Off,
             },
             Err(_) => Self {
                 relation_kind,
@@ -303,12 +310,18 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                connection_safe_mode: SafeMode::Off,
             },
         }
     }
 
-    pub fn is_editable(&self) -> bool {
-        self.read_only.is_none() && self.changeset.is_some()
+    /// Editable when structure allows and safe mode is not Read-only.
+    pub fn is_editable_for(&self, mode: SafeMode) -> bool {
+        self.read_only.is_none() && self.changeset.is_some() && mode != SafeMode::ReadOnly
+    }
+
+    pub fn apply_connection_safe_mode(&mut self, mode: SafeMode) {
+        self.connection_safe_mode = mode;
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -331,12 +344,22 @@ impl EditSession {
         counts
     }
 
-    pub fn strip_line(&self) -> Option<&'static str> {
-        self.read_only.as_ref().and_then(|r| r.strip_line())
+    /// Read-only strip, including safe-mode Read-only when structure would allow edits.
+    pub fn strip_line_for(&self, mode: SafeMode) -> Option<&'static str> {
+        if let Some(line) = self.read_only.as_ref().and_then(|r| r.strip_line()) {
+            return Some(line);
+        }
+        if mode == SafeMode::ReadOnly {
+            return Some("Read-only · safe mode on this connection.");
+        }
+        None
     }
 
-    /// Whether Commit may run (required PK cells on new rows are set).
-    pub fn commit_blocked_reason(&self) -> Option<&'static str> {
+    /// Commit disabled reasons, including safe-mode Read-only.
+    pub fn commit_blocked_reason_for(&self, mode: SafeMode) -> Option<&'static str> {
+        if mode == SafeMode::ReadOnly {
+            return Some("Safe mode is Read-only.");
+        }
         if self.committing {
             return Some("Committing…");
         }
@@ -476,10 +499,23 @@ impl EditSession {
         value: Option<&Value>,
         row_deleted: bool,
     ) -> Result<(), &'static str> {
+        self.cell_editable_for(self.connection_safe_mode, column, value, row_deleted)
+    }
+
+    pub fn cell_editable_for(
+        &self,
+        mode: SafeMode,
+        column: &str,
+        value: Option<&Value>,
+        row_deleted: bool,
+    ) -> Result<(), &'static str> {
         if self.committing {
             return Err("Committing…");
         }
-        if !self.is_editable() {
+        if mode == SafeMode::ReadOnly {
+            return Err("Read-only · safe mode on this connection.");
+        }
+        if !(self.read_only.is_none() && self.changeset.is_some()) {
             return Err(self
                 .read_only
                 .as_ref()
@@ -514,10 +550,17 @@ impl EditSession {
     }
 
     fn mutation_allowed(&self) -> Result<(), String> {
+        self.mutation_allowed_for(self.connection_safe_mode)
+    }
+
+    fn mutation_allowed_for(&self, mode: SafeMode) -> Result<(), String> {
         if self.committing {
             return Err("Committing…".into());
         }
-        if !self.is_editable() {
+        if mode == SafeMode::ReadOnly {
+            return Err("Read-only · safe mode on this connection.".into());
+        }
+        if !(self.read_only.is_none() && self.changeset.is_some()) {
             return Err(self
                 .read_only
                 .as_ref()
@@ -1103,9 +1146,9 @@ mod tests {
     fn no_primary_key_is_read_only_with_strip() {
         let session =
             EditSession::from_structure(&no_pk_structure(), Dialect::Postgres, RelationKind::Table);
-        assert!(!session.is_editable());
+        assert!(!session.is_editable_for(session.connection_safe_mode));
         assert_eq!(
-            session.strip_line(),
+            session.strip_line_for(session.connection_safe_mode),
             Some("Read-only · this table has no primary key.")
         );
     }
@@ -1115,7 +1158,7 @@ mod tests {
         let session =
             EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::View);
         assert_eq!(
-            session.strip_line(),
+            session.strip_line_for(session.connection_safe_mode),
             Some("Read-only · views are read-only.")
         );
     }
@@ -1302,7 +1345,9 @@ mod tests {
         // id is generated (nextval) — does not block.
         session.insert_blank_row().unwrap();
         // Empty insert with only generated PK still blocks via EmptyInsert / empty values.
-        assert!(session.commit_blocked_reason().is_some());
+        assert!(session
+            .commit_blocked_reason_for(session.connection_safe_mode)
+            .is_some());
 
         // Manual non-generated PK table.
         let mut structure = books_structure();
@@ -1313,7 +1358,7 @@ mod tests {
         assert!(!session.is_generated("id"));
         let id = session.insert_blank_row().unwrap();
         assert_eq!(
-            session.commit_blocked_reason(),
+            session.commit_blocked_reason_for(session.connection_safe_mode),
             Some("Set a primary key for the new row.")
         );
         session
@@ -1322,7 +1367,27 @@ mod tests {
             .unwrap()
             .set_insert_cell(id, "id", Value::text("x"))
             .unwrap();
-        assert_eq!(session.commit_blocked_reason(), None);
+        assert_eq!(
+            session.commit_blocked_reason_for(session.connection_safe_mode),
+            None
+        );
+
+        session.apply_connection_safe_mode(SafeMode::ReadOnly);
+        assert_eq!(
+            session.commit_blocked_reason_for(session.connection_safe_mode),
+            Some("Safe mode is Read-only.")
+        );
+        assert_eq!(
+            session.strip_line_for(session.connection_safe_mode),
+            Some("Read-only · safe mode on this connection.")
+        );
+        assert!(!session.is_editable_for(session.connection_safe_mode));
+        session.apply_connection_safe_mode(SafeMode::Confirm);
+        assert_eq!(
+            session.commit_blocked_reason_for(session.connection_safe_mode),
+            None
+        );
+        assert!(session.is_editable_for(session.connection_safe_mode));
     }
 
     #[test]

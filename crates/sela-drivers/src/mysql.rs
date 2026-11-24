@@ -8,8 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use sela_core::{
     quote_ident, ApplyChangesResult, ChangePlan, ColumnStructure, DatabaseSession, DbError,
-    Dialect, ForeignKeyInfo, IndexInfo, QueryPage, RelationKind, SavedConnection, SchemaInfo,
-    StreamBatch, StreamOutcome, TableInfo, TableStructure,
+    Dialect, ForeignKeyInfo, IndexInfo, QueryPage, RelationKind, SafeMode, SavedConnection,
+    SchemaInfo, StreamBatch, StreamOutcome, TableInfo, TableStructure,
 };
 
 use sqlx::Row;
@@ -34,26 +34,62 @@ impl MysqlSession {
             // change-plan exact-1-row guard — see change_exec.rs.
             .found_rows(true);
         let options = crate::tls::apply_mysql_tls(options, &connection.tls)?;
-        let pool = MySqlPoolOptions::new()
-            .max_connections(5)
-            .acquire_timeout(Duration::from_secs(10))
-            .connect_with(options)
-            .await
-            .map_err(crate::sqlx_err)?;
+        let pool = Self::pool_with_safe_mode(options, connection.safe_mode).await?;
         Ok(Self { pool })
+    }
+
+    async fn pool_with_safe_mode(
+        options: MySqlConnectOptions,
+        safe_mode: SafeMode,
+    ) -> Result<MySqlPool, DbError> {
+        let read_only = safe_mode == SafeMode::ReadOnly;
+        let mut builder = MySqlPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(Duration::from_secs(10));
+        if read_only {
+            builder = builder.after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            });
+        }
+        builder.connect_with(options).await.map_err(crate::sqlx_err)
     }
 
     #[cfg(test)]
     pub async fn connect_url(url: &str) -> Result<Self, DbError> {
+        Self::connect_url_with_safe_mode(url, SafeMode::Off).await
+    }
+
+    #[cfg(test)]
+    pub async fn connect_url_with_safe_mode(
+        url: &str,
+        safe_mode: SafeMode,
+    ) -> Result<Self, DbError> {
         let options: MySqlConnectOptions = url
             .parse()
             .map_err(|err| DbError::config(format!("invalid MySQL URL: {err}")))?;
         // Same pin as connect(): TIMESTAMP -> TimestampTz requires session UTC.
         // Re-assert found_rows so URL parse cannot leave CLIENT_FOUND_ROWS off.
         let options = options.timezone(Some("+00:00".into())).found_rows(true);
-        let pool = MySqlPoolOptions::new()
+        let read_only = safe_mode == SafeMode::ReadOnly;
+        let mut builder = MySqlPoolOptions::new()
             .max_connections(4)
-            .acquire_timeout(Duration::from_secs(10))
+            .acquire_timeout(Duration::from_secs(10));
+        if read_only {
+            builder = builder.after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            });
+        }
+        let pool = builder
             .connect_with(options)
             .await
             .map_err(crate::sqlx_err)?;
@@ -1302,6 +1338,45 @@ mod tests {
 
         session
             .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_guard"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_read_only_safe_mode_rejects_insert() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql read-only safe mode: set SELA_MYSQL_URL");
+            return;
+        };
+        let _schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
+        let rw = MysqlSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| panic!("SELA_MYSQL_URL is set but MySQL is unreachable: {err}"));
+        rw.execute("DROP TABLE IF EXISTS sela_ro").await.unwrap();
+        rw.execute("CREATE TABLE sela_ro (id INT PRIMARY KEY, name VARCHAR(64) NOT NULL)")
+            .await
+            .unwrap();
+        rw.close().await;
+
+        let session = MysqlSession::connect_url_with_safe_mode(&url, SafeMode::ReadOnly)
+            .await
+            .unwrap();
+        let err = session
+            .execute("INSERT INTO sela_ro (id, name) VALUES (1, 'x')")
+            .await
+            .expect_err("INSERT must fail under SESSION TRANSACTION READ ONLY");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("read only") || msg.contains("read-only") || msg.contains("1792"),
+            "unexpected error: {err}"
+        );
+        let page = session.query("SELECT 1 AS n").await.unwrap();
+        assert_eq!(page.rows.len(), 1);
+        session.close().await;
+
+        let cleanup = MysqlSession::connect_url(&url).await.unwrap();
+        cleanup
+            .execute("DROP TABLE IF EXISTS sela_ro")
             .await
             .unwrap();
     }
