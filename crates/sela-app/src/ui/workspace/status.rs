@@ -1,6 +1,6 @@
 //! Bottom status bar.
 
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{h_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{px, Context, IntoElement};
@@ -37,6 +37,7 @@ impl Workspace {
             "No estimate for this table. Count runs COUNT(*)."
         };
 
+        let history_open = self.history_open;
         h_flex()
             .h(px(28.))
             .px_3()
@@ -79,6 +80,25 @@ impl Workspace {
                         })
                     }),
             )
-            .child(label)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child({
+                        let this = this;
+                        Button::new("status-history")
+                            .xsmall()
+                            .label("History")
+                            .primary()
+                            .when(!history_open, |button| button.ghost())
+                            .tooltip("Toggle query history (Ctrl/⌘+Shift+H)")
+                            .on_click(move |_, window, cx| {
+                                this.update(cx, |workspace, cx| {
+                                    workspace.toggle_history_panel(window, cx)
+                                });
+                            })
+                    })
+                    .child(label),
+            )
     }
 }

@@ -39,6 +39,10 @@ Optional paths (plain text in JSON):
 
 Handshake and certificate failures surface as a TLS error, distinct from a wrong password.
 
+## Query history
+
+**Record query history** (default on) stores statements you run from the SQL editor in `history.sqlite` next to `connections.json`. Turn it off for a connection when you do not want those runs recorded. See [Query history](./query-history.md).
+
 ## Sample library
 
 **Sample library** in the sidebar creates `sample.sqlite` next to the connections file and opens it (`authors`, `books`, `bookmarks`, and a `books_in_print` view).

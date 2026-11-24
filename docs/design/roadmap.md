@@ -33,7 +33,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | 4 | M1-6 | Structure view | US-11 on 3 engines | Done (#11) |
 | 5 | M1-3 | Filter and sort | US-04. UX review: [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md) | This PR |
 | 6 | M1-4 | Editor (highlight, statement-at-cursor, multi-statement) | US-08 minus autocomplete. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Done (no tree-sitter SQL grammar; no autocomplete) |
-| 7 | M1-5 | History | US-10 | Backlog |
+| 7 | M1-5 | History | US-10 | This PR |
 | 8 | M1-7 | Selection, copy, themes | US-14 + light/dark | Backlog |
 | 9 | M1-8 | TLS + config v2 | TLS modes; `schema_version` → 2 with **no migration code**; Postgres TLS CI | Done (#15) |
 | 10 | M1-9 | Postgres text-cast fallback | Own dedicated PR | Done (#13) |

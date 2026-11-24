@@ -237,7 +237,7 @@ Current on-disk shape (fields beyond TLS land in later milestones):
 
 Postgres TLS is covered in CI (`db-tls-postgres`): throwaway certs generated in the job; `require` succeeds; `verify-ca` to `127.0.0.1` with a `localhost`-only SAN succeeds (hostname skipped); `verify-full` against `127.0.0.1` fails as `DbError::Tls`; `hostssl`-only `disable` fails as a non-Tls connection error. MySQL live TLS and passphrase-protected client keys remain follow-ups.
 
-History / saved queries: `history.sqlite` with FTS5 (M1-5), default cap ~10 000 entries; optional disable for production connections.
+History / saved queries (M1-5): `history.sqlite` with FTS5 on `sql`, Unix mode `0600`, global cap 10 000 rows (oldest dropped after each insert). Per-connection `record_history` defaults to true (no schema bump). Catalog / Structure / paging / Count / filter / load-more SQL is not recorded. Rerun confirms unless `is_safe_to_rerun_for_load_more` passes.
 
 Env for integration tests: `SELA_POSTGRES_URL`, `SELA_MYSQL_URL` (optional schema overrides `SELA_POSTGRES_SCHEMA`, `SELA_MYSQL_SCHEMA`). TLS suite: `SELA_PG_TLS_URL`, `SELA_PG_TLS_CA` (see [building-and-testing.md](../dev/building-and-testing.md)).
 
@@ -333,7 +333,7 @@ Safe mode per connection: Off / Confirm writes / Read-only. Classify with `class
 | M1-6 Structure view | `describe_table` / `TableStructure` | Done (#11) |
 | M1-3 Filter / sort | [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md); `filter.rs` + bound stream/count | This PR |
 | M1-4 Editor | [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Implemented (Editor UI; highlight via default monospace, not tree-sitter SQL) |
-| M1-5 History | `history.sqlite` FTS | Backlog |
+| M1-5 History | `history.sqlite` FTS; [ux/04-query-history.md](./ux/04-query-history.md) | This PR |
 | M1-7 Selection / copy / themes | Grid selection model | Backlog |
 | M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done (#15) |
 | M1-9 PG text-cast fallback | `pg_decode` strategies | Done (#13) |

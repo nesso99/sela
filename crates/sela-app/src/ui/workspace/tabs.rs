@@ -173,7 +173,7 @@ impl Workspace {
         }
     }
 
-    fn attach_view(
+    pub(super) fn attach_view(
         &mut self,
         id: TabId,
         sql_text: &str,
@@ -206,6 +206,18 @@ impl Workspace {
         let connection_id = tab.connection_id.clone();
         let tab_id = tab.id;
         let kind = tab.kind.clone();
+        // Retarget "This connection" scope when the active tab changes.
+        if self.history_open
+            && matches!(
+                self.history_scope,
+                super::history::HistoryScope::ThisConnection
+            )
+        {
+            if connection_id.is_empty() {
+                self.history_scope = super::history::HistoryScope::All;
+            }
+            self.refresh_history(cx);
+        }
         if !connection_id.is_empty() && self.active_id.as_deref() != Some(connection_id.as_str()) {
             self.connect_id(connection_id, cx);
             return;

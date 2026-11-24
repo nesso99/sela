@@ -54,4 +54,4 @@ The binary package is `sela-app`; the binary name is `sela`.
 
 Override with `SELA_CONFIG_DIR`. On Unix, config files are written with mode `0600`.
 
-See also: [Connecting](./connecting.md), [Keyboard shortcuts](./keyboard-shortcuts.md).
+See also: [Connecting](./connecting.md), [Query history](./query-history.md), [Keyboard shortcuts](./keyboard-shortcuts.md).

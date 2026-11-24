@@ -7,6 +7,7 @@ mod column_kind;
 mod connection;
 mod error;
 mod filter;
+mod history;
 mod result_window;
 mod session;
 mod sql;
@@ -23,6 +24,12 @@ pub use filter::{
     format_predicate_preview, insert_filter_draft_after, parse_filter_value, remove_filter_draft,
     should_remove_filter_row_on_backspace, validate_filter_condition, BoundSql, FilterCondition,
     FilterDraft, FilterOp, SortDirection, SortSpec, BOOL_FILTER_VALUES, LIKE_ESCAPE,
+};
+pub use history::{
+    format_history_duration, format_history_when, history_fts_query, history_rerun_needs_confirm,
+    history_rows_label_affected, history_rows_label_for_rows, history_sql_contains_password_clause,
+    history_sql_preview, should_record_history_sql, HistoryEntry, HistoryFilter, HistoryOutcome,
+    HISTORY_PASSWORD_SKIP_NOTE, HISTORY_ROW_CAP,
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
 pub use session::{

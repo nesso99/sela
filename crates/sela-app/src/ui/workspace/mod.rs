@@ -2,6 +2,7 @@
 
 mod content;
 mod filter_bar;
+mod history;
 mod query;
 mod result_strip;
 mod sidebar;
@@ -19,24 +20,31 @@ mod tree;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use gpui_kit::component::input::InputState;
 use gpui_kit::component::tree::{TreeEvent, TreeState};
 use gpui_kit::component::{v_flex, ActiveTheme};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, Entity, IntoElement, Render, Subscription, Window};
 
-use sela_config::{CachingSecrets, ConfigStore, KeyringStore, SavedConnection, TabStore};
-use sela_core::{DatabaseSession, LoadedSchema, TabId, TabList};
+use sela_config::{
+    CachingSecrets, ConfigStore, HistoryStore, KeyringStore, SavedConnection, TabStore,
+};
+use sela_core::{DatabaseSession, HistoryEntry, HistoryOutcome, LoadedSchema, TabId, TabList};
 
 use super::{
-    ActivateTab, CancelQuery, CloseTab, EscapeFilterBar, FindInSql, FindNext, FindPrevious,
-    InsertFilterRow, NewQueryTab, RemoveFilterRow, RunAllSql, RunQuery, ShowTableData,
-    ShowTableStructure, ToggleEditor, ToggleFilterBar,
+    ActivateTab, CancelQuery, CloseTab, EscapeFilterBar, EscapeHistory, FindInSql, FindNext,
+    FindPrevious, FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen,
+    HistoryRerun, HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab,
+    RemoveFilterRow, RunAllSql, RunQuery, ShowTableData, ShowTableStructure, ToggleEditor,
+    ToggleFilterBar, ToggleHistory,
 };
+use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
 
 pub struct Workspace {
     store: ConfigStore,
     tab_store: TabStore,
+    history_store: Option<Arc<HistoryStore>>,
     secrets: CachingSecrets<KeyringStore>,
     connections: Vec<SavedConnection>,
     active_id: Option<String>,
@@ -49,6 +57,19 @@ pub struct Workspace {
     /// Workspace-level load error (e.g. connections.json), shown when no tab error.
     boot_error: Option<String>,
     last_selection: Option<String>,
+    history_open: bool,
+    history_height: f32,
+    history_scope: HistoryScope,
+    history_outcome: Option<HistoryOutcome>,
+    history_search: Entity<InputState>,
+    history_search_text: String,
+    history_rows: Vec<HistoryEntry>,
+    history_selected: Option<usize>,
+    history_request: u64,
+    history_panel_error: Option<String>,
+    history_reset_notice: bool,
+    history_write_failed_once: bool,
+    history_focus_restore: HistoryFocusRestore,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -73,6 +94,11 @@ impl Workspace {
             Ok(connections) => (connections, None),
             Err(err) => (Vec::new(), Some(err.to_string())),
         };
+        let (history_store, history_reset_notice, history_panel_error) =
+            match HistoryStore::open_default() {
+                Ok(open) => (Some(Arc::new(open.store)), open.was_reset, None),
+                Err(err) => (None, false, Some(err.to_string())),
+            };
         let tree = cx.new(|cx| TreeState::new(cx));
         let tree_events = cx.subscribe(&tree, |this, _, event: &TreeEvent, cx| {
             match event {
@@ -92,9 +118,25 @@ impl Workspace {
                 .map(|item| item.id.to_string());
             this.on_selection(selected, window, cx);
         });
+        let history_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search SQL"));
+        let history_search_events =
+            cx.subscribe_in(&history_search, window, |this, input, event, window, cx| {
+                use gpui_kit::component::input::InputEvent;
+                match event {
+                    InputEvent::Change => {
+                        this.history_search_text = input.read(cx).value().to_string();
+                        this.refresh_history(cx);
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        this.history_open_in_tab(window, cx);
+                    }
+                    _ => {}
+                }
+            });
         let mut workspace = Self {
             store,
             tab_store,
+            history_store,
             secrets: CachingSecrets::new(KeyringStore),
             connections,
             active_id: None,
@@ -106,7 +148,20 @@ impl Workspace {
             views: HashMap::new(),
             boot_error,
             last_selection: None,
-            _subscriptions: vec![tree_events, tree_selection],
+            history_open: false,
+            history_height: DEFAULT_HISTORY_HEIGHT,
+            history_scope: HistoryScope::ThisConnection,
+            history_outcome: None,
+            history_search,
+            history_search_text: String::new(),
+            history_rows: Vec::new(),
+            history_selected: None,
+            history_request: 0,
+            history_panel_error,
+            history_reset_notice,
+            history_write_failed_once: false,
+            history_focus_restore: HistoryFocusRestore::None,
+            _subscriptions: vec![tree_events, tree_selection, history_search_events],
         };
         workspace.restore_tabs(window, cx);
         workspace.rebuild_tree(cx);
@@ -328,6 +383,81 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| workspace.escape_filter_bar(window, cx));
                 }
             })
+            .on_action({
+                let this = this.clone();
+                move |_: &ToggleHistory, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.toggle_history_panel(window, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &FocusHistorySearch, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.focus_history_search(window, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &HistorySelectUp, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.history_move_selection(-1, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &HistorySelectDown, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.history_move_selection(1, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &HistoryOpen, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.history_open_in_tab(window, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &HistoryInsert, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.history_insert_into_editor(window, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &HistoryCopy, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if workspace.history_search_focused(window, cx) {
+                            return;
+                        }
+                        workspace.history_copy(cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &HistoryRerun, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.history_rerun(window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &HistoryDelete, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.history_delete_selected(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &EscapeHistory, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.escape_history_panel(window, cx)
+                    });
+                }
+            })
             .child(self.sidebar(cx))
             .child(
                 v_flex()
@@ -360,6 +490,7 @@ impl Render for Workspace {
                             })
                             .child(self.result_strip(cx))
                             .child(self.sql_editor(window, cx))
+                            .child(self.history_panel(window, cx))
                             .child(self.status_bar(cx))
                     })
                     .when(!has_tabs, |column| {

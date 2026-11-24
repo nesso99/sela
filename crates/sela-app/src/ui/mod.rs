@@ -33,6 +33,16 @@ actions!(
         FindNext,
         FindPrevious,
         ToggleEditor,
+        ToggleHistory,
+        FocusHistorySearch,
+        HistorySelectUp,
+        HistorySelectDown,
+        HistoryOpen,
+        HistoryInsert,
+        HistoryCopy,
+        HistoryRerun,
+        HistoryDelete,
+        EscapeHistory,
         Quit
     ]
 );
@@ -124,6 +134,65 @@ pub fn run() {
                 Some("FilterBar > Input"),
             );
             bind_secondary(cx, "escape", Box::new(EscapeFilterBar), Some("FilterBar"));
+            // Query history panel (M1-5). `secondary-h` stays free (Hide on macOS).
+            bind_secondary(cx, "secondary-shift-h", Box::new(ToggleHistory), None);
+            bind_secondary(
+                cx,
+                "secondary-f",
+                Box::new(FocusHistorySearch),
+                Some("HistoryPanel"),
+            );
+            bind_secondary(cx, "up", Box::new(HistorySelectUp), Some("HistoryPanel"));
+            bind_secondary(
+                cx,
+                "down",
+                Box::new(HistorySelectDown),
+                Some("HistoryPanel"),
+            );
+            bind_secondary(
+                cx,
+                "up",
+                Box::new(HistorySelectUp),
+                Some("HistoryPanel > Input"),
+            );
+            bind_secondary(
+                cx,
+                "down",
+                Box::new(HistorySelectDown),
+                Some("HistoryPanel > Input"),
+            );
+            bind_secondary(cx, "enter", Box::new(HistoryOpen), Some("HistoryPanel"));
+            bind_secondary(
+                cx,
+                "secondary-enter",
+                Box::new(HistoryInsert),
+                Some("HistoryPanel"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-c",
+                Box::new(HistoryCopy),
+                Some("HistoryPanel"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-shift-enter",
+                Box::new(HistoryRerun),
+                Some("HistoryPanel"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-backspace",
+                Box::new(HistoryDelete),
+                Some("HistoryPanel"),
+            );
+            bind_secondary(cx, "escape", Box::new(EscapeHistory), Some("HistoryPanel"));
+            bind_secondary(
+                cx,
+                "escape",
+                Box::new(EscapeHistory),
+                Some("HistoryPanel > Input"),
+            );
             cx.on_action(|_: &Quit, cx| cx.quit());
 
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
