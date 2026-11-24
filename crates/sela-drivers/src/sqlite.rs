@@ -45,7 +45,7 @@ impl SqliteSession {
              FROM {schema_q}.pragma_table_info(?)
              ORDER BY cid"
         );
-        let rows = sqlx::query(&sql)
+        let rows = crate::query(&sql)
             .bind(table)
             .fetch_all(&self.pool)
             .await
@@ -71,7 +71,7 @@ impl SqliteSession {
              FROM {schema_q}.pragma_index_list(?)
              ORDER BY seq"
         );
-        let rows = sqlx::query(&list_sql)
+        let rows = crate::query(&list_sql)
             .bind(table)
             .fetch_all(&self.pool)
             .await
@@ -80,7 +80,7 @@ impl SqliteSession {
         // Primary-key columns from table_info (autoindexes may omit a usable name).
         let pk_sql =
             format!("SELECT name FROM {schema_q}.pragma_table_info(?) WHERE pk > 0 ORDER BY pk");
-        let pk_rows = sqlx::query(&pk_sql)
+        let pk_rows = crate::query(&pk_sql)
             .bind(table)
             .fetch_all(&self.pool)
             .await
@@ -111,7 +111,7 @@ impl SqliteSession {
             }
             let info_sql =
                 format!("SELECT name FROM {schema_q}.pragma_index_info(?) ORDER BY seqno");
-            let col_rows = sqlx::query(&info_sql)
+            let col_rows = crate::query(&info_sql)
                 .bind(&name)
                 .fetch_all(&self.pool)
                 .await
@@ -123,7 +123,7 @@ impl SqliteSession {
             let def_sql = format!(
                 "SELECT sql FROM {schema_q}.sqlite_schema WHERE type = 'index' AND name = ?"
             );
-            let definition = match sqlx::query(&def_sql)
+            let definition = match crate::query(&def_sql)
                 .bind(&name)
                 .fetch_optional(&self.pool)
                 .await
@@ -154,7 +154,7 @@ impl SqliteSession {
              FROM {schema_q}.pragma_foreign_key_list(?)
              ORDER BY id, seq"
         );
-        let rows = sqlx::query(&sql)
+        let rows = crate::query(&sql)
             .bind(table)
             .fetch_all(&self.pool)
             .await
@@ -196,7 +196,7 @@ impl SqliteSession {
              WHERE type IN ('table', 'view') AND name = ?
              LIMIT 1"
         );
-        let row = sqlx::query(&sql)
+        let row = crate::query(&sql)
             .bind(table)
             .fetch_optional(&self.pool)
             .await
@@ -210,7 +210,7 @@ impl SqliteSession {
              WHERE type IN ('table', 'view') AND name = ?
              LIMIT 1"
         );
-        let row = sqlx::query(&table_sql)
+        let row = crate::query(&table_sql)
             .bind(table)
             .fetch_optional(&self.pool)
             .await
@@ -225,7 +225,7 @@ impl SqliteSession {
              WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
              ORDER BY name"
         );
-        let index_rows = sqlx::query(&index_sql)
+        let index_rows = crate::query(&index_sql)
             .bind(table)
             .fetch_all(&self.pool)
             .await
@@ -274,7 +274,7 @@ impl DatabaseSession for SqliteSession {
              WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
              ORDER BY name"
         );
-        let rows = sqlx::query(&sql)
+        let rows = crate::query(&sql)
             .fetch_all(&self.pool)
             .await
             .map_err(crate::sqlx_err)?;

@@ -24,6 +24,25 @@ pub(crate) use error_map::sqlx_err;
 pub use runtime::drive;
 pub use tokio_util::sync::CancellationToken;
 
+/// Build a sqlx query from a dynamically constructed SQL string.
+///
+/// Callers must already have audited the string: identifiers are quoted via
+/// `sela_core`, and user values go through bind parameters — never string
+/// interpolation. Required by sqlx 0.9's [`sqlx::SqlSafeStr`] gate.
+#[inline]
+pub(crate) fn query<'q, DB: sqlx::Database>(
+    sql: &str,
+) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments> {
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+}
+
+/// Convert dynamic SQL into a [`sqlx::SqlStr`] for `Executor::describe`.
+#[inline]
+pub(crate) fn sql_str(sql: &str) -> sqlx::SqlStr {
+    use sqlx::SqlSafeStr;
+    sqlx::AssertSqlSafe(sql).into_sql_str()
+}
+
 use std::time::Duration;
 
 use sela_core::{DatabaseSession, DbError, Engine, LoadedSchema, SavedConnection};

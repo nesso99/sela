@@ -148,6 +148,16 @@ impl<'de> Deserialize<'de> for SavedConnection {
 
 impl SavedConnection {
     pub fn new(engine: Engine) -> Self {
+        // Dialog / in-memory default for new network connections is Prefer.
+        // Serde default for a missing `tls` object stays Disable via
+        // `TlsMode::default` / `TlsSettings::default` — do not change those.
+        let tls = match engine {
+            Engine::Postgres | Engine::Mysql => TlsSettings {
+                mode: TlsMode::Prefer,
+                ..TlsSettings::default()
+            },
+            Engine::Sqlite => TlsSettings::default(),
+        };
         Self {
             id: Uuid::new_v4().to_string(),
             name: String::new(),
@@ -157,7 +167,7 @@ impl SavedConnection {
             username: String::new(),
             database: String::new(),
             file_path: String::new(),
-            tls: TlsSettings::default(),
+            tls,
         }
     }
 
@@ -244,6 +254,25 @@ mod tests {
         let conn: SavedConnection = serde_json::from_str(raw).unwrap();
         assert_eq!(conn.tls.mode, TlsMode::Disable);
         assert!(conn.tls.ca_path.is_empty());
+    }
+
+    #[test]
+    fn new_network_connection_defaults_tls_prefer() {
+        assert_eq!(
+            SavedConnection::new(Engine::Postgres).tls.mode,
+            TlsMode::Prefer
+        );
+        assert_eq!(
+            SavedConnection::new(Engine::Mysql).tls.mode,
+            TlsMode::Prefer
+        );
+        assert_eq!(
+            SavedConnection::new(Engine::Sqlite).tls.mode,
+            TlsMode::Disable
+        );
+        // Serde default must stay Disable even though new() uses Prefer.
+        assert_eq!(TlsMode::default(), TlsMode::Disable);
+        assert_eq!(TlsSettings::default().mode, TlsMode::Disable);
     }
 
     #[test]

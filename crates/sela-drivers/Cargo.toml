@@ -10,10 +10,11 @@ publish.workspace = true
 [dependencies]
 async-channel = { workspace = true }
 async-trait = { workspace = true }
-bit-vec = "0.6"
+# Match sqlx 0.9's versions so Decode/Type impls apply to the same crates.
+bit-vec = "0.8"
 chrono = { workspace = true }
 futures-util = { workspace = true }
-ipnetwork = "0.20"
+ipnetwork = "0.21"
 mac_address = "1"
 rust_decimal = { workspace = true }
 sela-core = { workspace = true }

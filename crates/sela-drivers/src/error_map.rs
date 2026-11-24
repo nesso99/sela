@@ -23,8 +23,10 @@ fn map_sqlx_error(err: &SqlxError) -> DbError {
             sqlstate: None,
             vendor_code: None,
         },
-        // Handshake certificate/rustls failures often arrive as Io ("error
-        // communicating with database: invalid peer certificate…"), not Tls.
+        // sqlx 0.9 still surfaces some rustls peer-cert failures as Io
+        // ("error communicating with database: invalid peer certificate…")
+        // rather than Error::Tls. Keep the message heuristic so classification
+        // stays DbError::Tls either way.
         SqlxError::Io(_) | SqlxError::Protocol(_) if is_tls_failure_message(&message) => {
             DbError::Tls {
                 message,

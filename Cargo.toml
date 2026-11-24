@@ -24,8 +24,13 @@ keyring = "3"
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", default-features = false, features = [
-    "runtime-tokio-rustls",
+sqlx = { version = "0.9.1", default-features = false, features = [
+    # 0.9 split the old runtime-tokio-rustls combo into runtime + tls features.
+    "runtime-tokio",
+    "tls-rustls",
+    # 0.9 moved `Executor::describe` behind the `macros` feature (enables
+    # sqlx-core `offline`). Needed for empty-result column metadata.
+    "macros",
     "postgres",
     "mysql",
     "sqlite",
@@ -47,8 +52,3 @@ uuid = { version = "1", features = ["v4", "serde"] }
 sela-core = { path = "crates/sela-core" }
 sela-drivers = { path = "crates/sela-drivers" }
 sela-config = { path = "crates/sela-config" }
-
-# sqlx 0.8.6 rustls VerifyCa ignores only NotValidForName; rustls ≥ 0.23.24
-# emits NotValidForNameContext. Patch until sqlx ≥ 0.9 (see vendor/README.md).
-[patch.crates-io]
-sqlx-core = { path = "vendor/sqlx-core" }

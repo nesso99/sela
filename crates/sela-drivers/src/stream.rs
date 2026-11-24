@@ -65,7 +65,7 @@ pub(crate) async fn stream_postgres(
     // Cache one decode strategy per column for the lifetime of this result.
     let mut strategies: Option<Vec<PgDecodeStrategy>> = None;
     let result = {
-        let mut stream = crate::bind_params(sqlx::query(sql), params).fetch(&mut *conn);
+        let mut stream = crate::bind_params(crate::query(sql), params).fetch(&mut *conn);
         drain_stream::<sqlx::Postgres, _, _>(
             &mut stream,
             &mut columns,
@@ -92,7 +92,10 @@ pub(crate) async fn stream_postgres(
     } else {
         match result {
             Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
-                let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
+                let described = conn
+                    .describe(crate::sql_str(sql))
+                    .await
+                    .map_err(crate::sqlx_err)?;
                 outcome.columns = described.columns().iter().map(column_meta).collect();
                 let _ = sink_meta
                     .send(StreamBatch {
@@ -152,13 +155,13 @@ pub(crate) async fn stream_mysql(
     let cancel_task = tokio::spawn(async move {
         cancel_watch.cancelled().await;
         let kill = format!("KILL QUERY {connection_id}");
-        let _ = sqlx::query(&kill).execute(&pool_cancel).await;
+        let _ = crate::query(&kill).execute(&pool_cancel).await;
     });
 
     let sink_meta = sink.clone();
     let mut columns = Vec::new();
     let result = {
-        let mut stream = crate::bind_params(sqlx::query(sql), params).fetch(&mut *conn);
+        let mut stream = crate::bind_params(crate::query(sql), params).fetch(&mut *conn);
         drain_stream::<sqlx::MySql, _, _>(
             &mut stream,
             &mut columns,
@@ -178,7 +181,10 @@ pub(crate) async fn stream_mysql(
     } else {
         match result {
             Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
-                let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
+                let described = conn
+                    .describe(crate::sql_str(sql))
+                    .await
+                    .map_err(crate::sqlx_err)?;
                 outcome.columns = described.columns().iter().map(column_meta).collect();
                 let _ = sink_meta
                     .send(StreamBatch {
@@ -228,7 +234,7 @@ pub(crate) async fn stream_sqlite(
     let sink_meta = sink.clone();
     let mut columns = Vec::new();
     let result = {
-        let mut stream = crate::bind_params(sqlx::query(sql), params).fetch(&mut *conn);
+        let mut stream = crate::bind_params(crate::query(sql), params).fetch(&mut *conn);
         drain_stream::<sqlx::Sqlite, _, _>(
             &mut stream,
             &mut columns,
@@ -244,7 +250,10 @@ pub(crate) async fn stream_sqlite(
     };
     match result {
         Ok(mut outcome) if outcome.rows_delivered == 0 && outcome.columns.is_empty() => {
-            let described = conn.describe(sql).await.map_err(crate::sqlx_err)?;
+            let described = conn
+                .describe(crate::sql_str(sql))
+                .await
+                .map_err(crate::sqlx_err)?;
             outcome.columns = described.columns().iter().map(column_meta).collect();
             let _ = sink_meta
                 .send(StreamBatch {

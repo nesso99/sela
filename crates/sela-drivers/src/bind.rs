@@ -9,9 +9,9 @@ use sqlx::{Database, Encode, Type};
 /// Types that a backend cannot encode natively are bound as text so the
 /// engine can cast (or return a clear error) rather than failing at bind time.
 pub(crate) fn bind_params<'q, DB>(
-    mut query: Query<'q, DB, <DB as Database>::Arguments<'q>>,
+    mut query: Query<'q, DB, <DB as Database>::Arguments>,
     params: &'q [Value],
-) -> Query<'q, DB, <DB as Database>::Arguments<'q>>
+) -> Query<'q, DB, <DB as Database>::Arguments>
 where
     DB: Database,
     bool: Encode<'q, DB> + Type<DB>,

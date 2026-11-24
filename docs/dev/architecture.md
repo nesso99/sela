@@ -2,7 +2,7 @@
 
 Condensed from [SPECS.md](../design/SPECS.md). Product intent: [PRD.md](../design/PRD.md). Roadmap: [roadmap.md](../design/roadmap.md).
 
-**License:** GPL-3.0-or-later. **Stack:** Rust 1.85+, gpui-kit 0.10.0 (gpui-pre 0.3.12 + gpui-component), sqlx 0.8, tokio, keyring 3.
+**License:** GPL-3.0-or-later. **Stack:** Rust 1.85+, gpui-kit 0.10.0 (gpui-pre 0.3.12 + gpui-component), sqlx 0.9.1, tokio, keyring 3.
 
 ## Crate diagram
 

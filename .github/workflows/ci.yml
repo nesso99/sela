@@ -82,14 +82,6 @@ jobs:
             .github/pull_request_template.md
           fail: true
 
-  vendor-drift:
-    name: vendor-drift
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: vendor/sqlx-core matches upstream 0.8.6 + patch
-        run: ./scripts/check-vendor-drift.sh
-
   test:
     name: test (${{ matrix.os }})
     needs: check

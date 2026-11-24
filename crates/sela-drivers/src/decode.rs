@@ -411,7 +411,7 @@ macro_rules! query_page {
         use sqlx::Row as _;
         let pool = $pool;
         let sql: &str = $sql;
-        let described = sqlx::Executor::describe(pool, sql)
+        let described = sqlx::Executor::describe(pool, $crate::sql_str(sql))
             .await
             .map_err($crate::sqlx_err)?;
         let mut columns: Vec<::sela_core::ColumnMeta> = described
@@ -419,7 +419,7 @@ macro_rules! query_page {
             .iter()
             .map($crate::column_meta)
             .collect();
-        let fetched = sqlx::query(sql)
+        let fetched = $crate::query(sql)
             .fetch_all(pool)
             .await
             .map_err($crate::sqlx_err)?;
@@ -448,7 +448,7 @@ macro_rules! query_page {
 #[macro_export]
 macro_rules! exec_sql {
     ($pool:expr, $sql:expr) => {{
-        let result = sqlx::query($sql)
+        let result = $crate::query($sql)
             .execute($pool)
             .await
             .map_err($crate::sqlx_err)?;
@@ -463,7 +463,7 @@ macro_rules! count_sql {
     }};
     ($pool:expr, $sql:expr, $params:expr) => {{
         use sqlx::Row as _;
-        let row = $crate::bind_params(sqlx::query($sql), $params)
+        let row = $crate::bind_params($crate::query($sql), $params)
             .fetch_one($pool)
             .await
             .map_err($crate::sqlx_err)?;

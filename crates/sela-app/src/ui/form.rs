@@ -126,7 +126,8 @@ impl ConnectionForm {
         if self.engine == engine {
             return;
         }
-        let previous = self.engine.default_port().to_string();
+        let previous_engine = self.engine;
+        let previous = previous_engine.default_port().to_string();
         let current = Self::value(&self.port, cx);
         self.engine = engine;
         if engine != Engine::Sqlite && (current.is_empty() || current == "0" || current == previous)
@@ -138,6 +139,9 @@ impl ConnectionForm {
         }
         if engine == Engine::Sqlite {
             self.tls_mode = TlsMode::Disable;
+        } else if previous_engine == Engine::Sqlite {
+            // SQLite forced Disable; Prefer is the default for new network connections.
+            self.tls_mode = TlsMode::Prefer;
         }
         cx.notify();
     }
@@ -241,6 +245,16 @@ impl Render for ConnectionForm {
                             .copied()
                             .map(|mode| tls_mode_button(this.clone(), mode, self.tls_mode)),
                     ))
+                    .when(self.tls_mode == TlsMode::Prefer, |form| {
+                        form.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    "prefer may fall back to unencrypted; use require or verify-full for remote servers",
+                                ),
+                        )
+                    })
                     .child(label("CA certificate path", cx))
                     .child(Input::new(&self.ca_path))
                     .child(label("Client certificate path", cx))

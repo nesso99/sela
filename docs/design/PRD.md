@@ -7,7 +7,7 @@ Open-source, native desktop database client (PostgreSQL, MySQL, SQLite) built wi
 **Product name:** Sela (code name Birch is retired).  
 **License:** GPL-3.0-or-later (`publish = false` in Cargo; see root `LICENSE`).  
 **Engines:** PostgreSQL, MySQL, SQLite.  
-**Stack:** Rust 1.85+, gpui-kit 0.10.0 (gpui-pre 0.3.12 + gpui-component), sqlx 0.8, tokio, keyring 3.
+**Stack:** Rust 1.85+, gpui-kit 0.10.0 (gpui-pre 0.3.12 + gpui-component), sqlx 0.9.1, tokio, keyring 3.
 
 See also: [SPECS.md](./SPECS.md), [roadmap.md](./roadmap.md), [UX specs](./ux/README.md), [CONTRIBUTING.md](../../CONTRIBUTING.md), [benchmarks.md](../dev/benchmarks.md).
 
