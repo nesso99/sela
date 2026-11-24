@@ -6,7 +6,15 @@ Yes. Statements you run are stored in `history.sqlite` next to the connections f
 
 ## Where are my passwords stored?
 
-In the OS keychain when available — never in `connections.json`. See [Connecting](./connecting.md).
+In the OS keychain when available — never in `connections.json` or `settings.json`. See [Connecting](./connecting.md).
+
+## How do I copy cells from the grid?
+
+Select a cell or Shift-click a range, then Cmd/Ctrl+C for TSV, or use the grid context menu for CSV, JSON, or INSERT. See [Copying](./copying.md).
+
+## How do I switch light and dark themes?
+
+Use the theme menu on the status bar (Light, Dark, or System). The choice is saved in `settings.json`. See [Themes](./themes.md).
 
 ## Why does Linux ask for my password again after restart?
 

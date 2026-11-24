@@ -112,7 +112,7 @@ A local failure from `split_statements` (empty buffer, unclosed quote) is not an
 
 One grid per tab. Do not stack grids.
 
-A 22px strip between the grid and the splitter: `Result 2 of 3 · statement 2`, with Prev and Next. The strip is a tab stop. Do not bind Alt+arrows for it; window managers and word navigation already use those keys. Tab switching stays on `secondary-alt-left` / `secondary-alt-right` when focus is outside a text field.
+A 22px strip between the grid and the splitter: `Result 2 of 3 · statement 2`, with Prev and Next. The strip is a tab stop (`ResultStrip` key context). With the strip focused, Left and Right move Prev and Next. Do not bind Alt+arrows for it; window managers and word navigation already use those keys. Tab switching stays on `secondary-alt-left` / `secondary-alt-right` when focus is outside a text field.
 
 Each finished statement keeps its own `ResultWindow`. Store at most 8. When a 9th finishes, evict the oldest and set the status note `Showing the latest 8 results`. A statement that returns no row set (`Executed`) is still a result: the grid shows the existing `show_message` text (`3 rows affected · 4 ms`).
 

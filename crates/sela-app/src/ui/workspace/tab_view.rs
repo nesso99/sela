@@ -96,6 +96,10 @@ impl TabView {
             TableState::new(GridDelegate::empty(), window, cx)
                 .sortable(false)
                 .col_movable(false)
+                .cell_selectable(true)
+                .row_selectable(true)
+                .col_selectable(true)
+                .row_header(true)
         });
         let sql = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)

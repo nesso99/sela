@@ -2,11 +2,11 @@
 
 mod form;
 mod grid;
+mod theme;
 mod workspace;
 
 use std::rc::Rc;
 
-use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     actions, px, size, Action, Bounds, KeyBinding, KeyBindingContextPredicate, TitlebarOptions,
@@ -43,6 +43,13 @@ actions!(
         HistoryRerun,
         HistoryDelete,
         EscapeHistory,
+        CopySelection,
+        CopyAsTsv,
+        CopyAsCsv,
+        CopyAsJson,
+        CopyAsInsert,
+        ResultStripPrev,
+        ResultStripNext,
         Quit
     ]
 );
@@ -57,7 +64,8 @@ pub fn run() {
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
-            Theme::change(ThemeMode::Dark, None, cx);
+            // Themes are installed once the window exists (needs appearance for System).
+            // Until then stay on the kit dark default so the first frame is never light-flashy.
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-.", CancelQuery, None),
@@ -193,6 +201,16 @@ pub fn run() {
                 Box::new(EscapeHistory),
                 Some("HistoryPanel > Input"),
             );
+            // Grid copy (US-14). Scoped to DataTable so text fields keep clipboard chords.
+            bind_secondary(
+                cx,
+                "secondary-c",
+                Box::new(CopySelection),
+                Some("DataTable"),
+            );
+            // Result strip Prev/Next when the strip itself is focused.
+            bind_secondary(cx, "left", Box::new(ResultStripPrev), Some("ResultStrip"));
+            bind_secondary(cx, "right", Box::new(ResultStripNext), Some("ResultStrip"));
             cx.on_action(|_: &Quit, cx| cx.quit());
 
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);

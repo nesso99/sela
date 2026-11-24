@@ -163,14 +163,15 @@ impl Workspace {
     }
 
     pub(super) fn error_banner(&self, cx: &Context<Self>, error: String) -> impl IntoElement {
+        let palette = super::super::theme::SelaPalette::for_mode(cx.theme().mode);
         div()
             .max_h(px(60.))
             .overflow_y_scrollbar()
             .px_3()
             .py_2()
             .text_sm()
-            .bg(cx.theme().danger)
-            .text_color(cx.theme().danger_foreground)
+            .bg(palette.status_error_wash)
+            .text_color(palette.status_error)
             .child(error)
     }
 
@@ -181,7 +182,7 @@ impl Workspace {
             .min_h(px(0.))
             .overflow_hidden()
             .when_some(grid, |area, grid| {
-                area.child(DataTable::new(&grid).stripe(true).bordered(true))
+                area.child(DataTable::new(&grid).stripe(true).bordered(true).xsmall())
             })
     }
 }

@@ -1,15 +1,29 @@
 //! Bottom status bar.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{px, Context, IntoElement};
+use gpui_kit::{px, Context, IntoElement, Window};
 
+use sela_config::ThemePreference;
 use sela_core::RowCountKind;
 
 use super::Workspace;
 
 impl Workspace {
+    pub(super) fn set_theme_preference(
+        &mut self,
+        preference: ThemePreference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.theme_preference = preference;
+        let _ = self.settings.save(preference);
+        super::super::theme::apply_preference(preference, Some(window), cx);
+        cx.notify();
+    }
+
     pub(super) fn status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
         let this = cx.entity();
         let view = self.active_view();
@@ -36,6 +50,9 @@ impl Workspace {
         } else {
             "No estimate for this table. Count runs COUNT(*)."
         };
+        let theme_label = self.theme_preference.label();
+        let current = self.theme_preference;
+        let offer_system = self.system_theme_available;
 
         let history_open = self.history_open;
         h_flex()
@@ -45,7 +62,7 @@ impl Workspace {
             .justify_between()
             .border_t_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().muted)
+            .bg(cx.theme().status_bar)
             .text_xs()
             .child(
                 h_flex()
@@ -85,7 +102,7 @@ impl Workspace {
                     .gap_2()
                     .items_center()
                     .child({
-                        let this = this;
+                        let this = this.clone();
                         Button::new("status-history")
                             .xsmall()
                             .label("History")
@@ -96,6 +113,68 @@ impl Workspace {
                                 this.update(cx, |workspace, cx| {
                                     workspace.toggle_history_panel(window, cx)
                                 });
+                            })
+                    })
+                    .child({
+                        let this = this.clone();
+                        Button::new("theme-menu")
+                            .xsmall()
+                            .ghost()
+                            .label(theme_label)
+                            .tooltip("Color theme: Light, Dark, or System")
+                            .dropdown_menu(move |menu, _, _| {
+                                let mut menu = menu
+                                    .item(
+                                        PopupMenuItem::new("Light")
+                                            .checked(current == ThemePreference::Light)
+                                            .on_click({
+                                                let this = this.clone();
+                                                move |_, window, cx| {
+                                                    this.update(cx, |workspace, cx| {
+                                                        workspace.set_theme_preference(
+                                                            ThemePreference::Light,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
+                                            }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new("Dark")
+                                            .checked(current == ThemePreference::Dark)
+                                            .on_click({
+                                                let this = this.clone();
+                                                move |_, window, cx| {
+                                                    this.update(cx, |workspace, cx| {
+                                                        workspace.set_theme_preference(
+                                                            ThemePreference::Dark,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
+                                            }),
+                                    );
+                                if offer_system {
+                                    menu = menu.item(
+                                        PopupMenuItem::new("System")
+                                            .checked(current == ThemePreference::System)
+                                            .on_click({
+                                                let this = this.clone();
+                                                move |_, window, cx| {
+                                                    this.update(cx, |workspace, cx| {
+                                                        workspace.set_theme_preference(
+                                                            ThemePreference::System,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
+                                            }),
+                                    );
+                                }
+                                menu
                             })
                     })
                     .child(label),

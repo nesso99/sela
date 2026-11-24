@@ -6,6 +6,7 @@
 
 mod history;
 mod secrets;
+mod settings;
 mod store;
 mod tabs;
 
@@ -16,5 +17,6 @@ pub use secrets::{
 pub use sela_core::{
     Engine, PersistedTab, PersistedTabs, SavedConnection, TabKind, TlsMode, TlsSettings,
 };
+pub use settings::{resolve_theme_mode, SettingsStore, ThemePreference};
 pub use store::{config_dir, ConfigError, ConfigStore, SCHEMA_VERSION};
 pub use tabs::TabStore;

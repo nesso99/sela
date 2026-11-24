@@ -174,6 +174,25 @@ impl Value {
         }
     }
 
+    /// True for values built with [`Self::decode_error`].
+    pub fn is_decode_error(&self) -> bool {
+        match self {
+            Self::Other { text, type_name } => {
+                text.as_ref() == format!("<decode error: {type_name}>")
+            }
+            _ => false,
+        }
+    }
+
+    /// Unsupported type with no text form (`<{type_name}>`), distinct from NULL
+    /// and from a hard decode-error marker.
+    pub fn is_unsupported_placeholder(&self) -> bool {
+        match self {
+            Self::Other { text, type_name } => text.as_ref() == format!("<{type_name}>"),
+            _ => false,
+        }
+    }
+
     pub fn json_str(&self) -> Option<&str> {
         match self {
             Self::Json(text) => Some(text),
@@ -487,6 +506,18 @@ mod tests {
             "(1,2)"
         );
         assert!(!Value::decode_error("TEXT").is_null());
+        assert!(Value::decode_error("TEXT").is_decode_error());
+        assert!(!Value::Null.is_decode_error());
+        assert!(Value::Other {
+            type_name: "point".into(),
+            text: "<point>".into(),
+        }
+        .is_unsupported_placeholder());
+        assert!(!Value::Other {
+            type_name: "point".into(),
+            text: "(1,2)".into(),
+        }
+        .is_unsupported_placeholder());
     }
 
     #[test]

@@ -74,7 +74,7 @@ impl Workspace {
             .flex_shrink_0()
             .border_r_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().muted)
+            .bg(cx.theme().sidebar)
             .child(
                 v_flex().px_3().pt_3().pb_2().gap_1().child(
                     div().text_lg().child("Sela"),

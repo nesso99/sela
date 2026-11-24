@@ -1,6 +1,7 @@
 //! Main window: saved connections, schema tree, result grid, and the SQL editor.
 
 mod content;
+mod copy_selection;
 mod filter_bar;
 mod history;
 mod query;
@@ -24,19 +25,23 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::tree::{TreeEvent, TreeState};
 use gpui_kit::component::{v_flex, ActiveTheme};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, Entity, IntoElement, Render, Subscription, Window};
+use gpui_kit::{div, px, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window};
 
 use sela_config::{
-    CachingSecrets, ConfigStore, HistoryStore, KeyringStore, SavedConnection, TabStore,
+    CachingSecrets, ConfigStore, HistoryStore, KeyringStore, SavedConnection, SettingsStore,
+    TabStore, ThemePreference,
 };
-use sela_core::{DatabaseSession, HistoryEntry, HistoryOutcome, LoadedSchema, TabId, TabList};
+use sela_core::{
+    CopyFormat, DatabaseSession, HistoryEntry, HistoryOutcome, LoadedSchema, TabId, TabList,
+};
 
 use super::{
-    ActivateTab, CancelQuery, CloseTab, EscapeFilterBar, EscapeHistory, FindInSql, FindNext,
-    FindPrevious, FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen,
-    HistoryRerun, HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab,
-    RemoveFilterRow, RunAllSql, RunQuery, ShowTableData, ShowTableStructure, ToggleEditor,
-    ToggleFilterBar, ToggleHistory,
+    ActivateTab, CancelQuery, CloseTab, CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv,
+    CopySelection, EscapeFilterBar, EscapeHistory, FindInSql, FindNext, FindPrevious,
+    FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun,
+    HistorySelectDown, HistorySelectUp, InsertFilterRow, NewQueryTab, RemoveFilterRow,
+    ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, ShowTableData, ShowTableStructure,
+    ToggleEditor, ToggleFilterBar, ToggleHistory,
 };
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
@@ -45,6 +50,11 @@ pub struct Workspace {
     store: ConfigStore,
     tab_store: TabStore,
     history_store: Option<Arc<HistoryStore>>,
+    settings: SettingsStore,
+    theme_preference: ThemePreference,
+    /// True when the status menu may offer System (window appearance available).
+    system_theme_available: bool,
+    result_strip_focus: FocusHandle,
     secrets: CachingSecrets<KeyringStore>,
     connections: Vec<SavedConnection>,
     active_id: Option<String>,
@@ -133,10 +143,30 @@ impl Workspace {
                     _ => {}
                 }
             });
+        let settings = SettingsStore::with_path(SettingsStore::default_path());
+        let theme_preference = settings.load();
+        let system_theme_available = super::theme::system_appearance_available(window);
+        super::theme::install_sela_themes(theme_preference, Some(window), cx);
+        // Follow OS appearance only while the preference is System.
+        let this = cx.weak_entity();
+        let appearance = window.observe_window_appearance(move |window, cx| {
+            let Some(entity) = this.upgrade() else {
+                return;
+            };
+            let follow = entity.read(cx).theme_preference == ThemePreference::System;
+            if follow {
+                super::theme::apply_preference(ThemePreference::System, Some(window), cx);
+                entity.update(cx, |_, cx| cx.notify());
+            }
+        });
         let mut workspace = Self {
             store,
             tab_store,
             history_store,
+            settings,
+            theme_preference,
+            system_theme_available,
+            result_strip_focus: cx.focus_handle(),
             secrets: CachingSecrets::new(KeyringStore),
             connections,
             active_id: None,
@@ -161,7 +191,7 @@ impl Workspace {
             history_reset_notice,
             history_write_failed_once: false,
             history_focus_restore: HistoryFocusRestore::None,
-            _subscriptions: vec![tree_events, tree_selection, history_search_events],
+            _subscriptions: vec![tree_events, tree_selection, history_search_events, appearance],
         };
         workspace.restore_tabs(window, cx);
         workspace.rebuild_tree(cx);
@@ -456,6 +486,58 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| {
                         workspace.escape_history_panel(window, cx)
                     });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CopySelection, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.copy_selection(CopyFormat::Tsv, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CopyAsTsv, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.copy_selection(CopyFormat::Tsv, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CopyAsCsv, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.copy_selection(CopyFormat::Csv, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CopyAsJson, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.copy_selection(CopyFormat::Json, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &CopyAsInsert, _, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.copy_selection(CopyFormat::Insert, cx)
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ResultStripPrev, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.step_result_strip(-1, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ResultStripNext, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.step_result_strip(1, cx));
                 }
             })
             .child(self.sidebar(cx))

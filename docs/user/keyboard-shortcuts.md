@@ -32,10 +32,18 @@ The design target for shortcuts that are not built yet is [docs/design/ux/README
 | Rerun history row | Cmd/Ctrl+Shift+Enter (history panel) |
 | Delete history row | Cmd/Ctrl+Backspace (history list) |
 | Close history / clear search | Escape (history panel) |
+| Copy selection as TSV | Cmd/Ctrl+C (grid focused) |
+| Previous / next SQL result | Left / Right (result strip focused) |
 | Quit | Cmd+Q |
 
 Run (Cmd/Ctrl+Enter) runs the statement at the caret, the selected text split into statements, or the whole buffer when using Run all. It only fires when the SQL editor has focus; filter fields still use Enter / Cmd/Ctrl+Enter to apply. Cancel stops the running query for that tab (server-side cancel on Postgres/MySQL; SQLite drops the stream). Closing a tab cancels its in-flight work. Global Cmd/Ctrl+F toggles the filter bar on table tabs; with the SQL editor focused, the same chord opens find-in-SQL; with the history panel focused, it focuses the history search field.
 
 In the filter bar: **Enter** Applies; **Cmd/Ctrl+Shift+Enter** inserts a row after the focused row; **Cmd/Ctrl+Backspace** removes the focused row when focus is on the row itself or an empty column/value field (clears the sole row in place). When a column or value field is non-empty, the same chord deletes to the start of the line instead (macOS ⌘⌫). **Escape** closes an open value menu first, otherwise moves focus to the grid and hides the bar when the draft is empty and nothing is applied.
 
-Query history details: [query-history.md](./query-history.md). The connection dialog and theme menu still follow [docs/design/ux/README.md](../design/ux/README.md). `secondary` there means ⌘ on macOS and Ctrl on Linux and Windows.
+Query history details: [query-history.md](./query-history.md).
+
+With the grid focused, **Cmd/Ctrl+C** copies the current cell or range as TSV. Right-click the grid for CSV, JSON, or INSERT. See [Copying](./copying.md). With the history list focused, the same chord copies the selected history SQL.
+
+The SQL result strip (between the grid and the editor after a multi-statement run) is a tab stop. With the strip focused, **Left** / **Right** move Prev / Next. Theme (Light / Dark / System) is the status-bar menu — no shortcut. See [Themes](./themes.md).
+
+The chords above are the ones registered in `ui/mod.rs`. `secondary` in [docs/design/ux/README.md](../design/ux/README.md) means ⌘ on macOS and Ctrl on Linux and Windows.

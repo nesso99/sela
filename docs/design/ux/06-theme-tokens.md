@@ -1,6 +1,6 @@
 # Theme tokens
 
-M1-7, the theme half. Selection and copy are out of scope here except where a selected cell has to stay readable. The app calls `Theme::change(ThemeMode::Dark, None, cx)` in `crates/sela-app/src/ui/mod.rs` and never switches to light. There is no settings file for the choice.
+M1-7, the theme half. Selection and copy are specified with US-14 and implemented alongside this palette. Until M1-7 lands, the app stays on the kit dark default for the first frame when `settings.json` is missing.
 
 The palette is the gpui-component 0.10.0 default (`src/theme/default-theme.json`, the shadcn neutral theme), with the overrides in [Overrides](#overrides). Wireframes in this folder stay grayscale. This file and the swatch are the only color.
 
@@ -256,7 +256,7 @@ Gaps, with no `ThemeColor` field in gpui-component 0.10.0:
 
 | Action | Shortcut | Bound today |
 | --- | --- | --- |
-| Choose Light, Dark, or System | The status menu | no |
+| Choose Light, Dark, or System | The status menu | yes (M1-7) |
 
 There is no shortcut. `secondary-,` stays reserved for a future settings window. The status menu is the M1-7 control.
 

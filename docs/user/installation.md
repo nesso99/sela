@@ -54,4 +54,6 @@ The binary package is `sela-app`; the binary name is `sela`.
 
 Override with `SELA_CONFIG_DIR`. On Unix, config files are written with mode `0600`.
 
-See also: [Connecting](./connecting.md), [Query history](./query-history.md), [Keyboard shortcuts](./keyboard-shortcuts.md).
+Typical files in that directory: `connections.json`, `tabs.json`, `history.sqlite`, and `settings.json` (theme preference only — no secrets). See [Themes](./themes.md) and [Query history](./query-history.md).
+
+See also: [Connecting](./connecting.md), [Copying](./copying.md), [Keyboard shortcuts](./keyboard-shortcuts.md).
