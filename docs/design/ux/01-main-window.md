@@ -8,7 +8,9 @@ This spec matches the window in `crates/sela-app/src/ui/workspace/` and the shor
 
 ## Regions
 
-Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). Under server-side decorations (Windows, macOS, X11, KDE, and other compositors that draw the frame), the OS title bar says “Sela” and the workspace does not draw one. On Linux when the compositor requires client-side decorations (for example GNOME Wayland), `window.window_decorations()` is `Decorations::Client` and the workspace renders gpui-component’s `TitleBar`: app title “Sela”, File menu, minimize / maximize / close, drag-to-move, and double-click maximize/restore. GPUI’s window border supplies resize edges and a shadow or border. Close goes through the same quit path as Ctrl+Q.
+Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). Under server-side decorations (Windows, macOS, X11, KDE, and other compositors that draw the frame), the OS title bar says “Sela” and the workspace does not draw one. On Linux when the compositor requires client-side decorations (for example GNOME Wayland), `window.window_decorations()` is `Decorations::Client` and the workspace renders gpui-component’s `TitleBar`: app title “Sela”, File menu, minimize / maximize / close, drag-to-move, and double-click maximize/restore. Close goes through the same quit path as Ctrl+Q.
+
+Resize edges and the CSD shadow/border are not drawn by Sela and are not provided by GPUI alone. They come from gpui-component 0.10’s `WindowBorder`, which `gpui_kit::open_window` already applies: `gpui_kit::init` → `gpui_component::init` → `root::init` registers `WindowState` as a `RootPlugin`, and `WindowState::decorate` wraps the root surface in `window_border()`. `WindowBorder::render` runs only when decorations are `Client` (`uses_client_border`); it calls `window.set_client_inset` and edge hits call `window.start_window_resize`. Under `Decorations::Server` that wrapper is a no-op pass-through, so SSD platforms stay unchanged.
 
 | Region | Size | Where it is set today | Resize |
 | --- | --- | --- | --- |

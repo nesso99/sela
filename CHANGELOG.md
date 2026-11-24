@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Linux client-side title bar when the compositor requires CSD (e.g. GNOME Wayland): gpui-component `TitleBar` with app title, File menu, minimize / maximize / close, drag-to-move, and double-click maximize/restore. Shown only when `window.window_decorations()` is `Decorations::Client`; Windows, macOS, and SSD Linux (X11 / KDE) stay on the native title bar. Close uses the same quit path as Ctrl+Q (#58).
+- Linux client-side title bar when the compositor requires CSD (e.g. GNOME Wayland): gpui-component `TitleBar` with app title, File menu, minimize / maximize / close, drag-to-move, and double-click maximize/restore. Shown only when `window.window_decorations()` is `Decorations::Client`; Windows, macOS, and SSD Linux (X11 / KDE) stay on the native title bar. Close uses the same quit path as Ctrl+Q. CSD resize edges and shadow come from gpui-component’s existing `window_border()` RootPlugin wrap (not new Sela code) (#58).
 
 ### Fixed
 
