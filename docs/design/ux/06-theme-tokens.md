@@ -277,8 +277,4 @@ There is no shortcut. `secondary-,` stays reserved for a future settings window.
 
 1. The status menu offers Light, Dark, and System when `Window::appearance()` is available. System follows the OS through `Theme::sync_system_appearance`. If that API is missing on a platform, the menu is Light and Dark only. Dark is the default.
 2. Light-theme SQL comments stay `#525252`.
-
-## Still open
-
-1. Dark chrome is `#171717` against a `#0A0A0A` canvas. The sidebar today is `muted` (`#262626`), which is a larger step. Is `#171717` enough?
-2. `font_size` 13 changes every kit control. Should the kit stay at 16, with only the grid and the editor at 12px mono?
+3. Dark chrome (`#171717` on a `#0A0A0A` canvas) with a 13px UI font is the density. Do not keep the kit at 16px and only shrink the grid and the editor. `theme.rs` already ships these values.

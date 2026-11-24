@@ -6,7 +6,7 @@ These files specify M1-3 (filter and sort), M1-4 / M3-2 (SQL editor), M1-5 (quer
 
 | Doc | Covers |
 | --- | --- |
-| [01-main-window.md](./01-main-window.md) | Sidebar, tabs, grid, editor, status bar. Empty, running, 1,000-row cap, cancelled, query error, decode-error cells. |
+| [01-main-window.md](./01-main-window.md) | Sidebar, tabs, grid, editor, status bar, quit and window lifecycle. Empty, running, 1,000-row cap, cancelled, query error, decode-error cells. |
 | [02-filter-sort-review.md](./02-filter-sort-review.md) | Review of the planned filter bar and header sort against the current grid, status bar, and count button. Fixes, not a redesign. |
 | [03-sql-editor.md](./03-sql-editor.md) | Editor/result split, run and cancel, autocomplete, error placement, multiple result sets. |
 | [04-query-history.md](./04-query-history.md) | Bottom history panel. Row contents, search, per-connection scope, actions, empty and error states, retention, shortcuts. |
@@ -48,7 +48,7 @@ The user-facing shortcut page should keep saying “⌘ on macOS, Ctrl on Linux 
 | --- | --- |
 | `secondary-space` | Spotlight on macOS |
 | `ctrl-space` | Input-source switch on macOS. Do not use it to open autocomplete. |
-| `secondary-q` | Quit, already bound (`cmd-q` today) |
+| `secondary-q` | Quit. Global, including the SQL editor and dialogs. Bound as `cmd-q` today. See [01-main-window.md](./01-main-window.md#quit-and-window-lifecycle). |
 | `secondary-w` | Close tab, already bound. It does not close the window. |
 | `secondary-h`, `secondary-m` | Hide and minimize on macOS |
 | `secondary-y` | Redo in text fields on Windows and Linux |
@@ -76,13 +76,15 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 | `Enter` | New line in the editor. Accepts autocomplete when the popup is open. | Apply the filter | Open the selected row in a new query tab. Do not run it. | Activate the focused button. A text field does not insert a newline. | Open cell inspect until M2, then edit (see the main-window spec) |
 | `Escape` | Close find, then close autocomplete | Close the open menu, then leave the bar | Clear the search text if it is non-empty, otherwise close the panel | Cancel the dialog | Close inspect |
 
+`secondary-q` is not in this table. It quits from every column, including the SQL editor and the connection dialog. The quit confirm swallows a second `secondary-q`.
+
 ## Shortcuts by screen
 
 ### Anywhere in the window
 
 | Action | Shortcut | Bound today |
 | --- | --- | --- |
-| Quit | `secondary-q` | `cmd-q` only |
+| Quit | `secondary-q` | `cmd-q` only. Global, including the SQL editor and dialogs. |
 | New query tab | `secondary-t` | yes |
 | Close tab | `secondary-w` | yes |
 | Switch to tab 1–9 | `secondary-1` … `secondary-9` | yes |
@@ -162,7 +164,7 @@ Test connection has no shortcut. It is a plain button on the focus path. Theme c
 
 Recorded from review. The screen specs repeat the items that change their behavior.
 
-1. Do not persist sidebar width or editor height yet. Later, an optional config field with a serde default and no migration. See [01-main-window.md](./01-main-window.md).
+1. Do not persist sidebar width or editor height yet. Later, an optional config field with a serde default and no migration. The history panel height is session-only as well and is persisted in that same later change. See [01-main-window.md](./01-main-window.md) and [04-query-history.md](./04-query-history.md).
 2. Keep the error banner (full message) and the editor gutter. The gutter is drawn only when the engine reports a position. See [03-sql-editor.md](./03-sql-editor.md).
 3. M1-9 is done (#13). This batch does not edit `roadmap.md` for that. Engineering updates the status rows in the M1-3 pull request.
 4. M1-3 filters are AND-only. OR and groups come later. See [02-filter-sort-review.md](./02-filter-sort-review.md).

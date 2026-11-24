@@ -46,4 +46,4 @@ With the grid focused, **Cmd/Ctrl+C** copies the current cell or range as TSV. R
 
 The SQL result strip (between the grid and the editor after a multi-statement run) is a tab stop. With the strip focused, **Left** / **Right** move Prev / Next. Theme (Light / Dark / System) is the status-bar menu — no shortcut. See [Themes](./themes.md).
 
-The chords above are the ones registered in `ui/mod.rs`. `secondary` in [docs/design/ux/README.md](../design/ux/README.md) means ⌘ on macOS and Ctrl on Linux and Windows.
+The chords above are the ones registered in `ui/mod.rs`. `secondary` in [docs/design/ux/README.md](../design/ux/README.md) means ⌘ on macOS and Ctrl on Linux and Windows. Quit is registered as `cmd-q` only (Command+Q on macOS). The design target is `secondary-q`, including Ctrl+Q on Linux and Windows, from the SQL editor and from dialogs: [Quit and window lifecycle](../design/ux/01-main-window.md#quit-and-window-lifecycle).
