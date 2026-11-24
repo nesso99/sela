@@ -7,23 +7,9 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::table::DataTable;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, App, Context, Entity, IntoElement, Window};
+use gpui_kit::{div, px, Context, IntoElement};
 
 use super::{TablePane, Workspace};
-
-/// Client-side ×: on Linux/Windows this is the quit path; on macOS it only
-/// closes the window (app stays running until Quit).
-fn close_or_quit(workspace: &Entity<Workspace>, window: &mut Window, cx: &mut App) {
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    {
-        workspace.update(cx, |workspace, cx| workspace.request_quit(window, cx));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (workspace, cx);
-        window.remove_window();
-    }
-}
 
 impl Workspace {
     pub(super) fn toolbar(
@@ -36,7 +22,6 @@ impl Workspace {
         connected: bool,
     ) -> impl IntoElement {
         let this = cx.entity();
-        let client_close = self.client_decorations;
         let busy = self.active_view().map(|view| view.busy).unwrap_or(false);
         let table_pane = self
             .active_view()
@@ -238,44 +223,6 @@ impl Workspace {
                                         .update(cx, |workspace, cx| workspace.step_page(1, cx));
                                 }),
                         )
-                    })
-                    // Client-side decorations (common on Wayland): no OS close
-                    // button, so offer one at the right end of the 44px toolbar.
-                    .when(client_close, |row| {
-                        let this_close = this.clone();
-                        row.child(
-                            Button::new("window-close")
-                                .xsmall()
-                                .ghost()
-                                .label("×")
-                                .tooltip("Close")
-                                .on_click(move |_, window, cx| {
-                                    close_or_quit(&this_close, window, cx);
-                                }),
-                        )
-                    }),
-            )
-    }
-
-    /// Minimal 44px strip with a close control when there are no tabs yet and
-    /// the window is client-decorated (no OS title-bar close button).
-    pub(super) fn client_close_bar(&self, cx: &Context<Self>) -> impl IntoElement {
-        let this = cx.entity();
-        h_flex()
-            .h(px(44.))
-            .px_3()
-            .items_center()
-            .justify_end()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                Button::new("window-close-empty")
-                    .xsmall()
-                    .ghost()
-                    .label("×")
-                    .tooltip("Close")
-                    .on_click(move |_, window, cx| {
-                        close_or_quit(&this, window, cx);
                     }),
             )
     }

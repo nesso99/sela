@@ -250,9 +250,7 @@ Minimize calls `minimize_window`. Maximize and restore call `zoom_window`. None 
 
 **Edges.** Resize and the client-side shadow or border are not Sela code. gpui-component's `WindowBorder` already wraps the root: under `Decorations::Client` it calls `set_client_inset` and `start_window_resize`. Under server decorations that wrap is a no-op. Do not add a second border.
 
-**Right-click.** There is no Sela menu on this bar. Do not add Minimize / Maximize / Close as a context menu.
-
-Remaining difference from #66: the kit `TitleBar` still covers the drag region with a right-click handler that calls `window.show_window_menu`. That is the platform window menu, not a menu this spec adds. Product decision is no title-bar right-click menu. Taking that overlay out is a follow-up on top of #66. Until then, a right-click on the drag region can still open the platform menu.
+**Right-click.** There is no title-bar context menu. Do not add Minimize / Maximize / Close as a Sela menu. gpui-component’s `TitleBar` still registers a Linux CSD overlay that would call `window.show_window_menu`; Sela wraps the bar and, on right mouse down in the capture phase (`should_suppress_title_bar_window_menu`), stops propagation so that platform menu never opens. Left-button drag, double-click maximize/restore, File menu clicks, and the window controls are unchanged.
 
 ## Status text
 
@@ -297,7 +295,7 @@ Remaining difference from #66: the kit `TitleBar` still covers the drag region w
 3. **M1-9 is done** (#13, `pg_decode.rs`). Text fallbacks are normal cells, as in the decode-error section. Do not edit `roadmap.md` for that status here. Engineering updates the roadmap, PRD, and SPECS status rows in the M1-3 pull request.
 4. **Quit cleanup uses GPUI’s `SHUTDOWN_TIMEOUT` (200 ms)** via `on_app_quit`, not a separate ~2 s wait before `cx.quit()`.
 5. **Client decorations use gpui-component `TitleBar` (34px), as in #66.** The 32px menu row is the server-decoration File menu only. Close goes through `request_quit`. Button order is the kit's: minimize, maximize, close, close outermost. Do not read GNOME `button-layout`.
-6. **No Sela right-click menu on the title bar.** The kit still calls `show_window_menu` on right-click. That overlay is the remaining difference, noted in [Client-side title bar](#client-side-title-bar).
+6. **No title-bar right-click menu.** Capture-phase right mouse down on the CSD title wrap stops the kit’s `show_window_menu` overlay. See [Client-side title bar](#client-side-title-bar).
 
 ## Open questions
 

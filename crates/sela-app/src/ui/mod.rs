@@ -1,5 +1,6 @@
 //! The GPUI window. Database work is started here and finished on the tokio runtime.
 
+mod decorations;
 mod form;
 pub(crate) mod grid;
 mod theme;
@@ -321,9 +322,12 @@ pub fn run() {
                         title: Some("Sela".into()),
                         ..Default::default()
                     }),
-                    // Prefer server-side decorations (OS close button). Wayland
-                    // may refuse and fall back to client decorations; the
-                    // toolbar then shows a close control.
+                    // Prefer server-side decorations so Windows, macOS, X11, and
+                    // KDE keep the native title bar. On Linux, GNOME Wayland (and
+                    // any compositor without SSD) refuses Server and GPUI falls
+                    // back to client decorations — that is the Linux CSD path
+                    // "as needed". Workspace renders TitleBar only when
+                    // `window.window_decorations()` is `Decorations::Client`.
                     window_decorations: Some(WindowDecorations::Server),
                     window_min_size: Some(size(px(880.), px(560.))),
                     ..Default::default()
