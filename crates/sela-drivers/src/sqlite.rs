@@ -10,7 +10,7 @@ use sqlx::Row;
 
 use sela_core::{
     quote_ident, ApplyChangesResult, ChangePlan, ColumnStructure, DatabaseSession, DbError,
-    Dialect, ForeignKeyInfo, IndexInfo, QueryPage, RelationKind, SchemaInfo, StreamBatch,
+    Dialect, ForeignKeyInfo, IndexInfo, QueryPage, RelationKind, SafeMode, SchemaInfo, StreamBatch,
     StreamOutcome, TableInfo, TableStructure, Value,
 };
 
@@ -22,10 +22,22 @@ pub struct SqliteSession {
 
 impl SqliteSession {
     pub async fn open(path: &Path, create_if_missing: bool) -> Result<Self, DbError> {
-        let options = SqliteConnectOptions::new()
+        Self::open_with_safe_mode(path, create_if_missing, SafeMode::Off).await
+    }
+
+    pub async fn open_with_safe_mode(
+        path: &Path,
+        create_if_missing: bool,
+        safe_mode: SafeMode,
+    ) -> Result<Self, DbError> {
+        let mut options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(create_if_missing)
             .busy_timeout(Duration::from_secs(5));
+        if safe_mode == SafeMode::ReadOnly {
+            // URI mode read-only; blocks INSERT/UPDATE/DELETE at the engine.
+            options = options.read_only(true);
+        }
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
@@ -1479,5 +1491,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(page.rows[0][0], Value::Int(2));
+    }
+
+    #[tokio::test]
+    async fn sqlite_read_only_safe_mode_rejects_insert() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ro.sqlite");
+        {
+            let rw = SqliteSession::open(&path, true).await.unwrap();
+            rw.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+                .await
+                .unwrap();
+            rw.execute("INSERT INTO t (id, name) VALUES (1, 'a')")
+                .await
+                .unwrap();
+            rw.close().await;
+        }
+        let session = SqliteSession::open_with_safe_mode(&path, false, SafeMode::ReadOnly)
+            .await
+            .unwrap();
+        let err = session
+            .execute("INSERT INTO t (id, name) VALUES (2, 'b')")
+            .await
+            .expect_err("INSERT must fail under SQLite read_only");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("readonly") || msg.contains("read-only") || msg.contains("read only"),
+            "unexpected error: {err}"
+        );
+        let page = session.query("SELECT id FROM t").await.unwrap();
+        assert_eq!(page.rows.len(), 1);
     }
 }

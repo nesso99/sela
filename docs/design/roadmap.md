@@ -103,8 +103,8 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 ### M2-4 details
 
 - `SavedConnection.safe_mode`: `off` / `confirm` / `read-only` (serde default Off; omit on save when Off; no `schema_version` bump).
-- `classify_statement_safety` + `decide_editor_gate` / `decide_grid_commit_gate` in `sela-core` (`sqlparser`, dialect-matched). Unparseable SQL fails closed. No-WHERE warns on `UPDATE`/`DELETE` without a `WHERE` (including CTE bodies); `WHERE 1=1` does not.
-- App: connection dialog Safe mode select, toolbar `Safe: …` segment, editor / history Rerun / grid Commit gating with quit-style confirms (Cancel primary). Read-only disables Commit and shows the grid strip.
+- `classify_statement_safety` + `decide_editor_gate` / `decide_grid_commit_gate` / `decide_history_rerun` in `sela-core` (`sqlparser`, dialect-matched). Unparseable SQL fails closed. No-WHERE warns on `UPDATE`/`DELETE` without a `WHERE` (including CTE bodies); `WHERE 1=1` does not. `EXPLAIN (ANALYZE …)`, `SELECT … INTO`, and `FOR UPDATE`/`SHARE` are writes.
+- App: connection dialog Safe mode select, toolbar `Safe: …` segment, editor / history Rerun / grid Commit gating with quit-style confirms (Cancel primary). Read-only disables Commit and shows the grid strip. Drivers apply server-side Read-only on connect; saving reconnects.
 
 ---
 

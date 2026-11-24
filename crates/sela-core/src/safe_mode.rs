@@ -5,8 +5,8 @@
 //! WHERE. See `docs/design/ux/09-safe-mode.md`.
 
 use sqlparser::ast::{
-    Delete, FromTable, ObjectName, ObjectNamePart, Query, SetExpr, Statement, TableFactor,
-    TableWithJoins, Update,
+    Delete, FromTable, ObjectName, ObjectNamePart, Query, Select, SetExpr, Statement, TableFactor,
+    TableWithJoins, Update, UtilityOption,
 };
 use sqlparser::dialect::{Dialect as SqlDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
@@ -93,9 +93,28 @@ pub enum EditorGate {
         target_table: Option<String>,
         /// The statement that triggered the warning (named in the batch body).
         sql: String,
+        /// Other writes in the batch besides the triggering statement.
+        other_writes: usize,
     },
     /// Parser failed; Off / Confirm show Run anyway; Read-only hides it.
-    ConfirmParseFailed { sql: String },
+    ConfirmParseFailed {
+        sql: String,
+        /// Other writes in the batch besides the triggering statement.
+        other_writes: usize,
+    },
+}
+
+/// What History Rerun should do for one stored statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryRerunGate {
+    /// Open the tab and run immediately.
+    Run,
+    /// Classic "Rerun this statement?" confirm (reads, or Off writes with no extra warnings).
+    ConfirmRerun,
+    /// Read-only refused a write.
+    RefuseReadOnly,
+    /// Safe-mode ConfirmWrite / NoWhere / ParseFailed dialog.
+    ConfirmSafeMode(EditorGate),
 }
 
 /// Grid Commit gate. Commit is always a write that has a key `WHERE`.
@@ -157,6 +176,9 @@ pub fn decide_editor_gate(mode: SafeMode, statements: &[(String, StatementSafety
         return EditorGate::RefuseReadOnly;
     }
 
+    let write_count = statements.iter().filter(|(_, s)| s.is_write).count();
+    let other_writes = write_count.saturating_sub(1);
+
     // Priority: no-WHERE replaces confirm-writes; parse-failed otherwise;
     // then Confirm writes. Off still warns on no-WHERE and parse-failed.
     if let Some((sql, kind, target_table)) = no_where {
@@ -164,10 +186,11 @@ pub fn decide_editor_gate(mode: SafeMode, statements: &[(String, StatementSafety
             kind,
             target_table,
             sql,
+            other_writes,
         };
     }
     if let Some(sql) = parse_failed {
-        return EditorGate::ConfirmParseFailed { sql };
+        return EditorGate::ConfirmParseFailed { sql, other_writes };
     }
     match mode {
         SafeMode::Off => EditorGate::Allow,
@@ -180,6 +203,36 @@ pub fn decide_editor_gate(mode: SafeMode, statements: &[(String, StatementSafety
             has_reads: any_read,
         },
         SafeMode::ReadOnly => EditorGate::RefuseReadOnly,
+    }
+}
+
+/// Decide History Rerun for one stored statement.
+///
+/// Writes follow [`decide_editor_gate`]. When that returns [`EditorGate::Allow`]
+/// (Off, no no-WHERE / parse warning), fall through to the classic
+/// [`crate::history_rerun_needs_confirm`] path so v0.1 "Rerun this statement?"
+/// still asks for writes.
+pub fn decide_history_rerun(mode: SafeMode, sql: &str, dialect: Dialect) -> HistoryRerunGate {
+    use crate::history_rerun_needs_confirm;
+
+    let safety = classify_statement_safety(sql, dialect);
+    if safety.is_write {
+        let classified = [(sql.to_string(), safety)];
+        match decide_editor_gate(mode, &classified) {
+            EditorGate::Allow => {
+                if history_rerun_needs_confirm(sql) {
+                    HistoryRerunGate::ConfirmRerun
+                } else {
+                    HistoryRerunGate::Run
+                }
+            }
+            EditorGate::RefuseReadOnly => HistoryRerunGate::RefuseReadOnly,
+            gate => HistoryRerunGate::ConfirmSafeMode(gate),
+        }
+    } else if history_rerun_needs_confirm(sql) {
+        HistoryRerunGate::ConfirmRerun
+    } else {
+        HistoryRerunGate::Run
     }
 }
 
@@ -206,14 +259,18 @@ fn classify_ast(stmt: &Statement) -> StatementSafety {
         Statement::Update(update) => classify_update(update),
         Statement::Delete(delete) => classify_delete(delete),
         Statement::Explain {
-            analyze, statement, ..
+            analyze,
+            options,
+            statement,
+            ..
         } => {
-            if *analyze {
-                // EXPLAIN ANALYZE runs the plan (including DML).
+            // EXPLAIN ANALYZE (flag or paren options) executes the plan.
+            // sqlparser 0.64 leaves `analyze=false` for `EXPLAIN (ANALYZE …)`
+            // and puts ANALYZE in `options` — check both. Fail closed when unclear.
+            let _ = statement;
+            if *analyze || explain_options_request_analyze(options.as_deref()) {
                 StatementSafety::write()
             } else {
-                // EXPLAIN without ANALYZE is a read even when the plan is DML.
-                let _ = statement;
                 StatementSafety::read()
             }
         }
@@ -223,6 +280,26 @@ fn classify_ast(stmt: &Statement) -> StatementSafety {
         // Everything else (DDL, DML, CALL, transactions, SET, PRAGMA, …) is a write.
         _ => StatementSafety::write(),
     }
+}
+
+/// True when EXPLAIN options name ANALYZE / ANALYSE (case-insensitive).
+/// An unknown option shape fails closed (treated as ANALYZE).
+fn explain_options_request_analyze(options: Option<&[UtilityOption]>) -> bool {
+    let Some(options) = options else {
+        return false;
+    };
+    for opt in options {
+        let name = opt.name.value.as_str();
+        if name.eq_ignore_ascii_case("ANALYZE") || name.eq_ignore_ascii_case("ANALYSE") {
+            // Named ANALYZE/ANALYSE: treat as execute. Fail closed on unclear args
+            // (including `ANALYZE false` — prefer refusing a silent write).
+            return true;
+        }
+        // Unknown option with an unreadable shape: fail closed if we cannot
+        // inspect it further (UtilityOption always has Ident name; continue).
+        let _ = &opt.arg;
+    }
+    false
 }
 
 fn is_show_like(stmt: &Statement) -> bool {
@@ -254,12 +331,17 @@ fn classify_query(query: &Query) -> StatementSafety {
         }
     }
     merge_write(&mut safety, &classify_set_expr(&query.body));
+    // SELECT … FOR UPDATE / FOR SHARE take row locks — treat as writes.
+    if !query.locks.is_empty() {
+        safety.is_write = true;
+    }
     safety
 }
 
 fn classify_set_expr(expr: &SetExpr) -> StatementSafety {
     match expr {
-        SetExpr::Select(_) | SetExpr::Values(_) | SetExpr::Table(_) => StatementSafety::read(),
+        SetExpr::Select(select) => classify_select(select),
+        SetExpr::Values(_) | SetExpr::Table(_) => StatementSafety::read(),
         SetExpr::Query(q) => classify_query(q),
         SetExpr::SetOperation { left, right, .. } => {
             let mut safety = classify_set_expr(left);
@@ -270,6 +352,40 @@ fn classify_set_expr(expr: &SetExpr) -> StatementSafety {
         | SetExpr::Update(stmt)
         | SetExpr::Delete(stmt)
         | SetExpr::Merge(stmt) => classify_ast(stmt),
+    }
+}
+
+fn classify_select(select: &Select) -> StatementSafety {
+    let mut safety = StatementSafety::read();
+    // SELECT … INTO creates / fills a table (or MySQL OUTFILE when parseable).
+    if select.into.is_some() {
+        safety.is_write = true;
+    }
+    // Nested queries in FROM (and JOIN) may carry INTO / locks.
+    for table in &select.from {
+        merge_write(&mut safety, &classify_table_with_joins(table));
+    }
+    safety
+}
+
+fn classify_table_with_joins(table: &TableWithJoins) -> StatementSafety {
+    let mut safety = classify_table_factor(&table.relation);
+    for join in &table.joins {
+        merge_write(&mut safety, &classify_table_factor(&join.relation));
+    }
+    safety
+}
+
+fn classify_table_factor(factor: &TableFactor) -> StatementSafety {
+    match factor {
+        TableFactor::Derived { subquery, .. } => classify_query(subquery),
+        TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => classify_table_with_joins(table_with_joins),
+        TableFactor::Pivot { table, .. } | TableFactor::Unpivot { table, .. } => {
+            classify_table_factor(table)
+        }
+        _ => StatementSafety::read(),
     }
 }
 
@@ -412,6 +528,151 @@ mod tests {
         for dialect in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite] {
             assert_write("EXPLAIN ANALYZE SELECT 1", dialect);
         }
+        // sqlparser 0.64: paren form leaves analyze=false and puts ANALYZE in options.
+        assert_write("EXPLAIN (ANALYZE) DELETE FROM t", Dialect::Postgres);
+        assert_write(
+            "EXPLAIN (ANALYZE true, BUFFERS) SELECT 1",
+            Dialect::Postgres,
+        );
+        assert_write("EXPLAIN (ANALYZE false) SELECT 1", Dialect::Postgres);
+    }
+
+    #[test]
+    fn select_into_and_locks_are_writes() {
+        assert_write("SELECT a INTO b FROM t", Dialect::Postgres);
+        assert_write("SELECT * FROM t FOR UPDATE", Dialect::Postgres);
+        assert_write("SELECT * FROM t FOR SHARE", Dialect::Postgres);
+        assert_write(
+            "(SELECT 1) UNION ALL (SELECT 2) FOR UPDATE",
+            Dialect::Postgres,
+        );
+        // Nested / set-expression / CTE bodies still see INTO.
+        assert_write(
+            "SELECT * FROM (SELECT a INTO b FROM t) AS x",
+            Dialect::Postgres,
+        );
+        assert_write("(SELECT a INTO b FROM t) UNION SELECT 1", Dialect::Postgres);
+        assert_write(
+            "WITH x AS (SELECT a INTO b FROM t) SELECT * FROM x",
+            Dialect::Postgres,
+        );
+    }
+
+    #[test]
+    fn classifier_writes_misc_statements() {
+        for dialect in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite] {
+            assert_write("TRUNCATE TABLE t", dialect);
+            assert_write("SET a = 1", dialect);
+            assert_write("PREPARE p AS SELECT 1", dialect);
+            assert_write("EXECUTE p", dialect);
+        }
+        assert_write("COPY t TO STDOUT", Dialect::Postgres);
+        assert_write("CALL foo()", Dialect::Postgres);
+        assert_write("GRANT SELECT ON t TO u", Dialect::Postgres);
+        assert_write("VACUUM", Dialect::Postgres);
+        assert_write("LOCK TABLE t IN ACCESS EXCLUSIVE MODE", Dialect::Postgres);
+        assert_write(
+            "MERGE INTO t USING s ON true WHEN MATCHED THEN DELETE",
+            Dialect::Postgres,
+        );
+        assert_write("ATTACH DATABASE 'x' AS y", Dialect::Sqlite);
+        assert_write("PRAGMA x = 1", Dialect::Sqlite);
+    }
+
+    #[test]
+    fn mysql_version_comment_delete_is_no_where() {
+        assert_no_where(
+            "/*!50000 DELETE FROM t */",
+            Dialect::Mysql,
+            NoWhereKind::Delete,
+        );
+    }
+
+    #[test]
+    fn fail_closed_smuggle_and_unparsed_writes() {
+        // Multi-statement smuggle via MySQL version comment.
+        assert_parse_failed("SELECT 1 /*!; DELETE FROM t */", Dialect::Mysql);
+        // Unparsed / unsupported forms fail closed.
+        assert_parse_failed("DO $$ BEGIN NULL; END $$", Dialect::Postgres);
+        assert_parse_failed("LOAD DATA INFILE 'x' INTO TABLE t", Dialect::Mysql);
+        assert_parse_failed("SELECT 1 INTO OUTFILE '/tmp/x'", Dialect::Mysql);
+    }
+
+    #[test]
+    fn batch_no_where_reports_other_writes() {
+        let stmts = [
+            ("SELECT 1".into(), StatementSafety::read()),
+            (
+                "DELETE FROM t".into(),
+                StatementSafety {
+                    is_write: true,
+                    parse_failed: false,
+                    no_where: Some(NoWhereKind::Delete),
+                    target_table: Some("t".into()),
+                },
+            ),
+            (
+                "INSERT INTO t (a) VALUES (1)".into(),
+                StatementSafety::write(),
+            ),
+            (
+                "UPDATE t SET a = 2 WHERE id = 1".into(),
+                StatementSafety::write(),
+            ),
+        ];
+        match decide_editor_gate(SafeMode::Off, &stmts) {
+            EditorGate::ConfirmNoWhere { other_writes, .. } => {
+                assert_eq!(other_writes, 2);
+            }
+            other => panic!("expected ConfirmNoWhere, got {other:?}"),
+        }
+        let parse_batch = [
+            ("???".into(), StatementSafety::parse_failed()),
+            (
+                "INSERT INTO t (a) VALUES (1)".into(),
+                StatementSafety::write(),
+            ),
+        ];
+        match decide_editor_gate(SafeMode::Confirm, &parse_batch) {
+            EditorGate::ConfirmParseFailed { other_writes, .. } => {
+                assert_eq!(other_writes, 1);
+            }
+            other => panic!("expected ConfirmParseFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn history_rerun_off_write_asks_classic_confirm() {
+        // Off write without no-WHERE / parse warning → classic Rerun confirm.
+        assert_eq!(
+            decide_history_rerun(
+                SafeMode::Off,
+                "UPDATE t SET a = 1 WHERE id = 1",
+                Dialect::Postgres
+            ),
+            HistoryRerunGate::ConfirmRerun
+        );
+        // Safe read may still skip classic confirm when load-more says safe.
+        assert_eq!(
+            decide_history_rerun(SafeMode::Off, "SELECT 1", Dialect::Postgres),
+            HistoryRerunGate::Run
+        );
+        assert_eq!(
+            decide_history_rerun(
+                SafeMode::ReadOnly,
+                "UPDATE t SET a = 1 WHERE id = 1",
+                Dialect::Postgres
+            ),
+            HistoryRerunGate::RefuseReadOnly
+        );
+        assert!(matches!(
+            decide_history_rerun(
+                SafeMode::Confirm,
+                "UPDATE t SET a = 1 WHERE id = 1",
+                Dialect::Postgres
+            ),
+            HistoryRerunGate::ConfirmSafeMode(EditorGate::ConfirmWrite { .. })
+        ));
     }
 
     #[test]

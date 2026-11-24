@@ -14,7 +14,7 @@ Connection color, which flags production on the toolbar, is in [05-connection-di
 | Confirm writes | Commit asks first. | A write asks first. | The no-WHERE dialog is the only dialog. |
 | Read-only | The Data pane is read-only ([07-grid-editing.md](./07-grid-editing.md)). Commit is disabled. | A write is refused. It does not run. A read runs. | Refused. There is no `Run anyway`. |
 
-A read is a statement Sela can classify as not writing: `SELECT`, `VALUES`, `SHOW`, `EXPLAIN` without `ANALYZE`, and `WITH` when no part of it writes. Everything else is a write, including a data-modifying CTE. This is the same caution as load-more, tightened with `sqlparser` because load-more's text classifier still treats `SELECT my_func()` as safe. A function call in a `SELECT` stays a read here too. Do not promise otherwise.
+A read is a statement Sela can classify as not writing: `SELECT` (without `INTO` or `FOR UPDATE` / `FOR SHARE`), `VALUES`, `SHOW`, `EXPLAIN` without `ANALYZE` / `ANALYSE` (including paren options such as `EXPLAIN (ANALYZE …)`), and `WITH` when no part of it writes. Everything else is a write, including a data-modifying CTE, `SELECT … INTO`, and row locks. This is the same caution as load-more, tightened with `sqlparser` because load-more's text classifier still treats `SELECT my_func()` as safe. A function call in a plain `SELECT` stays a read here too. Do not promise otherwise; Read-only also applies a server-side guard (below).
 
 If `sqlparser` cannot parse the statement, treat it as a write. Off and Confirm writes show the confirm. Read-only refuses it. The dialog says the parse failed.
 
@@ -67,14 +67,14 @@ A run-all batch that contains any write confirms once for the batch. Cancel runs
 | Cancel | Primary. `Enter` and `Escape`. |
 | Run anyway | Not primary. |
 
-Run-all with one no-WHERE statement uses this dialog for the batch. The body names that statement. Cancel runs nothing.
+Run-all with one no-WHERE statement uses this dialog for the batch. The body names that statement. Cancel runs nothing. When the batch has other writes besides the triggering statement, add `This batch also runs N other write(s).`
 
 ### Parse failed
 
 | Piece | Value |
 | --- | --- |
 | Title | `Sela could not parse this statement` |
-| Body | `It was not run. You can run it anyway, or cancel and edit it.` The statement follows, monospace. |
+| Body | `It was not run. You can run it anyway, or cancel and edit it.` The statement follows, monospace. When the batch has other writes, add `This batch also runs N other write(s).` |
 | Cancel | Primary. |
 | Run anyway | Not primary. Hidden when the level is Read-only. |
 
@@ -88,7 +88,17 @@ Classify the statement at the caret, the selection, or each statement of a run-a
 
 Grid Commit is classified as a write that has a `WHERE`. It never takes the no-WHERE dialog. Filter, sort, paging, Count, and Structure are reads. They do not ask.
 
-Switching the level in the dialog does not discard pending edits already on a tab. The next Commit sees the new level. If the new level is Read-only, the strip appears and Commit disables; Discard still works.
+Switching the level in the dialog does not discard pending edits already on a tab. Saving the connection reconnects, so server-side Read-only (and leaving it) takes effect on that reconnect. The next Commit sees the new level. If the new level is Read-only, the strip appears and Commit disables; Discard still works.
+
+## Server-side Read-only
+
+Read-only is enforced in the UI and on the server after connect:
+
+| Engine | Guard |
+| --- | --- |
+| PostgreSQL | `default_transaction_read_only=on` (connection options) |
+| MySQL | `SET SESSION TRANSACTION READ ONLY` (`after_connect`) |
+| SQLite | open with `read_only(true)` |
 
 ## Keyboard
 
@@ -96,10 +106,11 @@ The dialogs take `Enter` and `Escape` as Cancel. There is no shortcut that confi
 
 ## Implementation notes for engineering
 
-- One classifier for the editor, grid commit, and history Rerun. Do not add a third copy beside `is_safe_to_rerun_for_load_more`. History Rerun of a read keeps its current path. History Rerun of a write follows this file.
-- `sqlparser` dialect matches the connection engine. A parse error fails closed, as the table above.
+- One classifier for the editor, grid commit, and history Rerun (`decide_history_rerun`). Do not add a third copy beside `is_safe_to_rerun_for_load_more`. History Rerun of a read keeps its current path. History Rerun of a write follows this file; when the editor gate would Allow (Off, no extra warning), fall through to the classic “Rerun this statement?” confirm.
+- `sqlparser` dialect matches the connection engine. A parse error fails closed, as the table above. Treat `EXPLAIN` as a write when `analyze` is true or any option is named `ANALYZE` / `ANALYSE` (case-insensitive); fail closed when unclear. Treat `SELECT … INTO` and non-empty `locks` as writes, including nested and set-expression bodies.
 - No-WHERE looks for the absence of a `WHERE` on `UPDATE` and `DELETE`, including inside CTEs. Do not treat `WHERE 1=1` as absent.
 - The confirm is the existing alert dialog, with Cancel as the primary footer button, matching `show_quit_confirm`.
+- Read-only applies the server guards above on connect; saving reconnects so a level change is not deferred.
 
 ## Decisions
 

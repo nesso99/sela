@@ -8,8 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use sela_core::{
     quote_ident, ApplyChangesResult, ChangePlan, ColumnStructure, DatabaseSession, DbError,
-    Dialect, ForeignKeyInfo, IndexInfo, QueryPage, RelationKind, SavedConnection, SchemaInfo,
-    StreamBatch, StreamOutcome, TableInfo, TableStructure, Value,
+    Dialect, ForeignKeyInfo, IndexInfo, QueryPage, RelationKind, SafeMode, SavedConnection,
+    SchemaInfo, StreamBatch, StreamOutcome, TableInfo, TableStructure, Value,
 };
 
 use sqlx::Row;
@@ -20,12 +20,16 @@ pub struct PostgresSession {
 
 impl PostgresSession {
     pub async fn connect(connection: &SavedConnection, password: &str) -> Result<Self, DbError> {
-        let options = PgConnectOptions::new()
+        let mut options = PgConnectOptions::new()
             .host(connection.host.trim())
             .port(connection.port)
             .username(connection.username.trim())
             .password(password)
             .database(connection.database.trim());
+        if connection.safe_mode == SafeMode::ReadOnly {
+            // Server-side guard for M2-4 Read-only (blocks nextval, DML, etc.).
+            options = options.options([("default_transaction_read_only", "on")]);
+        }
         let options = crate::tls::apply_postgres_tls(options, &connection.tls)?;
         let pool = PgPoolOptions::new()
             .max_connections(5)
@@ -38,10 +42,24 @@ impl PostgresSession {
 
     #[cfg(test)]
     pub async fn connect_url(url: &str) -> Result<Self, DbError> {
+        Self::connect_url_with_safe_mode(url, SafeMode::Off).await
+    }
+
+    #[cfg(test)]
+    pub async fn connect_url_with_safe_mode(
+        url: &str,
+        safe_mode: SafeMode,
+    ) -> Result<Self, DbError> {
+        let mut options: PgConnectOptions = url
+            .parse()
+            .map_err(|err| DbError::config(format!("invalid Postgres URL: {err}")))?;
+        if safe_mode == SafeMode::ReadOnly {
+            options = options.options([("default_transaction_read_only", "on")]);
+        }
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
-            .connect(url)
+            .connect_with(options)
             .await
             .map_err(crate::sqlx_err)?;
         Ok(Self { pool })
@@ -1928,6 +1946,51 @@ mod tests {
             .execute(&format!(
                 "DROP TABLE IF EXISTS {qschema}.sela_typed_changes"
             ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_read_only_safe_mode_rejects_nextval() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres read-only safe mode: set SELA_POSTGRES_URL");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let rw = PostgresSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| {
+                panic!("SELA_POSTGRES_URL is set but Postgres is unreachable: {err}")
+            });
+        let qschema = quote_ident(Dialect::Postgres, &schema).unwrap();
+        rw.execute(&format!("DROP SEQUENCE IF EXISTS {qschema}.sela_ro_seq"))
+            .await
+            .unwrap();
+        rw.execute(&format!("CREATE SEQUENCE {qschema}.sela_ro_seq"))
+            .await
+            .unwrap();
+        rw.close().await;
+
+        let session = PostgresSession::connect_url_with_safe_mode(&url, SafeMode::ReadOnly)
+            .await
+            .unwrap();
+        let err = session
+            .query(&format!("SELECT nextval('{schema}.sela_ro_seq')"))
+            .await
+            .expect_err("nextval must fail under default_transaction_read_only");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("read-only") || msg.contains("read only"),
+            "unexpected error: {err}"
+        );
+        // Plain SELECT still works.
+        let page = session.query("SELECT 1 AS n").await.unwrap();
+        assert_eq!(page.rows[0][0], Value::Int(1));
+        session.close().await;
+
+        let cleanup = PostgresSession::connect_url(&url).await.unwrap();
+        cleanup
+            .execute(&format!("DROP SEQUENCE IF EXISTS {qschema}.sela_ro_seq"))
             .await
             .unwrap();
     }

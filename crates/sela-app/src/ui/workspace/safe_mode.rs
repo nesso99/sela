@@ -240,24 +240,39 @@ fn dialog_copy(gate: &EditorGate) -> Option<(String, String, &'static str)> {
             kind,
             target_table,
             sql,
+            other_writes,
         } => {
             let title = "This statement has no WHERE".into();
             let target = target_table
                 .as_deref()
                 .map(|t| format!("every row in {t}"))
                 .unwrap_or_else(|| "every row it targets".into());
-            let body = format!(
+            let mut body = format!(
                 "This {} changes {}. It is not limited by a WHERE clause.\n\n{}",
                 kind.verb(),
                 target,
                 sql
             );
+            if *other_writes > 0 {
+                body.push_str(&format!(
+                    "\n\nThis batch also runs {} other write{}.",
+                    other_writes,
+                    if *other_writes == 1 { "" } else { "s" }
+                ));
+            }
             Some((title, body, "Run anyway"))
         }
-        EditorGate::ConfirmParseFailed { sql } => {
+        EditorGate::ConfirmParseFailed { sql, other_writes } => {
             let title = "Sela could not parse this statement".into();
-            let body =
+            let mut body =
                 format!("It was not run. You can run it anyway, or cancel and edit it.\n\n{sql}");
+            if *other_writes > 0 {
+                body.push_str(&format!(
+                    "\n\nThis batch also runs {} other write{}.",
+                    other_writes,
+                    if *other_writes == 1 { "" } else { "s" }
+                ));
+            }
             Some((title, body, "Run anyway"))
         }
     }
@@ -312,11 +327,13 @@ mod tests {
             kind: NoWhereKind::Delete,
             target_table: Some("books".into()),
             sql: "DELETE FROM books".into(),
+            other_writes: 2,
         };
         let (title, body, label) = dialog_copy(&gate).unwrap();
         assert_eq!(title, "This statement has no WHERE");
         assert!(body.contains("DELETE"));
         assert!(body.contains("books"));
+        assert!(body.contains("This batch also runs 2 other writes."));
         assert_eq!(label, "Run anyway");
     }
 
@@ -324,10 +341,12 @@ mod tests {
     fn parse_failed_dialog_copy() {
         let gate = EditorGate::ConfirmParseFailed {
             sql: "NOT SQL".into(),
+            other_writes: 1,
         };
         let (title, body, label) = dialog_copy(&gate).unwrap();
         assert!(title.contains("could not parse"));
         assert!(body.contains("NOT SQL"));
+        assert!(body.contains("This batch also runs 1 other write."));
         assert_eq!(label, "Run anyway");
     }
 }

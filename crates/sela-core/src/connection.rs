@@ -126,7 +126,9 @@ impl SafeMode {
             Self::Confirm => {
                 "Writes ask before they run. UPDATE and DELETE without WHERE still ask."
             }
-            Self::ReadOnly => "Writes are refused. Reads run as usual.",
+            Self::ReadOnly => {
+                "Writes are refused in the UI and on the server. Saving reconnects so the level applies immediately."
+            }
         }
     }
 

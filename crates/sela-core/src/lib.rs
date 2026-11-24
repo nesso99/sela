@@ -44,8 +44,8 @@ pub use history::{
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
 pub use safe_mode::{
-    classify_statement_safety, decide_editor_gate, decide_grid_commit_gate, EditorGate,
-    GridCommitGate, NoWhereKind, StatementSafety,
+    classify_statement_safety, decide_editor_gate, decide_grid_commit_gate, decide_history_rerun,
+    EditorGate, GridCommitGate, HistoryRerunGate, NoWhereKind, StatementSafety,
 };
 pub use selection::{step_result_index, CellPos, SelectionRect};
 pub use session::{
