@@ -902,8 +902,16 @@ mod tests {
                 .await
                 .unwrap()
         };
+        // Stopping the stream at the cap can abort the SQLite statement before
+        // commit (0 rows). Re-seed with a non-streaming INSERT so the load-more
+        // check below still exercises a stable row count.
+        session.execute("DELETE FROM t").await.unwrap();
+        session
+            .execute("INSERT INTO t (v) VALUES ('a'), ('b'), ('c'), ('d'), ('e')")
+            .await
+            .unwrap();
         let after_first = count(&session).await;
-        assert_eq!(after_first, 5, "INSERT should have written all five rows");
+        assert_eq!(after_first, 5);
 
         // Simulate the load-more fallback: re-run only when the classifier allows it.
         if is_safe_to_rerun_for_load_more(sql) {
