@@ -934,4 +934,127 @@ mod tests {
 
         session.execute("DROP TABLE sela_filter").await.unwrap();
     }
+
+    /// Menu `LIKE` with `ESCAPE '!'`: `!%` / `!_` / `!!` match literal `%` / `_` / `!`.
+    /// Bound params keep MySQL's default backslash string rules from interfering.
+    #[tokio::test]
+    async fn mysql_like_escape_matches_literals_when_configured() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql like escape: set SELA_MYSQL_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
+        let session = MysqlSession::connect_url(&url)
+            .await
+            .expect("mysql connect");
+        session
+            .execute("DROP TABLE IF EXISTS sela_like_escape")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_like_escape (
+                    id INT PRIMARY KEY,
+                    name VARCHAR(64) NOT NULL
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                r#"INSERT INTO sela_like_escape (id, name) VALUES
+                 (1, '100%'),
+                 (2, '100x'),
+                 (3, 'a_b'),
+                 (4, 'axb'),
+                 (5, 'wow!')"#,
+            )
+            .await
+            .unwrap();
+
+        use sela_core::{
+            preview_table, FilterCondition, FilterOp, SortSpec, TablePreview, PAGE_SIZE,
+        };
+
+        let pct = preview_table(
+            &session,
+            &schema,
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "100!%")],
+                sorts: &[SortSpec::asc("id")],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = pct else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("100%"));
+
+        let under = preview_table(
+            &session,
+            &schema,
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "a!_b")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = under else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("a_b"));
+
+        let bang = preview_table(
+            &session,
+            &schema,
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "wow!!")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = bang else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("wow!"));
+
+        // Backslash in a LIKE value is a bound literal; ESCAPE '!' keeps SQL well-formed.
+        let built = sela_core::build_table_select(
+            sela_core::Dialect::Mysql,
+            &schema,
+            "sela_like_escape",
+            &[FilterCondition::new("name", FilterOp::Like, r"100!%\")],
+            &[],
+        )
+        .unwrap();
+        assert!(built.sql.contains("LIKE ? ESCAPE '!'"));
+        assert!(
+            !built.sql.contains(r"ESCAPE '\'"),
+            "backslash ESCAPE breaks MySQL string parsing"
+        );
+        assert_eq!(built.params[0], Value::text(r"100!%\"));
+
+        session
+            .execute("DROP TABLE sela_like_escape")
+            .await
+            .unwrap();
+    }
 }

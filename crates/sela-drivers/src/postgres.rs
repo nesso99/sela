@@ -1359,6 +1359,110 @@ mod tests {
         session.execute("DROP TABLE sela_filter").await.unwrap();
     }
 
+    /// Menu `LIKE` with `ESCAPE '!'`: `!%` / `!_` / `!!` match literal `%` / `_` / `!`.
+    #[tokio::test]
+    async fn postgres_like_escape_matches_literals_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres like escape: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+        session
+            .execute("DROP TABLE IF EXISTS sela_like_escape")
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_like_escape (
+                    id integer PRIMARY KEY,
+                    name text NOT NULL
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                r#"INSERT INTO sela_like_escape (id, name) VALUES
+                 (1, '100%'),
+                 (2, '100x'),
+                 (3, 'a_b'),
+                 (4, 'axb'),
+                 (5, 'wow!')"#,
+            )
+            .await
+            .unwrap();
+
+        use sela_core::{FilterCondition, FilterOp, SortSpec, TablePreview};
+
+        let pct = preview_table(
+            &session,
+            &schema,
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "100!%")],
+                sorts: &[SortSpec::asc("id")],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = pct else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("100%"));
+
+        let under = preview_table(
+            &session,
+            &schema,
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "a!_b")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = under else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("a_b"));
+
+        let bang = preview_table(
+            &session,
+            &schema,
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "wow!!")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = bang else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("wow!"));
+
+        session
+            .execute("DROP TABLE sela_like_escape")
+            .await
+            .unwrap();
+    }
+
     /// Run-all path for a plpgsql body: dollar quotes must keep the inner `;`
     /// so `split_statements` + sequential execute matches the SQL editor.
     #[tokio::test]

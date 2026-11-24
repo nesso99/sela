@@ -205,15 +205,30 @@ pub fn escape_like(value: &str) -> String {
     out
 }
 
-/// Escape only the [`LIKE_ESCAPE`] character so `%` / `_` stay wildcards (UX LIKE).
+/// Normalize a UX `LIKE` / `NOT LIKE` pattern for [`LIKE_ESCAPE`].
+///
+/// `%` and `_` stay wildcards. Valid user escapes (`!%`, `!_`, `!!`) pass through
+/// unchanged so the bound value matches the documented pattern. A dangling `!`
+/// (trailing, or before an ordinary character) is treated as a literal `!` by
+/// emitting `!!`, which keeps the `ESCAPE '!'` clause valid on every engine.
 pub fn escape_like_meta(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if ch == LIKE_ESCAPE {
-            out.push(LIKE_ESCAPE);
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != LIKE_ESCAPE {
             out.push(ch);
-        } else {
-            out.push(ch);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('%') | Some('_') | Some(LIKE_ESCAPE) => {
+                out.push(LIKE_ESCAPE);
+                out.push(chars.next().expect("peeked"));
+            }
+            Some(_) | None => {
+                // Dangling escape → literal `!`.
+                out.push(LIKE_ESCAPE);
+                out.push(LIKE_ESCAPE);
+            }
         }
     }
     out
@@ -996,12 +1011,36 @@ mod tests {
         );
         assert_eq!(pg.params, vec![Value::text("")]);
 
-        // LIKE keeps `%` / `_` as wildcards; only `!` is escaped.
-        let like = [FilterCondition::new("title", FilterOp::Like, r"a%!b")];
+        // LIKE keeps `%` / `_` as wildcards; user escapes pass through.
+        let like = [FilterCondition::new("title", FilterOp::Like, r"100!%")];
         let pg = build_table_select(Dialect::Postgres, "public", "t", &like, &[]).unwrap();
         assert!(pg.sql.contains("LIKE $1 ESCAPE '!'"));
         assert!(!pg.sql.contains("ILIKE"));
-        assert_eq!(pg.params[0], Value::text(r"a%!!b"));
+        assert_eq!(pg.params[0], Value::text(r"100!%"));
+
+        let not_like = [FilterCondition::new("title", FilterOp::NotLike, r"a!_b")];
+        let pg = build_table_select(Dialect::Postgres, "public", "t", &not_like, &[]).unwrap();
+        assert!(pg.sql.contains("NOT LIKE $1 ESCAPE '!'"));
+        assert!(!pg.sql.contains("ILIKE"));
+        assert_eq!(pg.params[0], Value::text(r"a!_b"));
+    }
+
+    #[test]
+    fn escape_like_meta_passes_user_escapes_and_normalizes_dangling() {
+        assert_eq!(escape_like_meta("100!%"), "100!%");
+        assert_eq!(escape_like_meta("a!_b"), "a!_b");
+        assert_eq!(escape_like_meta("wow!!"), "wow!!");
+        assert_eq!(escape_like_meta("%"), "%");
+        assert_eq!(escape_like_meta("_"), "_");
+        // Dangling `!` before an ordinary character → literal `!`.
+        assert_eq!(escape_like_meta("a%!b"), "a%!!b");
+        assert_eq!(escape_like_meta("!x"), "!!x");
+        // Trailing dangling `!`.
+        assert_eq!(escape_like_meta("hello!"), "hello!!");
+        assert_eq!(escape_like_meta("!"), "!!");
+        // Legacy contains/starts/ends still fully escape literals.
+        assert_eq!(escape_like("a%!b"), "a!%!!b");
+        assert_eq!(escape_like("100%"), "100!%");
     }
 
     #[test]
