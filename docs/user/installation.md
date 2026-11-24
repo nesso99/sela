@@ -7,7 +7,7 @@ Download the asset for your platform from the [GitHub Releases](https://github.c
 | Platform | Asset | Notes |
 | --- | --- | --- |
 | Linux x86_64 | `sela-*-linux-x86_64.tar.gz` or `Sela-*-x86_64.AppImage` | AppImage is self-contained enough to run without installing; still needs system GPU/Vulkan (below). |
-| macOS arm64 (Apple Silicon) | `sela-*-macos-arm64.dmg` or `.zip` | arm64 only for v0.1.0 (Intel/universal deferred). **Unsigned**. |
+| macOS arm64 (Apple Silicon) | `sela-*-macos-arm64.dmg` or `.zip` | **Apple Silicon (arm64) only for v0.1.0 — Intel Macs are not supported yet.** **Unsigned**. |
 | Windows x86_64 | `sela-*-windows-x86_64.zip` | Contains `sela.exe`. **Unsigned** for v0.1.0. |
 
 ### Linux
@@ -39,6 +39,8 @@ Also expect the usual desktop stack at runtime: Wayland or X11, fontconfig/Freet
 Fedora note: an RPM is not published for v0.1.0. Prefer the AppImage or tarball; Flatpak may come later.
 
 ### macOS
+
+**v0.1.0 macOS builds are Apple Silicon (arm64) only. Intel Macs are not supported yet** (no x86_64 or universal binary in this release).
 
 Open the `.dmg` and drag **Sela** into Applications, or unzip the `.zip` and run `Sela.app`.
 

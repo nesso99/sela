@@ -41,6 +41,10 @@ concurrency:
   group: release-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
 
+# Least privilege by default. assemble elevates to contents: write to publish.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -59,15 +63,19 @@ jobs:
 
       - name: Resolve version / publish mode
         id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            raw="${{ inputs.version }}"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            raw="${INPUT_VERSION}"
             version="${raw#v}"
             # Strip any accidental prerelease suffix from the input for
             # changelog / artifact naming (section is still [0.1.0]).
             version="${version%%-*}"
-            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            if [[ "$INPUT_DRY_RUN" == "true" ]]; then
               publish=false
             else
               # Explicit non-dry dispatch still publishes as a draft prerelease
@@ -103,6 +111,11 @@ jobs:
     name: build (${{ matrix.name }})
     needs: meta
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # upload-artifact requires actions:write when top-level permissions are set.
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -162,19 +175,22 @@ jobs:
 
       - name: Smoke test (--version)
         shell: bash
+        timeout-minutes: 5
         env:
           VERSION: ${{ needs.meta.outputs.version }}
+          RUNNER_OS_NAME: ${{ runner.os }}
         run: |
           set -euo pipefail
-          # Requires sela --version from PR #27 (feat/version-flag). Without it
-          # the binary ignores unknown args and opens a GPUI window (hangs or
-          # crashes headless); the timeout below fails the job instead.
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
+          # sela --version / -V must print and exit without opening a window.
+          # Unknown args still launch GPUI; bound with timeout so a missing
+          # flag fails the job instead of hanging the runner.
+          if [[ "$RUNNER_OS_NAME" == "Windows" ]]; then
             BIN="target/release/sela.exe"
+            # Git Bash on windows-latest may lack GNU timeout; use step timeout.
             run_ver() { "$BIN" "$@"; }
           else
             BIN="target/release/sela"
-            run_ver() { timeout 15s "$BIN" "$@"; }
+            run_ver() { timeout 30s "$BIN" "$@"; }
           fi
           test -f "$BIN"
           out="$(run_ver --version)"
@@ -236,6 +252,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -270,6 +287,7 @@ jobs:
             echo ""
             echo "See \`SHA256SUMS\` in this release for checksums."
             echo "Builds are unsigned (macOS Gatekeeper / Windows SmartScreen may warn)."
+            echo "macOS builds are **Apple Silicon (arm64) only** for v0.1.0; Intel Macs are not supported yet."
             echo ""
             echo "Binary: \`sela\` (crate \`sela-app\`). Smoke-tested with \`sela --version\`."
           } >>dist/release-notes.md
@@ -286,7 +304,7 @@ jobs:
 
       - name: Publish GitHub Release (tag only)
         if: needs.meta.outputs.publish == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: Sela ${{ needs.meta.outputs.version }}
@@ -300,7 +318,7 @@ jobs:
 
       - name: Publish draft prerelease (explicit non-dry workflow_dispatch)
         if: needs.meta.outputs.publish == 'draft'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.meta.outputs.tag }}-rc.${{ github.run_number }}
           name: Sela ${{ needs.meta.outputs.version }} RC (draft)
