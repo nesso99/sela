@@ -131,6 +131,9 @@ fn light_overrides() -> serde_json::Value {
         "table.head.foreground": "#525252",
         "ring": "#2563EB",
         "input.border": "#767676",
+        // A missing primary.foreground falls back to foreground (near-black),
+        // which disappears on the near-black primary fill. Keep the kit pair.
+        "primary.foreground": "#FAFAFA",
     })
 }
 
@@ -138,6 +141,9 @@ fn dark_overrides() -> serde_json::Value {
     serde_json::json!({
         "sidebar.background": "#171717",
         "muted.foreground": "#A3A3A3",
+        // A missing primary.foreground falls back to foreground (near-white),
+        // which disappears on the near-white primary fill.
+        "primary.foreground": "#171717",
         "table.even.background": "#171717",
         "table.hover.background": "#262626",
         "table.head.background": "#171717",
@@ -182,6 +188,7 @@ fn highlight_block(mode: ThemeMode) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::component::ThemeColor;
     use sela_config::resolve_theme_mode;
 
     #[test]
@@ -206,6 +213,29 @@ mod tests {
         assert!(light.status_error.a > 0.9);
         let dark = SelaPalette::for_mode(ThemeMode::Dark);
         assert!(dark.cell_decode_bg.a > 0.9);
+    }
+
+    #[test]
+    fn primary_button_label_contrasts_with_fill() {
+        // apply_config replaces an omitted primary.foreground with foreground.
+        // That is the same hue as the primary fill in both modes, so New, Run,
+        // and the selected pane button paint white text on a white fill.
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let mut theme = Theme::from(ThemeColor::light().as_ref());
+            let config = Rc::new(sela_theme_config(mode));
+            theme.apply_config(&config);
+            let label = if mode.is_dark() {
+                color("#171717")
+            } else {
+                color("#FAFAFA")
+            };
+            assert_eq!(theme.primary_foreground, label, "{mode:?}");
+            assert_eq!(theme.button_primary_foreground, label, "{mode:?}");
+            assert_ne!(
+                theme.button_primary_foreground, theme.button_primary,
+                "{mode:?} primary label matches its fill"
+            );
+        }
     }
 
     #[test]

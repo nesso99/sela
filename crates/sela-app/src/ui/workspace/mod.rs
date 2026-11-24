@@ -255,6 +255,21 @@ impl Workspace {
             .and_then(|view| view.error.clone())
             .or_else(|| self.boot_error.clone())
     }
+
+    /// Linux/Windows in-window File menu. Height is fixed because `AppMenuBar`
+    /// paints `size_full()`; an unbounded slot swallows the column.
+    #[cfg(not(target_os = "macos"))]
+    fn menu_bar_row(&self, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .id("sela-menu-bar")
+            .w_full()
+            .h(px(32.))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().title_bar)
+            .child(self.menu_bar.clone())
+    }
 }
 
 impl Render for Workspace {
@@ -582,7 +597,7 @@ impl Render for Workspace {
             .map(|root| {
                 #[cfg(not(target_os = "macos"))]
                 {
-                    root.child(self.menu_bar.clone())
+                    root.child(self.menu_bar_row(cx))
                 }
                 #[cfg(target_os = "macos")]
                 {

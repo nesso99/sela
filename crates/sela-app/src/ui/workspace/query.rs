@@ -1063,46 +1063,17 @@ impl Workspace {
                 }
                 self.refresh_status_from_state(tab_id);
                 if let Some(view) = self.view_mut(tab_id) {
-                    if let Some(total) = rows.total_rows {
-                        let window_rows = if rows.paged {
-                            total as usize
-                        } else {
-                            rows.page.rows.len()
-                        };
-                        view.grid.update(cx, |state, cx| {
-                            let delegate = state.delegate_mut();
-                            if rows.paged {
-                                delegate
-                                    .result
-                                    .reset(rows.page.columns.clone(), window_rows);
-                                let page_index = (page_offset / PAGE_SIZE as u64) as usize;
-                                delegate.result.insert_page(page_index, rows.page.rows);
-                            } else {
-                                delegate.show_page(rows.page);
-                            }
-                            state.refresh(cx);
-                        });
-                    } else {
-                        let page_len = view.page_len;
-                        view.grid.update(cx, |state, cx| {
-                            let delegate = state.delegate_mut();
-                            if rows.paged {
-                                let start = page_offset as usize;
-                                let end = start + rows.page.rows.len();
-                                delegate
-                                    .result
-                                    .reset(rows.page.columns.clone(), end.max(start + 1));
-                                let page_index = start / PAGE_SIZE as usize;
-                                delegate.result.insert_page(page_index, rows.page.rows);
-                                if page_len as u32 == PAGE_SIZE {
-                                    delegate.result.ensure_total_rows(end + PAGE_SIZE as usize);
-                                }
-                            } else {
-                                delegate.show_page(rows.page);
-                            }
-                            state.refresh(cx);
-                        });
-                    }
+                    let total_rows = rows.total_rows.map(|n| n as usize);
+                    let paged = rows.paged;
+                    view.grid.update(cx, |state, cx| {
+                        state.delegate_mut().install_loaded_page(
+                            rows.page,
+                            paged,
+                            total_rows,
+                            page_offset,
+                        );
+                        state.refresh(cx);
+                    });
                 }
                 self.fetch_pending_pages_for(tab_id, cx);
             }

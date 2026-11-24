@@ -19,6 +19,7 @@ use gpui_kit::{div, px, App, IntoElement, SharedString, Window};
 
 use sela_core::{
     CellPos, CellView, QueryPage, ResultWindow, RowState, SelectionRect, SortDirection, SortSpec,
+    PAGE_SIZE,
 };
 
 use super::theme::SelaPalette;
@@ -76,6 +77,40 @@ impl GridDelegate {
         self.clear_selection_range();
         if self.result.total_rows() == 0 {
             self.empty_message = "The query returned no rows.".into();
+        }
+    }
+
+    /// Install a finished page and hide the loading skeleton.
+    ///
+    /// Table preview is paged: the first page is inserted at `page_offset` and
+    /// later pages fill in through [`ResultWindow::touch`]. SQL results use
+    /// [`Self::show_page`] instead.
+    pub fn install_loaded_page(
+        &mut self,
+        page: QueryPage,
+        paged: bool,
+        total_rows: Option<usize>,
+        page_offset: u64,
+    ) {
+        self.loading = false;
+        if !paged {
+            self.show_page(page);
+            return;
+        }
+        let page_len = page.rows.len();
+        if let Some(total) = total_rows {
+            self.result.reset(page.columns, total);
+            let page_index = (page_offset / PAGE_SIZE as u64) as usize;
+            self.result.insert_page(page_index, page.rows);
+        } else {
+            let start = page_offset as usize;
+            let end = start + page_len;
+            self.result.reset(page.columns, end.max(start + 1));
+            let page_index = start / PAGE_SIZE as usize;
+            self.result.insert_page(page_index, page.rows);
+            if page_len as u32 == PAGE_SIZE {
+                self.result.ensure_total_rows(end + PAGE_SIZE as usize);
+            }
         }
     }
 
@@ -306,5 +341,47 @@ impl TableDelegate for GridDelegate {
             .item(PopupMenuItem::new("Copy as INSERT").action(Box::new(CopyAsInsert)))
             .separator()
             .item(PopupMenuItem::new("Copy").action(Box::new(CopySelection)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use sela_core::{ColumnMeta, QueryPage, Value};
+
+    use super::*;
+
+    fn page(rows: Vec<Vec<Value>>) -> QueryPage {
+        QueryPage {
+            columns: vec![ColumnMeta {
+                name: "title".into(),
+                type_name: "TEXT".into(),
+            }],
+            rows,
+            duration: Duration::from_millis(0),
+        }
+    }
+
+    #[test]
+    fn paged_table_page_clears_skeleton_and_shows_cells() {
+        let mut grid = GridDelegate::empty();
+        grid.loading = true;
+        grid.install_loaded_page(
+            page(vec![
+                vec![Value::Text("Rust".into())],
+                vec![Value::Text("SQLite".into())],
+                vec![Value::Text("GPUI".into())],
+            ]),
+            true,
+            None,
+            0,
+        );
+        assert!(!grid.loading);
+        assert_eq!(grid.result.total_rows(), 3);
+        match grid.result.row(0) {
+            RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "Rust"),
+            RowState::Loading => panic!("first row stayed on the loading placeholder"),
+        }
     }
 }
