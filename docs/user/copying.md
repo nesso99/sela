@@ -5,7 +5,9 @@ Select cells in the results grid, then copy them to the clipboard. This covers U
 ## Selecting
 
 - Click a cell to focus it.
-- Shift-click another cell to grow a rectangular range from the first focus.
+- Shift-click another cell to grow a rectangular range from the first focus. The range is highlighted; Copy uses the whole rectangle.
+- Shift+arrow extends the range from the anchor cell (the first focus).
+- Ctrl/Cmd+A selects every cell in the current result.
 - Click a row or column header when the table offers that selection (same as the DataTable selection model).
 - Right-click a cell outside the current selection (or with nothing selected) to select that cell before the Copy menu opens. Right-click inside an existing range keeps the range so Copy still copies the whole selection.
 

@@ -19,7 +19,25 @@ mod stream;
 mod tls;
 
 pub(crate) use bind::bind_params;
-pub(crate) use decode::{column_meta, read_mysql_cell, read_postgres_cell, read_sqlite_cell};
+pub(crate) use decode::{
+    column_meta, read_mysql_cell, read_postgres_cell, read_sqlite_cell, refine_sqlite_column_types,
+};
+
+/// Refine undeclared SQLite column types after a `query_page!` fetch.
+///
+/// No-op when every column already has a non-empty type (Postgres / MySQL).
+#[doc(hidden)]
+pub fn refine_sqlite_column_types_if_needed(
+    columns: &mut [sela_core::ColumnMeta],
+    rows: &[Vec<sela_core::Value>],
+) {
+    if columns
+        .iter()
+        .any(|c| c.type_name.is_empty() || c.type_name.eq_ignore_ascii_case("NULL"))
+    {
+        refine_sqlite_column_types(columns, rows);
+    }
+}
 pub(crate) use error_map::sqlx_err;
 pub use runtime::drive;
 pub use tokio_util::sync::CancellationToken;

@@ -13,9 +13,59 @@ use uuid::Uuid;
 use sela_core::{ColumnMeta, Interval, Value};
 
 pub fn column_meta(column: &impl sqlx::Column) -> ColumnMeta {
+    let raw = column.type_info().to_string();
     ColumnMeta {
         name: column.name().to_string(),
-        type_name: column.type_info().to_string(),
+        // Never surface SQL NULL / empty as a header type (SQLite undeclared
+        // expression columns). Callers refine from the first non-NULL value.
+        type_name: normalize_column_type_name(&raw),
+    }
+}
+
+/// Drop type names that must not appear in headers (`NULL` / empty).
+pub(crate) fn normalize_column_type_name(raw: &str) -> String {
+    if raw.is_empty() || raw.eq_ignore_ascii_case("NULL") {
+        String::new()
+    } else if raw.eq_ignore_ascii_case("VOID") {
+        // Postgres void (e.g. pg_sleep) — show lowercase per UX.
+        "void".into()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// SQLite storage-class label for a decoded cell, if it is not SQL NULL.
+pub(crate) fn sqlite_storage_class_name(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::Null => None,
+        Value::Int(_) | Value::UInt(_) | Value::Bool(_) => Some("INTEGER"),
+        Value::Float(_) | Value::Decimal(_) => Some("REAL"),
+        Value::Bytes(_) => Some("BLOB"),
+        Value::Text(_)
+        | Value::Uuid(_)
+        | Value::Json(_)
+        | Value::Date(_)
+        | Value::Time(_)
+        | Value::Timestamp(_)
+        | Value::TimestampTz(_)
+        | Value::Interval(_)
+        | Value::Other { .. } => Some("TEXT"),
+    }
+}
+
+/// Fill empty / undeclared SQLite column types from the first non-NULL value
+/// in each column (#60). Leaves the name empty when every value is NULL.
+pub fn refine_sqlite_column_types(columns: &mut [ColumnMeta], rows: &[Vec<Value>]) {
+    for (col_ix, column) in columns.iter_mut().enumerate() {
+        if !column.type_name.is_empty() && !column.type_name.eq_ignore_ascii_case("NULL") {
+            continue;
+        }
+        let inferred = rows.iter().find_map(|row| {
+            row.get(col_ix)
+                .and_then(sqlite_storage_class_name)
+                .map(str::to_string)
+        });
+        column.type_name = inferred.unwrap_or_default();
     }
 }
 
@@ -445,6 +495,9 @@ macro_rules! query_page {
             }
             rows.push(cells);
         }
+        // SQLite expression columns arrive as empty / "NULL" type names; fill
+        // from the first non-NULL storage class when this path decoded SQLite.
+        $crate::refine_sqlite_column_types_if_needed(&mut columns, &rows);
         Ok(::sela_core::QueryPage {
             columns,
             rows,
@@ -487,6 +540,7 @@ macro_rules! count_sql {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sela_core::QueryPage;
 
     #[test]
     fn raw_access_error_is_other_not_null() {
@@ -545,5 +599,97 @@ mod tests {
         assert!(read_sqlite_cell(&row, 4).is_null());
         // CAST still has a declared INTEGER affinity — keep typed path.
         assert_eq!(read_sqlite_cell(&row, 5), Value::Int(7));
+    }
+
+    #[test]
+    fn normalize_column_type_never_emits_null() {
+        assert_eq!(normalize_column_type_name("NULL"), "");
+        assert_eq!(normalize_column_type_name("null"), "");
+        assert_eq!(normalize_column_type_name(""), "");
+        assert_eq!(normalize_column_type_name("INTEGER"), "INTEGER");
+        assert_eq!(normalize_column_type_name("VOID"), "void");
+        assert_eq!(normalize_column_type_name("void"), "void");
+    }
+
+    #[test]
+    fn refine_sqlite_types_from_first_non_null() {
+        let mut columns = vec![
+            ColumnMeta {
+                name: "a".into(),
+                type_name: String::new(),
+            },
+            ColumnMeta {
+                name: "b".into(),
+                type_name: "NULL".into(),
+            },
+            ColumnMeta {
+                name: "c".into(),
+                type_name: String::new(),
+            },
+            ColumnMeta {
+                name: "d".into(),
+                type_name: "TEXT".into(),
+            },
+        ];
+        let rows = vec![
+            vec![Value::Null, Value::Null, Value::Float(1.5), Value::Int(1)],
+            vec![
+                Value::Int(42),
+                Value::text("x"),
+                Value::Float(2.0),
+                Value::Int(2),
+            ],
+        ];
+        refine_sqlite_column_types(&mut columns, &rows);
+        assert_eq!(columns[0].type_name, "INTEGER");
+        assert_eq!(columns[1].type_name, "TEXT");
+        assert_eq!(columns[2].type_name, "REAL");
+        // Declared TEXT is left alone.
+        assert_eq!(columns[3].type_name, "TEXT");
+    }
+
+    #[test]
+    fn refine_sqlite_types_all_null_stays_empty() {
+        let mut columns = vec![ColumnMeta {
+            name: "n".into(),
+            type_name: String::new(),
+        }];
+        let rows = vec![vec![Value::Null], vec![Value::Null]];
+        refine_sqlite_column_types(&mut columns, &rows);
+        assert_eq!(columns[0].type_name, "");
+    }
+
+    /// Expression columns must show INTEGER/REAL/TEXT/BLOB in the header, never
+    /// NULL (#60).
+    #[tokio::test]
+    async fn sqlite_expression_column_meta_uses_storage_class() -> Result<(), sela_core::DbError> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("in-memory sqlite");
+
+        let page: QueryPage = crate::query_page!(
+            &pool,
+            "SELECT 42 AS n, 1.5 AS f, 'a' || 'b' AS s, X'6869' AS b, NULL AS z",
+            read_sqlite_cell
+        )?;
+
+        assert_eq!(page.columns[0].type_name, "INTEGER");
+        assert_eq!(page.columns[1].type_name, "REAL");
+        assert_eq!(page.columns[2].type_name, "TEXT");
+        assert_eq!(page.columns[3].type_name, "BLOB");
+        assert_eq!(page.columns[4].type_name, "");
+        assert!(!page
+            .columns
+            .iter()
+            .any(|c| c.type_name.eq_ignore_ascii_case("NULL")));
+        Ok(())
     }
 }

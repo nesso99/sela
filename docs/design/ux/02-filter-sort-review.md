@@ -18,7 +18,7 @@ This is a review of those seams. It is not a new filter design. The bar is still
 | Exact count | Button `exact-count` in the SQL header, label `Exact count`. Shown for a table when the kind is `Estimated` or `Unknown`. | `content.rs` `sql_editor` |
 | Count query | `request_exact_count` accepts only `GridSource::Table` and calls `exact_table_rows`, which is `COUNT(*)` of `SELECT * FROM schema.table`. No WHERE. | `query.rs`, `session.rs` |
 | Count failure | Sets `view.error`, so `error_banner` paints, and status `Count failed`. | `request_exact_count` |
-| Page label | `Page N of M` whenever `total_rows` is `Some` | `workspace/mod.rs` `render` |
+| Page label | `Page N of M` for paged + known total; `Page N · {total\|page_len} rows` otherwise (`format_page_label`) | `workspace/mod.rs` `render` |
 | Run | `run_editor` copies the textarea into `GridSource::Sql` and leaves the table. | `query.rs` |
 | Parameters | `DatabaseSession::query`, `stream_query`, and `count_query` take `&str` only. | `session.rs` |
 

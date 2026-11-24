@@ -159,6 +159,9 @@ impl Workspace {
             view.table_pane = super::TablePane::Data;
             view.structure_error = None;
             view.page_offset = 0;
+            view.page_len = 0;
+            view.total_rows = None;
+            view.paged = false;
             view.sql_row_cap = DEFAULT_SQL_ROW_CAP;
             view.truncated = false;
             view.history_should_record = false;
@@ -767,6 +770,8 @@ impl Workspace {
                     }
                     view.total_rows = Some(summary.rows_delivered as u64);
                     view.page_len = summary.rows_delivered;
+                    // SQL streams are not table Previous/Next pages (#61).
+                    view.paged = false;
                     view.grid.update(cx, |state, cx| {
                         state.delegate_mut().loading = false;
                         state

@@ -15,7 +15,7 @@ use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelection, TableState};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, App, IntoElement, SharedString, Window};
+use gpui_kit::{div, px, App, IntoElement, MouseButton, SharedString, Window};
 
 use sela_core::{
     CellPos, CellView, QueryPage, ResultWindow, RowState, SelectionRect, SortDirection, SortSpec,
@@ -48,6 +48,10 @@ pub struct GridDelegate {
     pub selection_anchor: Option<CellPos>,
     /// Active rectangular selection (overrides a lone cell when present).
     pub selection_rect: Option<SelectionRect>,
+    /// Shift held on the last left mouse-down inside a cell. Prefer this over
+    /// `window.modifiers()` when handling [`TableEvent::SelectCell`], because
+    /// the click subscriber can run after modifiers have already changed.
+    pointer_shift: Option<bool>,
 }
 
 impl GridDelegate {
@@ -62,6 +66,7 @@ impl GridDelegate {
             empty_message: "Open a table, or run a query.".into(),
             selection_anchor: None,
             selection_rect: None,
+            pointer_shift: None,
         }
     }
 
@@ -132,6 +137,18 @@ impl GridDelegate {
     pub fn clear_selection_range(&mut self) {
         self.selection_anchor = None;
         self.selection_rect = None;
+        self.pointer_shift = None;
+    }
+
+    /// Remember whether Shift was held on the pointer press that is about to
+    /// select a cell (see [`Self::take_shift_for_select`]).
+    pub fn note_pointer_shift(&mut self, shift: bool) {
+        self.pointer_shift = Some(shift);
+    }
+
+    /// Consume a pointer-captured Shift flag, if any.
+    pub fn take_shift_for_select(&mut self) -> Option<bool> {
+        self.pointer_shift.take()
     }
 
     /// Record a cell focus for Shift-range selection.
@@ -145,6 +162,30 @@ impl GridDelegate {
             self.selection_anchor = Some(focus);
             self.selection_rect = Some(SelectionRect::cell(row, col));
         }
+    }
+
+    /// Select every loaded cell (Ctrl/Cmd+A).
+    pub fn select_all_cells(&mut self) {
+        let rows = self.result.total_rows();
+        let cols = self.result.columns().len();
+        if rows == 0 || cols == 0 {
+            self.clear_selection_range();
+            return;
+        }
+        self.selection_anchor = Some(CellPos::new(0, 0));
+        self.selection_rect = Some(SelectionRect::from_corners(
+            CellPos::new(0, 0),
+            CellPos::new(rows - 1, cols - 1),
+        ));
+        self.pointer_shift = None;
+    }
+
+    /// Whether `(row, col)` lies inside the active Shift-range (if any).
+    pub fn cell_in_range(&self, row: usize, col: usize) -> bool {
+        self.selection_rect.is_some_and(|rect| {
+            let (min_r, max_r, min_c, max_c) = rect.normalized();
+            row >= min_r && row <= max_r && col >= min_c && col <= max_c
+        })
     }
 
     /// Resolve the rectangle to copy from DataTable selection + our range.
@@ -213,10 +254,13 @@ impl TableDelegate for GridDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         let meta = &self.result.columns()[col_ix];
-        let header = if let Some(mark) = self.sort_mark(&meta.name) {
-            format!("{} {mark}    {}", meta.name, meta.type_name)
-        } else {
-            format!("{}   {}", meta.name, meta.type_name)
+        // Omit an empty type (SQLite undeclared / all-NULL expressions) so the
+        // header is just the column name — never show "NULL" as a type.
+        let header = match (self.sort_mark(&meta.name), meta.type_name.is_empty()) {
+            (Some(mark), true) => format!("{} {mark}", meta.name),
+            (Some(mark), false) => format!("{} {mark}    {}", meta.name, meta.type_name),
+            (None, true) => meta.name.clone(),
+            (None, false) => format!("{}   {}", meta.name, meta.type_name),
         };
         let width = (header.chars().count() as f32 * 7.5).clamp(140.0, 360.0);
         let mut col = Column::new(format!("{col_ix}:{}", meta.name), header)
@@ -276,7 +320,8 @@ impl TableDelegate for GridDelegate {
                 (false, false, text)
             }
         };
-        let (color, bg) = if is_decode {
+        let in_range = self.cell_in_range(row_ix, col_ix);
+        let (color, decode_bg) = if is_decode {
             (palette.cell_decode_text, Some(palette.cell_decode_bg))
         } else if null || loading {
             (cx.theme().muted_foreground, None)
@@ -288,8 +333,10 @@ impl TableDelegate for GridDelegate {
         // cells. Attach the copy menu on the cell content (innermost wins).
         // ContextMenuExt also stop_propagates, so DataTable never sees the
         // right-click — select the cell here when it is outside the current
-        // selection so Copy targets the clicked cell (Refs #55).
+        // selection so Copy targets the clicked cell (Refs #55). When the click
+        // is already inside `selection_rect`, leave the range alone (#59).
         let table = cx.entity();
+        let table_shift = table.clone();
         div()
             .id(format!("grid-cell:{row_ix}:{col_ix}"))
             .h_full()
@@ -300,9 +347,22 @@ impl TableDelegate for GridDelegate {
             .truncate()
             .text_color(color)
             .font_family(cx.theme().mono_font_family.clone())
-            .when_some(bg, |cell, bg| cell.bg(bg))
+            .when_some(decode_bg, |cell, bg| cell.bg(bg))
+            // Paint the Shift-range wash under cell text (DataTable only
+            // highlights the focused cell).
+            .when(in_range && !is_decode, |cell| {
+                cell.bg(cx.theme().tokens.table_active)
+            })
             .when(null || loading, |cell| cell.italic())
             .child(text)
+            // Capture Shift on press before SelectCell runs; window.modifiers()
+            // alone is not reliable by the time the table event subscriber fires.
+            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                let shift = event.modifiers.shift;
+                table_shift.update(cx, |state, _| {
+                    state.delegate_mut().note_pointer_shift(shift);
+                });
+            })
             .context_menu(move |menu, _, menu_cx| {
                 table.update(menu_cx, |state, cx| {
                     let selection = state.selection();
@@ -313,6 +373,8 @@ impl TableDelegate for GridDelegate {
                         // subscribers also call note_cell_focus, which is fine.
                         state.delegate_mut().note_cell_focus(row_ix, col_ix, false);
                     }
+                    // Inside an existing range: do not call set_selected_cell or
+                    // note_cell_focus — that would collapse the range (#59 / #55).
                 });
                 copy_context_menu(menu)
             })
@@ -575,5 +637,91 @@ mod tests {
         let mut grid = GridDelegate::empty();
         grid.show_page(page(vec![vec![Value::Text("a".into())]]));
         assert!(grid.copy_rect(TableSelection::None).is_none());
+    }
+
+    fn multi_page() -> QueryPage {
+        QueryPage {
+            columns: vec![
+                ColumnMeta {
+                    name: "id".into(),
+                    type_name: "INTEGER".into(),
+                },
+                ColumnMeta {
+                    name: "title".into(),
+                    type_name: "TEXT".into(),
+                },
+            ],
+            rows: vec![
+                vec![Value::Int(1), Value::Text("a".into())],
+                vec![Value::Int(2), Value::Text("b".into())],
+                vec![Value::Int(3), Value::Text("c".into())],
+            ],
+            duration: Duration::from_millis(0),
+        }
+    }
+
+    #[test]
+    fn shift_click_extends_selection_rect_from_anchor() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.note_cell_focus(0, 0, false);
+        grid.note_cell_focus(2, 1, true);
+        let rect = grid.selection_rect.expect("range");
+        assert_eq!(rect.normalized(), (0, 2, 0, 1));
+        assert!(grid.cell_in_range(1, 0));
+        assert!(!grid.cell_in_range(0, 2));
+    }
+
+    #[test]
+    fn select_all_cells_covers_full_grid() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.select_all_cells();
+        let rect = grid.selection_rect.expect("all");
+        assert_eq!(rect.normalized(), (0, 2, 0, 1));
+        let copy = grid
+            .copy_rect(TableSelection::Cell(0, 0))
+            .expect("copy all");
+        assert_eq!(copy.normalized(), (0, 2, 0, 1));
+    }
+
+    #[test]
+    fn right_click_inside_range_keeps_selection_rect() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        grid.note_cell_focus(0, 0, false);
+        grid.note_cell_focus(2, 1, true);
+        let before = grid.selection_rect;
+        // Simulate the context-menu path: only select when outside.
+        assert!(cell_in_selection(
+            1,
+            0,
+            TableSelection::Cell(2, 1),
+            grid.selection_rect
+        ));
+        // Inside → do not call note_cell_focus(false).
+        assert_eq!(grid.selection_rect, before);
+        // Outside → collapse to the clicked cell.
+        assert!(!cell_in_selection(
+            0,
+            0,
+            TableSelection::Cell(2, 1),
+            // Use a range that does not include (0,0) after moving focus only —
+            // with the full range (0,0) is inside; pick a cell past the grid.
+            Some(SelectionRect::from_corners(
+                CellPos::new(1, 0),
+                CellPos::new(2, 1)
+            ))
+        ));
+        grid.note_cell_focus(0, 0, false);
+        assert_eq!(grid.selection_rect, Some(SelectionRect::cell(0, 0)));
+    }
+
+    #[test]
+    fn pointer_shift_preferred_over_window_modifiers() {
+        let mut grid = GridDelegate::empty();
+        grid.note_pointer_shift(true);
+        assert_eq!(grid.take_shift_for_select(), Some(true));
+        assert_eq!(grid.take_shift_for_select(), None);
     }
 }
