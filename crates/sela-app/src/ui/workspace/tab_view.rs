@@ -82,6 +82,9 @@ pub(super) struct TabView {
     pub sorts: Vec<SortSpec>,
     pub filter_bar_open: bool,
     pub filter_rows: Vec<FilterRowUi>,
+    /// When true, the in-flight SQL statement came from the editor run path and
+    /// should be written to history when it finishes (not load-more / catalog).
+    pub history_should_record: bool,
 }
 
 impl TabView {
@@ -147,6 +150,7 @@ impl TabView {
             sorts: Vec::new(),
             filter_bar_open: false,
             filter_rows: Vec::new(),
+            history_should_record: false,
         }
     }
 

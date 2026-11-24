@@ -1,6 +1,7 @@
 //! Create and edit a saved connection. The password never enters the JSON file.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
@@ -23,6 +24,7 @@ pub struct ConnectionForm {
     existing_id: Option<String>,
     engine: Engine,
     tls_mode: TlsMode,
+    record_history: bool,
     warning: Option<String>,
     error: Option<String>,
     name: Entity<InputState>,
@@ -63,6 +65,7 @@ impl ConnectionForm {
             existing_id: existing.map(|item| item.id),
             engine,
             tls_mode: seed.tls.mode,
+            record_history: seed.record_history,
             warning,
             error: None,
             name: cx.new(|cx| {
@@ -165,6 +168,7 @@ impl ConnectionForm {
         connection.username = Self::value(&self.username, cx).trim().to_string();
         connection.database = Self::value(&self.database, cx).trim().to_string();
         connection.file_path = Self::value(&self.file_path, cx).trim().to_string();
+        connection.record_history = self.record_history;
         let port_text = Self::value(&self.port, cx).trim().to_string();
         if self.engine == Engine::Sqlite {
             connection.port = 0;
@@ -273,6 +277,27 @@ impl Render for ConnectionForm {
                         .mask_toggle(),
                 )
             })
+            .child({
+                let this = this.clone();
+                let checked = self.record_history;
+                Checkbox::new("record-history")
+                    .label("Record query history")
+                    .checked(checked)
+                    .on_click(move |value, _, cx| {
+                        this.update(cx, |form, cx| {
+                            form.record_history = *value;
+                            cx.notify();
+                        });
+                    })
+            })
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "Stores SQL you run on this connection in history.sqlite on this computer.",
+                    ),
+            )
             .child(
                 div()
                     .text_xs()

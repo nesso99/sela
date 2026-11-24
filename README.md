@@ -31,6 +31,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Read-only Structure view | Done |
 | Tabs (open / close / switch / restore) | Done |
 | Filter bar + column sort (table tabs) | Done |
+| Query history (FTS, per-connection scope) | Done (M1-5) |
 | Inline edit, safe mode, SSH, export | Planned — [roadmap](docs/design/roadmap.md) |
 
 ## Documentation
@@ -41,6 +42,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Connecting | [docs/user/connecting.md](docs/user/connecting.md) |
 | Keyboard shortcuts | [docs/user/keyboard-shortcuts.md](docs/user/keyboard-shortcuts.md) |
 | Filtering & sorting | [docs/user/filtering.md](docs/user/filtering.md) |
+| Query history | [docs/user/query-history.md](docs/user/query-history.md) |
 | FAQ | [docs/user/faq.md](docs/user/faq.md) |
 | Architecture | [docs/dev/architecture.md](docs/dev/architecture.md) |
 | Building & testing | [docs/dev/building-and-testing.md](docs/dev/building-and-testing.md) |

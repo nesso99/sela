@@ -4,10 +4,12 @@
 //! It never stores a password. Passwords go to the OS keychain when that
 //! service is available, and otherwise stay in process memory for the session.
 
+mod history;
 mod secrets;
 mod store;
 mod tabs;
 
+pub use history::{HistoryOpen, HistoryStore};
 pub use secrets::{
     CachingSecrets, KeyringStore, MemorySecretStore, PasswordPersistence, SecretStore,
 };

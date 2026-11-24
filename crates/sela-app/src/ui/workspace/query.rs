@@ -9,8 +9,9 @@ use gpui_kit::Context;
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    build_table_page, classify, exact_table_rows, is_safe_to_rerun_for_load_more, preview_table,
-    run_user_sql, DatabaseSession, DbError, FilterCondition, RowCountKind, SortSpec, SqlError,
+    build_table_page, classify, exact_table_rows, history_rows_label_affected,
+    history_rows_label_for_rows, is_safe_to_rerun_for_load_more, preview_table, run_user_sql,
+    DatabaseSession, DbError, FilterCondition, HistoryOutcome, RowCountKind, SortSpec, SqlError,
     StatementKind, StatementOutcome, StreamBatch, TabId, TablePreview, DEFAULT_SQL_ROW_CAP,
     PAGE_SIZE, STREAM_BATCH_SIZE,
 };
@@ -140,7 +141,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn begin_sql_run(&mut self, tab_id: TabId, statements: Vec<String>, cx: &mut Context<Self>) {
+    pub(super) fn begin_sql_run(
+        &mut self,
+        tab_id: TabId,
+        statements: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(view) = self.view_mut(tab_id) {
             view.result_snapshots.clear();
             view.sql_run_queue = statements;
@@ -155,6 +161,7 @@ impl Workspace {
             view.page_offset = 0;
             view.sql_row_cap = DEFAULT_SQL_ROW_CAP;
             view.truncated = false;
+            view.history_should_record = false;
         }
         self.clear_sql_error_decorations(tab_id, cx);
         self.persist_tabs(cx);
@@ -169,11 +176,13 @@ impl Workspace {
             let Some(sql) = view.sql_run_queue.first().cloned() else {
                 view.sql_running_statement_index = None;
                 view.busy = false;
+                view.history_should_record = false;
                 return;
             };
             view.sql_run_statement_index = view.sql_run_base_index + 1;
             view.sql_running_statement_index = Some(view.sql_run_base_index);
             view.source = GridSource::Sql(sql);
+            view.history_should_record = true;
             true
         };
         if has_next {
@@ -951,23 +960,45 @@ impl Workspace {
 
     fn apply_cancelled(&mut self, tab_id: TabId, err: DbError, cx: &mut Context<Self>) {
         self.clear_run_queue(tab_id);
-        let Some(view) = self.view_mut(tab_id) else {
-            return;
+        let (sql, should_record, rows_label) = {
+            let Some(view) = self.view_mut(tab_id) else {
+                return;
+            };
+            let rows = view.grid.read(cx).delegate().result.total_rows();
+            view.page_len = rows;
+            view.total_rows = Some(rows as u64);
+            view.error = None;
+            let ms = view
+                .query_started
+                .map(|t| t.elapsed().as_millis())
+                .unwrap_or(0);
+            view.status = format!("Cancelled · {rows} rows · {ms} ms · {err}");
+            view.note = Some("Query cancelled".into());
+            view.grid.update(cx, |state, cx| {
+                state.delegate_mut().loading = false;
+                state.refresh(cx);
+            });
+            let sql = match &view.source {
+                GridSource::Sql(sql) => Some(sql.clone()),
+                _ => None,
+            };
+            let should_record = view.history_should_record;
+            view.history_should_record = false;
+            let rows_label = format!("{rows} rows");
+            (sql, should_record, rows_label)
         };
-        let rows = view.grid.read(cx).delegate().result.total_rows();
-        view.page_len = rows;
-        view.total_rows = Some(rows as u64);
-        view.error = None;
-        let ms = view
-            .query_started
-            .map(|t| t.elapsed().as_millis())
-            .unwrap_or(0);
-        view.status = format!("Cancelled · {rows} rows · {ms} ms · {err}");
-        view.note = Some("Query cancelled".into());
-        view.grid.update(cx, |state, cx| {
-            state.delegate_mut().loading = false;
-            state.refresh(cx);
-        });
+        if should_record {
+            if let Some(sql) = sql {
+                self.record_finished_sql(
+                    tab_id,
+                    &sql,
+                    HistoryOutcome::Cancelled,
+                    rows_label,
+                    String::new(),
+                    cx,
+                );
+            }
+        }
         cx.notify();
     }
 
@@ -1000,6 +1031,7 @@ impl Workspace {
             Err(err) => Some(Err(err.clone())),
             Ok(_) => Some(Ok(())),
         };
+        self.maybe_record_history_from_outcome(tab_id, &result, cx);
         match result {
             Ok(Some(StatementOutcome::Rows(rows))) => {
                 let page_offset = self
@@ -1114,6 +1146,50 @@ impl Workspace {
             self.maybe_finish_sql_batch(tab_id, &outcome, cx);
         }
         cx.notify();
+    }
+
+    fn maybe_record_history_from_outcome(
+        &mut self,
+        tab_id: TabId,
+        result: &Result<Option<StatementOutcome>, DbError>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.views.get(&tab_id) else {
+            return;
+        };
+        if !view.history_should_record {
+            return;
+        }
+        let GridSource::Sql(sql) = view.source.clone() else {
+            return;
+        };
+        let (outcome, rows_label, error_message) = match result {
+            Ok(Some(StatementOutcome::Rows(rows))) => (
+                HistoryOutcome::Success,
+                history_rows_label_for_rows(
+                    rows.row_count_kind,
+                    rows.total_rows,
+                    rows.page.rows.len(),
+                    rows.truncated,
+                ),
+                String::new(),
+            ),
+            Ok(Some(StatementOutcome::Executed(executed))) => (
+                HistoryOutcome::Success,
+                history_rows_label_affected(executed.rows_affected),
+                String::new(),
+            ),
+            Ok(None) => return,
+            Err(DbError::Cancelled { .. }) => {
+                // apply_cancelled records cancelled rows.
+                return;
+            }
+            Err(err) => (HistoryOutcome::Error, String::new(), err.to_string()),
+        };
+        if let Some(view) = self.view_mut(tab_id) {
+            view.history_should_record = false;
+        }
+        self.record_finished_sql(tab_id, &sql, outcome, rows_label, error_message, cx);
     }
 
     pub(super) fn step_page(&mut self, delta: i64, cx: &mut Context<Self>) {

@@ -81,6 +81,10 @@ impl TlsSettings {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// A connection Sela can reopen. The password is not part of this value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SavedConnection {
@@ -100,6 +104,9 @@ pub struct SavedConnection {
     /// TLS options for Postgres/MySQL. Defaults when absent (v1 files load fine).
     #[serde(default, skip_serializing_if = "TlsSettings::is_default")]
     pub tls: TlsSettings,
+    /// When false, editor runs on this connection are not written to history.
+    #[serde(default = "default_true")]
+    pub record_history: bool,
 }
 
 impl<'de> Deserialize<'de> for SavedConnection {
@@ -125,6 +132,9 @@ impl<'de> Deserialize<'de> for SavedConnection {
             /// Legacy v1 boolean. Used only when `tls` is absent.
             #[serde(default)]
             ssl: Option<bool>,
+            /// Missing field means record (M1-5). No schema_version bump.
+            #[serde(default = "default_true")]
+            record_history: bool,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -142,6 +152,7 @@ impl<'de> Deserialize<'de> for SavedConnection {
             database: raw.database,
             file_path: raw.file_path,
             tls,
+            record_history: raw.record_history,
         })
     }
 }
@@ -168,6 +179,7 @@ impl SavedConnection {
             database: String::new(),
             file_path: String::new(),
             tls,
+            record_history: true,
         }
     }
 
@@ -254,6 +266,22 @@ mod tests {
         let conn: SavedConnection = serde_json::from_str(raw).unwrap();
         assert_eq!(conn.tls.mode, TlsMode::Disable);
         assert!(conn.tls.ca_path.is_empty());
+        assert!(conn.record_history);
+    }
+
+    #[test]
+    fn record_history_false_round_trips() {
+        let raw = r#"{
+            "id": "c1",
+            "name": "Quiet",
+            "engine": "sqlite",
+            "file_path": "/tmp/a.sqlite",
+            "record_history": false
+        }"#;
+        let conn: SavedConnection = serde_json::from_str(raw).unwrap();
+        assert!(!conn.record_history);
+        let text = serde_json::to_string(&conn).unwrap();
+        assert!(text.contains("\"record_history\":false"));
     }
 
     #[test]

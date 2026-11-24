@@ -29,6 +29,11 @@ pub enum ConfigError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error("could not open query history at {path}: {source}")]
+    History {
+        path: PathBuf,
+        source: rusqlite::Error,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
