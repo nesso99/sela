@@ -7,7 +7,7 @@ Download the asset for your platform from the [GitHub Releases](https://github.c
 | Platform | Asset | Notes |
 | --- | --- | --- |
 | Linux x86_64 | `sela-*-linux-x86_64.tar.gz` or `Sela-*-x86_64.AppImage` | AppImage is self-contained enough to run without installing; still needs system GPU/Vulkan (below). |
-| macOS (Apple Silicon + Intel) | `sela-*-macos-universal.dmg` or `.zip` | Universal binary. **Unsigned** for v0.1.0. |
+| macOS arm64 (Apple Silicon) | `sela-*-macos-arm64.dmg` or `.zip` | arm64 only for v0.1.0 (Intel/universal deferred). **Unsigned**. |
 | Windows x86_64 | `sela-*-windows-x86_64.zip` | Contains `sela.exe`. **Unsigned** for v0.1.0. |
 
 ### Linux
