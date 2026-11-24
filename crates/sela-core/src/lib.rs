@@ -21,8 +21,8 @@ pub use filter::{
     bool_filter_menu_index, bool_filter_menu_value, build_table_count, build_table_page,
     build_table_select, display_bound_sql, escape_like, escape_like_meta, filter_drafts_are_empty,
     format_predicate_preview, insert_filter_draft_after, parse_filter_value, remove_filter_draft,
-    validate_filter_condition, BoundSql, FilterCondition, FilterDraft, FilterOp, SortDirection,
-    SortSpec, BOOL_FILTER_VALUES, LIKE_ESCAPE,
+    should_remove_filter_row_on_backspace, validate_filter_condition, BoundSql, FilterCondition,
+    FilterDraft, FilterOp, SortDirection, SortSpec, BOOL_FILTER_VALUES, LIKE_ESCAPE,
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
 pub use session::{
@@ -30,8 +30,10 @@ pub use session::{
     DatabaseSession, LoadedSchema, TablePreview,
 };
 pub use sql::{
-    classify, first_keyword, is_safe_to_rerun_for_load_more, normalize_sql, qualify, quote_ident,
-    select_all, split_statements, strip_comments, wrap_count, wrap_page, SqlError, StatementKind,
+    classify, first_keyword, is_safe_to_rerun_for_load_more, line_col_to_byte_range, normalize_sql,
+    parse_postgres_error_position, qualify, quote_ident, select_all, split_statements,
+    statement_index_at, strip_comments, wrap_count, wrap_page, SqlError, SqlStatement,
+    StatementKind,
 };
 pub use structure::{ColumnStructure, ForeignKeyInfo, IndexInfo, TableStructure};
 pub use tabs::{PersistedTab, PersistedTabs, Tab, TabId, TabKind, TabList};

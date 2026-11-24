@@ -1,7 +1,7 @@
 //! Filter bar UI for table Data tabs (M1-3 / US-04).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Escape, Input, InputState};
+use gpui_kit::component::input::{DeleteToBeginningOfLine, Enter, Escape, Input, InputState};
 use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, IndexPath, Sizable as _};
@@ -12,8 +12,8 @@ use gpui_kit::{
 
 use sela_core::{
     bool_filter_menu_index, filter_drafts_are_empty, format_predicate_preview,
-    validate_filter_condition, ColumnKind, FilterCondition, FilterDraft, FilterOp, SortDirection,
-    SortSpec, BOOL_FILTER_VALUES, MAX_SORT_KEYS,
+    should_remove_filter_row_on_backspace, validate_filter_condition, ColumnKind, FilterCondition,
+    FilterDraft, FilterOp, SortDirection, SortSpec, BOOL_FILTER_VALUES, MAX_SORT_KEYS,
 };
 
 use super::{EscapeFilterBar, InsertFilterRow, RemoveFilterRow, Workspace};
@@ -210,15 +210,44 @@ impl Workspace {
     }
 
     /// Remove the focused filter row (`secondary-backspace`).
+    ///
+    /// Returns `true` when the row was removed (or the sole row cleared).
+    /// Returns `false` when focus is in a non-empty column/value text field so
+    /// the caller can dispatch delete-to-line-start (macOS ⌘⌫) instead.
     pub(super) fn remove_focused_filter_row(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(index) = self.focused_filter_row_index(window, cx) else {
-            return;
+            return false;
         };
+        let focused_text = self.focused_filter_text_input(window, cx);
+        if !should_remove_filter_row_on_backspace(focused_text.as_deref()) {
+            return false;
+        }
         self.remove_filter_row(index, window, cx);
+        true
+    }
+
+    /// Contents of the focused column/value text field, if either has focus.
+    ///
+    /// `None` when focus is on the bool Select or elsewhere on the row (not a
+    /// text input). Bool Select is not a text field, so backspace removes.
+    fn focused_filter_text_input(&self, window: &Window, cx: &gpui_kit::App) -> Option<String> {
+        let view = self.active_view()?;
+        if !view.filter_bar_open {
+            return None;
+        }
+        for row in &view.filter_rows {
+            if row.column.read(cx).focus_handle(cx).is_focused(window) {
+                return Some(row.column.read(cx).value().to_string());
+            }
+            if row.value.read(cx).focus_handle(cx).is_focused(window) {
+                return Some(row.value.read(cx).value().to_string());
+            }
+        }
+        None
     }
 
     /// Escape: leave the bar (and hide it when the draft is unused).
@@ -503,9 +532,14 @@ impl Workspace {
             .on_action({
                 let this = this.clone();
                 move |_: &RemoveFilterRow, window, cx| {
-                    this.update(cx, |workspace, cx| {
+                    let removed = this.update(cx, |workspace, cx| {
                         workspace.remove_focused_filter_row(window, cx)
                     });
+                    if !removed {
+                        // Non-empty text field: restore delete-to-line-start
+                        // (FilterBar > Input overrides the Input binding).
+                        window.dispatch_action(Box::new(DeleteToBeginningOfLine), cx);
+                    }
                 }
             })
             .on_action({

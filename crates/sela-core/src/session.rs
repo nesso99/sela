@@ -77,7 +77,8 @@ pub async fn run_user_sql(
     cancel: CancellationToken,
 ) -> Result<StatementOutcome, DbError> {
     let started = Instant::now();
-    let sql = sql::normalize_sql(sql).map_err(|err| DbError::query(err.to_string()))?;
+    let sql = sql::normalize_sql(sql, session.dialect())
+        .map_err(|err| DbError::query(err.to_string()))?;
     match sql::classify(&sql) {
         StatementKind::Execute => {
             if cancel.is_cancelled() {

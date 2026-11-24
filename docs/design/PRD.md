@@ -118,7 +118,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | US-05 | I edit data on the grid | Double-click or Enter to edit; edited cells highlighted; insert/delete/duplicate rows; Cmd+S commits in one transaction; Esc / Cmd+Shift+Z discard; no PK → read-only with reason | Not started |
 | US-06 | I preview SQL before commit | Preview lists exact statements with bound values; commit failure rolls back and keeps pending changes | Not started |
 | US-07 | As on-call, I do not accidentally break production | Safe mode Off / Confirm writes / Read-only; UPDATE/DELETE without WHERE always warns; connection color + name on toolbar | Not started |
-| US-08 | I write SQL quickly | Syntax highlight; autocomplete keywords, schema, table, columns (after `alias.`); Cmd+Enter runs statement at cursor or selection; multi-statement file | Partial (single statement Textarea) |
+| US-08 | I write SQL quickly | Syntax highlight; autocomplete keywords, schema, table, columns (after `alias.`); Cmd+Enter runs statement at cursor or selection; multi-statement file | Partial (editor + multi-run; no autocomplete / no SQL grammar yet) |
 | US-09 | I cancel a long-running query | Stop button and Cmd+.; server receives cancel within ~1 s; UI never freezes | Done (M1-2b) |
 | US-10 | I find a past query | History stores SQL, connection, time, rows, duration; full-text search; reopen in a new tab | Not started |
 | US-11 | I inspect table structure | Structure tab: columns (type, nullable, default, comment), indexes, FKs, full DDL; Data/Structure shortcut | Done (M1-6) |

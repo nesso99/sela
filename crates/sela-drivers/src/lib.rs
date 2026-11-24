@@ -26,9 +26,19 @@ pub use tokio_util::sync::CancellationToken;
 
 /// Build a sqlx query from a dynamically constructed SQL string.
 ///
-/// Callers must already have audited the string: identifiers are quoted via
-/// `sela_core`, and user values go through bind parameters — never string
-/// interpolation. Required by sqlx 0.9's [`sqlx::SqlSafeStr`] gate.
+/// # Invariant
+///
+/// [`sqlx::AssertSqlSafe`] marks the string as trusted for sqlx 0.9's
+/// [`sqlx::SqlSafeStr`] gate. Callers may pass only:
+///
+/// 1. SQL the user typed in the editor, or
+/// 2. Output of the `sela-core` builders (`quote_ident`, `qualify`,
+///    `select_all`, `wrap_page`, `wrap_count`, filter/sort builders), with
+///    identifiers passed through [`sela_core::quote_ident`] and values bound
+///    as parameters — never `format!`-interpolated into the SQL text.
+///
+/// Do not wrap arbitrary `format!` strings that embed unquoted identifiers or
+/// user values.
 #[inline]
 pub(crate) fn query<'q, DB: sqlx::Database>(
     sql: &str,
@@ -37,6 +47,9 @@ pub(crate) fn query<'q, DB: sqlx::Database>(
 }
 
 /// Convert dynamic SQL into a [`sqlx::SqlStr`] for `Executor::describe`.
+///
+/// Same invariant as [`query`]: user-typed SQL or `sela-core` builder output
+/// with quoted identifiers and bound parameters only.
 #[inline]
 pub(crate) fn sql_str(sql: &str) -> sqlx::SqlStr {
     use sqlx::SqlSafeStr;
@@ -93,10 +106,10 @@ pub async fn create_sample_database(path: &std::path::Path) -> Result<(), DbErro
         })?;
     }
     let session = SqliteSession::open(path, true).await?;
-    for statement in sela_core::split_statements(sqlite::SAMPLE_SQL)
+    for statement in sela_core::split_statements(sqlite::SAMPLE_SQL, sela_core::Dialect::Sqlite)
         .map_err(|err| DbError::query(err.to_string()))?
     {
-        session.execute(&statement).await?;
+        session.execute(&statement.text).await?;
     }
     Ok(())
 }

@@ -32,7 +32,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | 3 | M1-1 | Tabs | US-03 | Done (#12) |
 | 4 | M1-6 | Structure view | US-11 on 3 engines | Done (#11) |
 | 5 | M1-3 | Filter and sort | US-04. UX review: [ux/02-filter-sort-review.md](./ux/02-filter-sort-review.md) | This PR |
-| 6 | M1-4 | Editor (highlight, statement-at-cursor, multi-statement) | US-08 minus autocomplete. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Backlog |
+| 6 | M1-4 | Editor (highlight, statement-at-cursor, multi-statement) | US-08 minus autocomplete. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md) | Done (no tree-sitter SQL grammar; no autocomplete) |
 | 7 | M1-5 | History | US-10 | Backlog |
 | 8 | M1-7 | Selection, copy, themes | US-14 + light/dark | Backlog |
 | 9 | M1-8 | TLS + config v2 | TLS modes; `schema_version` → 2 with **no migration code**; Postgres TLS CI | Done (#15) |
@@ -70,6 +70,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 - Optional OR combine / raw-WHERE mode for filters
 - Remaining Postgres `<TYPE>` placeholders (tsquery, polygon, composites, …)
 - TLS client-key passphrase. rustls needs an unencrypted PEM today. A passphrase, if added later, goes to the OS keychain and never into `connections.json`.
+- **M1-7:** Keyboard and accessibility pass on the SQL result strip (Prev/Next and tab order so the strip is a proper focus target, not only clickable buttons).
 
 ---
 
@@ -90,7 +91,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | ID | Work | Done when |
 | --- | --- | --- |
 | M3-1 | SSH tunnel (russh): password, key + passphrase, agent, `~/.ssh/config`, known_hosts | US-02; openssh container test |
-| M3-2 | Schema + alias autocomplete | US-08 complete |
+| M3-2 | Schema + alias autocomplete; optional MIT tree-sitter SQL grammar for muted keyword/comment highlight | US-08 complete |
 | M3-3 | Export CSV/JSON/SQL with background progress; CSV import | US-12 |
 | M3-4 | Command palette + quick open table | Every primary action reachable from palette |
 

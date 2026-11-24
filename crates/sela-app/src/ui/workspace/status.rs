@@ -19,6 +19,9 @@ impl Workspace {
             .unwrap_or_else(|| "No table open".into());
         let connected = self.session.is_some();
         let busy = view.map(|v| v.busy).unwrap_or(false);
+        let truncated = view.map(|v| v.truncated).unwrap_or(false);
+        let can_load_more = view.map(|v| v.can_load_more).unwrap_or(false);
+        let is_sql = view.is_some_and(|v| matches!(v.source, super::GridSource::Sql(_)));
         let show_count = view.is_some_and(|v| {
             matches!(v.source, super::GridSource::Table { .. })
                 && matches!(
@@ -48,7 +51,20 @@ impl Workspace {
                     .gap_2()
                     .items_center()
                     .child(status)
+                    .when(truncated && can_load_more && is_sql && !busy, |row| {
+                        let this = this.clone();
+                        row.child({
+                            Button::new("load-more")
+                                .xsmall()
+                                .label("Load more")
+                                .disabled(!connected)
+                                .on_click(move |_, _, cx| {
+                                    this.update(cx, |workspace, cx| workspace.load_more(cx));
+                                })
+                        })
+                    })
                     .when(show_count, |row| {
+                        let this = this.clone();
                         row.child({
                             Button::new("status-count")
                                 .xsmall()

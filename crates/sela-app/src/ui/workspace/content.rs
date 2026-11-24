@@ -3,7 +3,7 @@
 //! Tab chrome lives in `tabs.rs`. Structure pane UI (M1-6) is per active tab.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::Textarea;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::table::DataTable;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
@@ -164,6 +164,8 @@ impl Workspace {
 
     pub(super) fn error_banner(&self, cx: &Context<Self>, error: String) -> impl IntoElement {
         div()
+            .max_h(px(60.))
+            .overflow_y_scrollbar()
             .px_3()
             .py_2()
             .text_sm()
@@ -180,81 +182,6 @@ impl Workspace {
             .overflow_hidden()
             .when_some(grid, |area, grid| {
                 area.child(DataTable::new(&grid).stripe(true).bordered(true))
-            })
-    }
-
-    pub(super) fn sql_editor(&self, cx: &Context<Self>, connected: bool) -> impl IntoElement {
-        let this = cx.entity();
-        let view = self.active_view();
-        let busy = view.map(|v| v.busy).unwrap_or(false);
-        let truncated = view.map(|v| v.truncated).unwrap_or(false);
-        let can_load_more = view.map(|v| v.can_load_more).unwrap_or(false);
-        let sql = view.map(|v| v.sql.clone());
-
-        v_flex()
-            .h(px(176.))
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .px_3()
-                    .h(px(28.))
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("SQL"),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child({
-                                let this = this.clone();
-                                Button::new("run-query")
-                                    .small()
-                                    .primary()
-                                    .label(if busy { "Running…" } else { "Run" })
-                                    .disabled(busy || !connected || sql.is_none())
-                                    .tooltip("Run the statement (Ctrl+Enter / ⌘+Enter)")
-                                    .on_click(move |_, _, cx| {
-                                        this.update(cx, |workspace, cx| workspace.run_editor(cx));
-                                    })
-                            })
-                            .child({
-                                let this = this.clone();
-                                Button::new("stop-query")
-                                    .small()
-                                    .label("Stop")
-                                    .disabled(!busy || !connected)
-                                    .tooltip("Cancel the running query (Ctrl+. / ⌘+.)")
-                                    .on_click(move |_, _, cx| {
-                                        this.update(cx, |workspace, cx| workspace.stop_query(cx));
-                                    })
-                            })
-                            .when(truncated && can_load_more && !busy, |row| {
-                                let this = this.clone();
-                                row.child(
-                                    Button::new("load-more")
-                                        .small()
-                                        .label("Load more")
-                                        .disabled(!connected)
-                                        .on_click(move |_, _, cx| {
-                                            this.update(cx, |workspace, cx| {
-                                                workspace.load_more(cx)
-                                            });
-                                        }),
-                                )
-                            }),
-                    ),
-            )
-            .when_some(sql, |column, sql| {
-                column.child(
-                    div().flex_1().px_2().pb_2().child(
-                        Textarea::new(&sql).font_family(cx.theme().mono_font_family.clone()),
-                    ),
-                )
             })
     }
 }

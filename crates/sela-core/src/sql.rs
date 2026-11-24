@@ -1,7 +1,9 @@
 //! Identifier quoting, statement splitting, and paging SQL.
 //!
 //! Sela generates these strings. User SQL is passed through after it has been
-//! checked for a single statement.
+//! checked for a single statement (or split for multi-statement runs).
+
+use std::ops::Range;
 
 use crate::types::Dialect;
 
@@ -11,10 +13,31 @@ pub enum SqlError {
     Empty,
     #[error("run one statement at a time")]
     Multiple,
+    /// A quote was still open at end of input. `offset` is the byte index of
+    /// the opening quote in the original buffer.
+    #[error("Unclosed quote")]
+    UnclosedQuote { offset: usize },
     #[error("identifier is empty")]
     EmptyIdent,
     #[error("identifier contains a null byte")]
     NullByte,
+}
+
+/// One statement from [`split_statements`], with its span in the original buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlStatement {
+    /// Trimmed statement text without a trailing semicolon.
+    pub text: String,
+    /// Byte range in the original buffer covering this statement’s region:
+    /// from after the previous semicolon (or buffer start) through the last
+    /// non-semicolon character of this statement (before a trailing `;`).
+    pub range: Range<usize>,
+}
+
+impl SqlStatement {
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
 }
 
 pub fn quote_ident(dialect: Dialect, ident: &str) -> Result<String, SqlError> {
@@ -212,100 +235,253 @@ pub fn first_keyword(sql: &str) -> Option<String> {
 }
 
 /// Validate that `sql` holds one statement and return it without the trailing semicolon.
-pub fn normalize_sql(sql: &str) -> Result<String, SqlError> {
-    let statements = split_statements(sql)?;
+pub fn normalize_sql(sql: &str, dialect: Dialect) -> Result<String, SqlError> {
+    let statements = split_statements(sql, dialect)?;
     let statement = statements.first().ok_or(SqlError::Empty)?;
     if statements.len() != 1 {
         return Err(SqlError::Multiple);
     }
-    Ok(statement.clone())
+    Ok(statement.text.clone())
+}
+
+/// Index of the statement that [`secondary-enter`](crate) would run at `offset`.
+///
+/// The caret belongs to a statement when it sits inside that statement’s
+/// [`SqlStatement::range`], or in the whitespace and comments between the
+/// previous statement and this one. A caret in the leading comments belongs to
+/// the first statement. Returns `None` when `statements` is empty.
+pub fn statement_index_at(statements: &[SqlStatement], offset: usize) -> Option<usize> {
+    if statements.is_empty() {
+        return None;
+    }
+    for (ix, stmt) in statements.iter().enumerate() {
+        let region_end = statements
+            .get(ix + 1)
+            .map(|next| next.range.start)
+            .unwrap_or(usize::MAX);
+        if offset < region_end {
+            // Before this statement’s region ends (or into the gap before the next).
+            if offset >= stmt.range.start || ix == 0 {
+                return Some(ix);
+            }
+        }
+    }
+    Some(statements.len() - 1)
+}
+
+/// Quote / dollar-quote state while scanning for statement boundaries.
+enum OpenQuote {
+    /// `'`, `"`, or `` ` ``. `backslash_escapes` is true for MySQL `'...'`
+    /// and Postgres `E'...'` only.
+    Delim {
+        ch: u8,
+        open_at: usize,
+        backslash_escapes: bool,
+    },
+    /// Postgres `$tag$…$tag$` (tag may be empty). `delim` is the full opener
+    /// including both dollars (e.g. `$$` or `$body$`).
+    Dollar { open_at: usize, delim: Vec<u8> },
 }
 
 /// Split SQL into statements, ignoring semicolons inside quotes and comments.
-pub fn split_statements(sql: &str) -> Result<Vec<String>, SqlError> {
+///
+/// Behavior depends on `dialect`:
+/// - **Postgres:** `$tag$…$tag$` dollar quotes (tag cannot start with a digit,
+///   so `$1` is a placeholder, not a quote). Backslash escapes only inside
+///   `E'…'` / `e'…'` strings (`standard_conforming_strings`).
+/// - **MySQL:** `\'` inside `'…'` is an escape (kept).
+/// - **SQLite:** no backslash escapes inside strings.
+///
+/// Block comments are **not** nested: the first `*/` closes the comment. See
+/// the unit test that documents this.
+///
+/// Each item carries the trimmed statement text and its byte range in `sql`.
+/// An unclosed quote (including dollar quote) yields [`SqlError::UnclosedQuote`]
+/// with the opening offset.
+pub fn split_statements(sql: &str, dialect: Dialect) -> Result<Vec<SqlStatement>, SqlError> {
+    let bytes = sql.as_bytes();
     let mut statements = Vec::new();
-    let mut current = String::new();
-    let chars: Vec<char> = sql.chars().collect();
-    let mut i = 0;
-    let mut quote: Option<char> = None;
-    while i < chars.len() {
-        let ch = chars[i];
-        if let Some(q) = quote {
-            current.push(ch);
-            if ch == q {
-                if q != '\'' && q != '"' && q != '`' {
-                    quote = None;
-                } else if i + 1 < chars.len() && chars[i + 1] == q {
-                    current.push(chars[i + 1]);
+    let mut region_start = 0usize;
+    let mut i = 0usize;
+    let mut quote: Option<OpenQuote> = None;
+
+    while i < bytes.len() {
+        let delim_state = match &quote {
+            Some(OpenQuote::Delim {
+                ch,
+                backslash_escapes,
+                ..
+            }) => Some((*ch, *backslash_escapes)),
+            _ => None,
+        };
+        if let Some((q, escapes)) = delim_state {
+            let cur = bytes[i];
+            if cur == q {
+                if i + 1 < bytes.len() && bytes[i + 1] == q {
+                    // Doubled quote → literal quote character.
                     i += 2;
                     continue;
-                } else {
-                    quote = None;
                 }
-            } else if q == '\'' && ch == '\\' && i + 1 < chars.len() {
-                current.push(chars[i + 1]);
+                quote = None;
+                i += 1;
+                continue;
+            }
+            if escapes && q == b'\'' && cur == b'\\' && i + 1 < bytes.len() {
                 i += 2;
                 continue;
             }
             i += 1;
             continue;
         }
+        let dollar_close = match &quote {
+            Some(OpenQuote::Dollar { delim, .. }) => {
+                if bytes[i..].starts_with(delim.as_slice()) {
+                    Some(delim.len())
+                } else {
+                    Some(0)
+                }
+            }
+            _ => None,
+        };
+        if let Some(len) = dollar_close {
+            if len > 0 {
+                quote = None;
+                i += len;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
 
-        if ch == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
-            current.push(ch);
-            current.push(chars[i + 1]);
+        let ch = bytes[i];
+        if ch == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'-' {
             i += 2;
-            while i < chars.len() && chars[i] != '\n' {
-                current.push(chars[i]);
+            while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
             continue;
         }
-        if ch == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            current.push(ch);
-            current.push(chars[i + 1]);
+        if ch == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            // Non-nested: first `*/` ends the comment.
             i += 2;
-            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                current.push(chars[i]);
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
                 i += 1;
             }
-            if i + 1 < chars.len() {
-                current.push(chars[i]);
-                current.push(chars[i + 1]);
-                i += 2;
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if dialect == Dialect::Postgres {
+            if let Some(delim) = try_parse_dollar_quote_opener(bytes, i) {
+                let len = delim.len();
+                quote = Some(OpenQuote::Dollar { open_at: i, delim });
+                i += len;
+                continue;
             }
-            continue;
         }
-        if ch == '\'' || ch == '"' || ch == '`' {
-            quote = Some(ch);
-            current.push(ch);
+        if ch == b'\'' || ch == b'"' || ch == b'`' {
+            let backslash_escapes = match (dialect, ch) {
+                (Dialect::Mysql, b'\'') => true,
+                (Dialect::Postgres, b'\'') => is_postgres_escape_string_prefix(bytes, i),
+                _ => false,
+            };
+            quote = Some(OpenQuote::Delim {
+                ch,
+                open_at: i,
+                backslash_escapes,
+            });
             i += 1;
             continue;
         }
-        if ch == ';' {
-            push_statement(&mut statements, &mut current);
+        if ch == b';' {
+            push_statement(sql, &mut statements, region_start, i)?;
             i += 1;
+            region_start = i;
             continue;
         }
-        current.push(ch);
         i += 1;
     }
-    if quote.is_some() {
-        return Err(SqlError::Multiple);
+
+    if let Some(open) = quote {
+        let open_at = match open {
+            OpenQuote::Delim { open_at, .. } | OpenQuote::Dollar { open_at, .. } => open_at,
+        };
+        return Err(SqlError::UnclosedQuote { offset: open_at });
     }
-    push_statement(&mut statements, &mut current);
+    push_statement(sql, &mut statements, region_start, sql.len())?;
     if statements.is_empty() {
         return Err(SqlError::Empty);
     }
     Ok(statements)
 }
 
-fn push_statement(statements: &mut Vec<String>, current: &mut String) {
-    let meaningful = strip_comments(current);
-    if !meaningful.trim().is_empty() {
-        statements.push(trim_statement(current));
+/// Postgres dollar-quote opener at `i`, or `None` when `$` starts a placeholder
+/// (`$1`) or is otherwise not a quote delimiter.
+fn try_parse_dollar_quote_opener(bytes: &[u8], i: usize) -> Option<Vec<u8>> {
+    if bytes.get(i) != Some(&b'$') {
+        return None;
     }
-    current.clear();
+    let mut j = i + 1;
+    // Empty tag (`$$`) is allowed. A non-empty tag must start with a letter or
+    // underscore — not a digit — so `$1` stays a bind placeholder.
+    if j < bytes.len() && bytes[j] != b'$' {
+        let first = bytes[j];
+        if !(first.is_ascii_alphabetic() || first == b'_') {
+            return None;
+        }
+        j += 1;
+        while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'$' {
+            return None;
+        }
+        j += 1;
+    } else if j < bytes.len() && bytes[j] == b'$' {
+        j += 1;
+    } else {
+        return None;
+    }
+    Some(bytes[i..j].to_vec())
+}
+
+/// True when the `'` at `i` is the start of a Postgres escape string (`E'…'`).
+fn is_postgres_escape_string_prefix(bytes: &[u8], i: usize) -> bool {
+    if i == 0 {
+        return false;
+    }
+    let prev = bytes[i - 1];
+    if prev != b'E' && prev != b'e' {
+        return false;
+    }
+    if i == 1 {
+        return true;
+    }
+    let before = bytes[i - 2];
+    // `E` must not continue an identifier (`SELECTE'…'`).
+    !(before.is_ascii_alphanumeric() || before == b'_')
+}
+
+fn push_statement(
+    sql: &str,
+    statements: &mut Vec<SqlStatement>,
+    region_start: usize,
+    region_end: usize,
+) -> Result<(), SqlError> {
+    let slice = &sql[region_start..region_end];
+    let meaningful = strip_comments(slice);
+    if meaningful.trim().is_empty() {
+        return Ok(());
+    }
+    let text = trim_statement(slice);
+    // Map trimmed text back into the original buffer for the tight range.
+    let trimmed_start = slice.find(&text).unwrap_or(0);
+    let start = region_start + trimmed_start;
+    let end = start + text.len();
+    statements.push(SqlStatement {
+        text,
+        range: start..end,
+    });
+    Ok(())
 }
 
 fn trim_statement(sql: &str) -> String {
@@ -356,6 +532,110 @@ pub fn strip_comments(sql: &str) -> String {
     out
 }
 
+/// Parse a Postgres-style `LINE n` position from an engine error message.
+///
+/// Returns `(line_1_based, optional_column_1_based)` when the message contains
+/// a `LINE n:` marker. Column is taken from a following caret (`^`) line when
+/// present, measured from the start of the SQL fragment after `LINE n: `.
+/// Returns `None` when no position can be parsed — callers must not guess a
+/// gutter line.
+pub fn parse_postgres_error_position(message: &str) -> Option<(usize, Option<usize>)> {
+    let mut line: Option<usize> = None;
+    let mut sql_column_origin: Option<usize> = None;
+    for raw in message.lines() {
+        let trimmed = raw.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("LINE ") {
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = digits.parse::<usize>() {
+                if n > 0 {
+                    line = Some(n);
+                    // Postgres aligns the caret under the fragment that follows
+                    // "LINE n: " on this same line (including the space after `:`).
+                    let prefix = format!("LINE {n}:");
+                    sql_column_origin = trimmed.find(&prefix).map(|at| {
+                        // Past "LINE n:" and the usual single space.
+                        at + prefix.len() + 1
+                    });
+                    continue;
+                }
+            }
+        }
+        if let Some(origin) = sql_column_origin.take() {
+            // Caret line keeps leading spaces so it lines up under LINE n: ….
+            if let Some(caret_at) = raw.find('^') {
+                let only_caret = raw
+                    .chars()
+                    .all(|c| c == ' ' || c == '\t' || c == '^' || c == '\r');
+                if only_caret && caret_at >= origin {
+                    let col = caret_at - origin + 1;
+                    return Some((line?, Some(col)));
+                }
+            }
+        }
+    }
+    line.map(|n| (n, None))
+}
+
+/// Convert a 1-based line (and optional 1-based column) into a byte range in `sql`.
+///
+/// When column is `None`, the range covers the whole line (excluding the newline).
+/// Returns `None` when the line is out of range.
+pub fn line_col_to_byte_range(
+    sql: &str,
+    line_1based: usize,
+    column_1based: Option<usize>,
+) -> Option<Range<usize>> {
+    if line_1based == 0 {
+        return None;
+    }
+    let mut start = 0usize;
+    let mut current = 1usize;
+    for (idx, ch) in sql.char_indices() {
+        if current == line_1based {
+            start = idx;
+            break;
+        }
+        if ch == '\n' {
+            current += 1;
+            start = idx + 1;
+        }
+    }
+    if current != line_1based {
+        return None;
+    }
+    let line_end = sql[start..]
+        .find('\n')
+        .map(|rel| start + rel)
+        .unwrap_or(sql.len());
+    if let Some(col) = column_1based {
+        if col == 0 {
+            return Some(start..line_end);
+        }
+        let mut byte = start;
+        for (col_ix, (idx, _)) in (1usize..).zip(sql[start..line_end].char_indices()) {
+            if col_ix == col {
+                byte = start + idx;
+                break;
+            }
+            byte = start + idx + sql[start + idx..].chars().next()?.len_utf8();
+        }
+        // Underline at least one character when possible.
+        let end = if byte < line_end {
+            let ch_len = sql[byte..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            (byte + ch_len).min(line_end)
+        } else {
+            line_end
+        };
+        Some(byte..end.max(byte))
+    } else {
+        Some(start..line_end)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,17 +661,66 @@ mod tests {
 
     #[test]
     fn normalize_rejects_empty_and_multiple_statements() {
-        assert_eq!(normalize_sql("   ").unwrap_err(), SqlError::Empty);
         assert_eq!(
-            normalize_sql("select 1; select 2").unwrap_err(),
+            normalize_sql("   ", Dialect::Sqlite).unwrap_err(),
+            SqlError::Empty
+        );
+        assert_eq!(
+            normalize_sql("select 1; select 2", Dialect::Sqlite).unwrap_err(),
             SqlError::Multiple
         );
-        assert_eq!(normalize_sql("select 'a;b'").unwrap(), "select 'a;b'");
-        assert_eq!(normalize_sql("select 1;").unwrap(), "select 1");
         assert_eq!(
-            normalize_sql("-- note\nselect 1").unwrap(),
+            normalize_sql("select 'a;b'", Dialect::Sqlite).unwrap(),
+            "select 'a;b'"
+        );
+        assert_eq!(
+            normalize_sql("select 1;", Dialect::Sqlite).unwrap(),
+            "select 1"
+        );
+        assert_eq!(
+            normalize_sql("-- note\nselect 1", Dialect::Sqlite).unwrap(),
             "-- note\nselect 1"
         );
+    }
+
+    #[test]
+    fn unclosed_quote_is_distinct_error() {
+        let err = split_statements("select 'oops", Dialect::Sqlite).unwrap_err();
+        match err {
+            SqlError::UnclosedQuote { offset } => {
+                assert_eq!(offset, "select ".len());
+            }
+            other => panic!("expected UnclosedQuote, got {other:?}"),
+        }
+        assert_eq!(
+            normalize_sql("select \"x", Dialect::Postgres).unwrap_err(),
+            SqlError::UnclosedQuote { offset: 7 }
+        );
+    }
+
+    #[test]
+    fn split_returns_byte_ranges() {
+        let sql = "select 1;  select 2";
+        let parts = split_statements(sql, Dialect::Sqlite).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].text, "select 1");
+        assert_eq!(&sql[parts[0].range.clone()], "select 1");
+        assert_eq!(parts[1].text, "select 2");
+        assert_eq!(&sql[parts[1].range.clone()], "select 2");
+    }
+
+    #[test]
+    fn statement_at_caret_uses_gaps_and_leading_comments() {
+        let sql = "-- lead\nselect 1;\n  -- mid\nselect 2";
+        let parts = split_statements(sql, Dialect::Sqlite).unwrap();
+        assert_eq!(parts.len(), 2);
+        // Caret in leading comment → first statement.
+        assert_eq!(statement_index_at(&parts, 0), Some(0));
+        assert_eq!(statement_index_at(&parts, parts[0].range.start), Some(0));
+        // Caret in the gap / mid comment before second → second.
+        let mid = sql.find("-- mid").unwrap();
+        assert_eq!(statement_index_at(&parts, mid), Some(1));
+        assert_eq!(statement_index_at(&parts, parts[1].range.end), Some(1));
     }
 
     #[test]
@@ -470,8 +799,109 @@ mod tests {
             INSERT INTO authors (id, name) VALUES (1, 'Ada; Lovelace');
             /* done */
         "#;
-        let parts = split_statements(sql).unwrap();
+        let parts = split_statements(sql, Dialect::Sqlite).unwrap();
         assert_eq!(parts.len(), 2);
-        assert!(parts[1].contains("Ada; Lovelace"));
+        assert!(parts[1].text.contains("Ada; Lovelace"));
+    }
+
+    #[test]
+    fn block_comments_are_not_nested() {
+        // Documented behavior: block comments are not nested. The first `*/`
+        // closes the comment, so the semicolon after it is a real splitter and
+        // `SELECT 2` is a second statement. The dangling `/* outer /* inner */`
+        // stays attached to the first statement’s text.
+        let sql = "SELECT 1 /* outer /* inner */ ; SELECT 2";
+        let parts = split_statements(sql, Dialect::Sqlite).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].text, "SELECT 1 /* outer /* inner */");
+        assert_eq!(parts[1].text, "SELECT 2");
+    }
+
+    #[test]
+    fn postgres_dollar_quotes_keep_inner_semicolons() {
+        let sql = "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql";
+        let parts = split_statements(sql, Dialect::Postgres).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].text.contains("RETURN 1;"));
+
+        let tagged = "SELECT $body$ hello $$ world; still body $body$; SELECT 2";
+        let parts = split_statements(tagged, Dialect::Postgres).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].text.contains("hello $$ world;"));
+        assert_eq!(parts[1].text, "SELECT 2");
+    }
+
+    #[test]
+    fn postgres_dollar_placeholders_are_not_quotes() {
+        let sql = "SELECT $1; SELECT $2";
+        let parts = split_statements(sql, Dialect::Postgres).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].text, "SELECT $1");
+        assert_eq!(parts[1].text, "SELECT $2");
+    }
+
+    #[test]
+    fn unclosed_dollar_quote_is_unclosed_quote() {
+        let err = split_statements("SELECT $$oops", Dialect::Postgres).unwrap_err();
+        match err {
+            SqlError::UnclosedQuote { offset } => {
+                assert_eq!(offset, "SELECT ".len());
+            }
+            other => panic!("expected UnclosedQuote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backslash_escape_differs_by_dialect() {
+        // Postgres standard strings: `\'` does not escape; the `'` closes and
+        // the semicolon splits (standard_conforming_strings).
+        let pg = "SELECT 'C:\\'; SELECT 2";
+        let parts = split_statements(pg, Dialect::Postgres).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].text, "SELECT 'C:\\'");
+        assert_eq!(parts[1].text, "SELECT 2");
+
+        // Postgres E-strings: `\'` escapes the quote, so the string stays open
+        // through the semicolon (needs a later closer).
+        let pg_e = "SELECT E'C:\\'; SELECT 2'";
+        let parts = split_statements(pg_e, Dialect::Postgres).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].text.starts_with("SELECT E'"));
+
+        // MySQL: `\'` escapes inside ordinary quotes, so the same shape as the
+        // PG standard case does not close at that quote (UnclosedQuote here).
+        assert!(matches!(
+            split_statements(pg, Dialect::Mysql).unwrap_err(),
+            SqlError::UnclosedQuote { .. }
+        ));
+        // And a properly closed escaped quote stays one statement until `;`.
+        let my = "SELECT 'a\\'b'; SELECT 2";
+        let parts = split_statements(my, Dialect::Mysql).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].text, "SELECT 'a\\'b'");
+
+        // SQLite: no backslash escapes → same split as Postgres standard.
+        let parts = split_statements(pg, Dialect::Sqlite).unwrap();
+        assert_eq!(parts.len(), 2);
+    }
+
+    #[test]
+    fn parse_postgres_line_and_caret() {
+        let msg = "ERROR:  syntax error at or near \"FORM\"\nLINE 1: SELECT * FORM books\n                 ^\n";
+        // Column is 1-based within the SQL fragment after "LINE 1: " (F of FORM).
+        assert_eq!(parse_postgres_error_position(msg), Some((1, Some(10))));
+
+        let line_only = "ERROR: something\nLINE 3: SELECT 1\nDETAIL: more";
+        assert_eq!(parse_postgres_error_position(line_only), Some((3, None)));
+
+        assert_eq!(parse_postgres_error_position("no position here"), None);
+    }
+
+    #[test]
+    fn line_col_maps_to_bytes() {
+        let sql = "select 1\nselect 2";
+        assert_eq!(line_col_to_byte_range(sql, 1, None), Some(0..8));
+        assert_eq!(line_col_to_byte_range(sql, 2, Some(1)), Some(9..10));
+        assert_eq!(line_col_to_byte_range(sql, 9, None), None);
     }
 }

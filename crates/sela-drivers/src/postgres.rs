@@ -1358,4 +1358,43 @@ mod tests {
 
         session.execute("DROP TABLE sela_filter").await.unwrap();
     }
+
+    /// Run-all path for a plpgsql body: dollar quotes must keep the inner `;`
+    /// so `split_statements` + sequential execute matches the SQL editor.
+    #[tokio::test]
+    async fn postgres_plpgsql_create_function_via_split_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres plpgsql: set SELA_POSTGRES_URL to run this test");
+            return;
+        };
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .expect("postgres connect");
+        let sql = "CREATE OR REPLACE FUNCTION sela_plpgsql_probe() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql; SELECT sela_plpgsql_probe()";
+        let parts = sela_core::split_statements(sql, sela_core::Dialect::Postgres)
+            .expect("dollar-quoted CREATE FUNCTION must be one statement before SELECT");
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].text.contains("RETURN 1;"));
+        for part in &parts {
+            run_user_sql(&session, &part.text, 10, CancellationToken::new())
+                .await
+                .unwrap_or_else(|err| panic!("run {:?}: {err}", part.text));
+        }
+        let queried = run_user_sql(
+            &session,
+            "SELECT sela_plpgsql_probe()",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = queried else {
+            panic!("expected rows");
+        };
+        assert_eq!(rows.page.rows[0][0], Value::Int(1));
+        session
+            .execute("DROP FUNCTION IF EXISTS sela_plpgsql_probe()")
+            .await
+            .unwrap();
+    }
 }
