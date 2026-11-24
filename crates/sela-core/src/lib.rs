@@ -21,8 +21,8 @@ pub use filter::{
     bool_filter_menu_index, bool_filter_menu_value, build_table_count, build_table_page,
     build_table_select, display_bound_sql, escape_like, escape_like_meta, filter_drafts_are_empty,
     format_predicate_preview, insert_filter_draft_after, parse_filter_value, remove_filter_draft,
-    validate_filter_condition, BoundSql, FilterCondition, FilterDraft, FilterOp, SortDirection,
-    SortSpec, BOOL_FILTER_VALUES, LIKE_ESCAPE,
+    should_remove_filter_row_on_backspace, validate_filter_condition, BoundSql, FilterCondition,
+    FilterDraft, FilterOp, SortDirection, SortSpec, BOOL_FILTER_VALUES, LIKE_ESCAPE,
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
 pub use session::{

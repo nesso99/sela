@@ -486,6 +486,22 @@ pub fn filter_drafts_are_empty(rows: &[FilterDraft]) -> bool {
     rows.is_empty() || rows.iter().all(FilterDraft::is_blank)
 }
 
+/// Whether `secondary-backspace` should remove (or clear) the focused filter row.
+///
+/// `focused_text_input` is `Some(contents)` when focus is in a column or value
+/// text field, or `None` when focus is on the row itself / the bool Select /
+/// another non-text control.
+///
+/// On macOS, ⌘⌫ means delete-to-line-start inside a text field. Return `false`
+/// when that field is non-empty so the input can handle the key. Return `true`
+/// when the focused text field is empty, or when focus is not in a text field.
+pub fn should_remove_filter_row_on_backspace(focused_text_input: Option<&str>) -> bool {
+    match focused_text_input {
+        None => true,
+        Some(text) => text.is_empty(),
+    }
+}
+
 /// Human-readable `WHERE … ORDER BY …` fragment for the status strip (placeholders only).
 pub fn format_predicate_preview(
     dialect: Dialect,
@@ -1058,5 +1074,16 @@ mod tests {
         assert_eq!(ix, 1);
         rows[0].column = "x".into();
         assert!(!filter_drafts_are_empty(&rows));
+    }
+
+    #[test]
+    fn secondary_backspace_defers_to_nonempty_text_input() {
+        // Focus not in a text field → remove the row.
+        assert!(should_remove_filter_row_on_backspace(None));
+        // Empty column/value field → remove the row.
+        assert!(should_remove_filter_row_on_backspace(Some("")));
+        // Non-empty text → leave it for delete-to-line-start (macOS ⌘⌫).
+        assert!(!should_remove_filter_row_on_backspace(Some("Ada")));
+        assert!(!should_remove_filter_row_on_backspace(Some(" ")));
     }
 }
