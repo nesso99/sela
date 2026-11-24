@@ -50,7 +50,10 @@ pub use sql::{
     StatementKind,
 };
 pub use structure::{ColumnStructure, ForeignKeyInfo, IndexInfo, TableStructure};
-pub use tabs::{PersistedTab, PersistedTabs, Tab, TabId, TabKind, TabList};
+pub use tabs::{
+    count_tabs_requiring_close_confirm, tab_requires_close_confirm, PersistedTab, PersistedTabs,
+    Tab, TabId, TabKind, TabList,
+};
 pub use types::{
     truncate_one_line, ColumnMeta, Dialect, Engine, ExecOutcome, Interval, QueryPage, RelationKind,
     RowCountKind, RowSet, SchemaInfo, StatementOutcome, StreamBatch, StreamOutcome, TableInfo,

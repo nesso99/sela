@@ -22,7 +22,7 @@ No unlocked Secret Service was available when you saved the connection. Sela kep
 
 ## Why can’t I keep tabs after Disconnect?
 
-Disconnect closes that connection’s tabs on purpose so a later connect cannot restore or show tables from the wrong database. Save any SQL you need before disconnecting, or leave the connection connected.
+Disconnect closes that connection’s tabs on purpose so a later connect cannot restore or show tables from the wrong database. If a tab has typed SQL or a query is still running, Sela asks first (*Close N tabs for …?*); Cancel keeps the session and tabs as they were. Save any SQL you need before confirming, or leave the connection connected.
 
 ## Can I cancel a long query?
 

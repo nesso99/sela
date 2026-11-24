@@ -18,9 +18,9 @@ If no secret service is available (common on headless Linux or minimal desktop s
 
 ## Switching and disconnecting
 
-Click another saved connection in the sidebar to switch. Sela cancels queries on the previous connection, closes that connection’s tabs, then connects the one you chose. **Edit** opens the connection you selected in the tree, not only the one that is currently connected.
+Click another saved connection in the sidebar to switch. Sela cancels queries on the previous connection, closes that connection’s tabs, then connects the one you chose. If a tab has typed SQL or a running query, Sela asks first; Cancel keeps the current session. **Edit** opens the connection you selected in the tree, not only the one that is currently connected.
 
-**Disconnect** cancels running queries for the active connection, closes its tabs, and drops the session. Tabs are not left open for a disconnected connection.
+**Disconnect** cancels running queries for the active connection, closes its tabs, and drops the session (with the same confirm when SQL would be lost). Tabs are not left open for a disconnected connection.
 
 ## TLS (PostgreSQL and MySQL)
 

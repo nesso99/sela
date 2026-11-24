@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{px, Context, SharedString, Window};
@@ -11,7 +13,9 @@ use sela_config::{
     keychain_unavailable_dialog_warning, memory_only_password_warning, PasswordPersistence,
     SavedConnection,
 };
-use sela_core::{DatabaseSession, DbError, Engine, LoadedSchema};
+use sela_core::{
+    count_tabs_requiring_close_confirm, DatabaseSession, DbError, Engine, LoadedSchema,
+};
 use sela_drivers::{connect, create_sample_database, load_catalog};
 
 use super::super::form::{ConnectionDraft, ConnectionForm, FormEvent};
@@ -27,6 +31,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.close_tabs_confirm_open {
+            return;
+        }
         if id == self.last_selection {
             return;
         }
@@ -38,30 +45,48 @@ impl Workspace {
             self.selected_connection_id = Some(connection_id);
         }
         match parse_node(&id) {
-            Some(NodeId::Connection(connection_id)) => self.connect_id(connection_id, cx),
+            Some(NodeId::Connection(connection_id)) => {
+                self.connect_id(connection_id, Some(window), cx)
+            }
             Some(NodeId::Table { schema, table }) => self.open_table_tab(schema, table, window, cx),
             None => {}
         }
     }
 
-    pub(super) fn connect_id(&mut self, id: String, cx: &mut Context<Self>) {
+    /// Connect to `id`. When `window` is set (Switch from the sidebar / tab bar),
+    /// closing other connections' tabs with typed SQL or a busy query asks first.
+    pub(super) fn connect_id(
+        &mut self,
+        id: String,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_id.as_deref() == Some(id.as_str()) && self.session.is_some() {
             return;
         }
+        if self.connections.iter().all(|item| item.id != id) {
+            return;
+        }
+        let foreign = self.foreign_connection_ids(&id);
+        if let Some(window) = window {
+            if let Some((_confirm_id, name, tab_count)) =
+                self.first_close_confirm_target(&foreign, cx)
+            {
+                self.pending_close_tabs = Some(super::PendingCloseTabs::Connect { to_id: id });
+                self.show_close_tabs_confirm(window, cx, &name, tab_count);
+                return;
+            }
+        }
+        self.proceed_connect_id(id, cx);
+    }
+
+    fn proceed_connect_id(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(saved) = self.connections.iter().find(|item| item.id == id).cloned() else {
             return;
         };
         // One live session at a time: cancel and close tabs for every other
         // connection so on_tab_activated cannot snap the session back.
-        let foreign: Vec<String> = self
-            .tabs
-            .tabs()
-            .iter()
-            .filter(|tab| !tab.connection_id.is_empty() && tab.connection_id != id)
-            .map(|tab| tab.connection_id.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        let foreign = self.foreign_connection_ids(&id);
         for previous in foreign {
             self.close_tabs_for_connection(&previous, cx);
         }
@@ -114,7 +139,7 @@ impl Workspace {
                     }
                     this.rebuild_tree(cx);
                     // Load the active table tab now that the session is ready.
-                    this.on_tab_activated(cx);
+                    this.on_tab_activated(None, cx);
                 }
                 Err(err) => {
                     this.session = None;
@@ -129,6 +154,147 @@ impl Workspace {
                 }
             },
         );
+    }
+
+    fn foreign_connection_ids(&self, new_id: &str) -> Vec<String> {
+        self.tabs
+            .tabs()
+            .iter()
+            .filter(|tab| !tab.connection_id.is_empty() && tab.connection_id != new_id)
+            .map(|tab| tab.connection_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Editor SQL + busy for each tab of `connection_id`.
+    fn close_confirm_inputs_for(
+        &self,
+        connection_id: &str,
+        cx: &Context<Self>,
+    ) -> Vec<(String, bool)> {
+        self.tabs
+            .tabs_for_connection(connection_id)
+            .map(|tab| {
+                let sql = self
+                    .views
+                    .get(&tab.id)
+                    .map(|view| view.sql.read(cx).value().to_string())
+                    .unwrap_or_default();
+                let busy = self.views.get(&tab.id).is_some_and(|view| view.busy);
+                (sql, busy)
+            })
+            .collect()
+    }
+
+    /// First connection among `ids` that has typed SQL or a busy query.
+    /// Returns `(connection_id, display_name, tab_count)`.
+    fn first_close_confirm_target(
+        &self,
+        ids: &[String],
+        cx: &Context<Self>,
+    ) -> Option<(String, String, usize)> {
+        for id in ids {
+            let inputs = self.close_confirm_inputs_for(id, cx);
+            let tab_count = inputs.len();
+            if tab_count == 0 {
+                continue;
+            }
+            let at_risk = count_tabs_requiring_close_confirm(
+                inputs.iter().map(|(sql, busy)| (sql.as_str(), *busy)),
+            );
+            if at_risk == 0 {
+                continue;
+            }
+            let name = self
+                .connections
+                .iter()
+                .find(|item| &item.id == id)
+                .map(|item| item.name.clone())
+                .unwrap_or_else(|| id.clone());
+            return Some((id.clone(), name, tab_count));
+        }
+        None
+    }
+
+    fn show_close_tabs_confirm(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        connection_name: &str,
+        tab_count: usize,
+    ) {
+        if self.close_tabs_confirm_open {
+            return;
+        }
+        self.close_tabs_confirm_open = true;
+        let title = if tab_count == 1 {
+            format!("Close 1 tab for {connection_name}?")
+        } else {
+            format!("Close {tab_count} tabs for {connection_name}?")
+        };
+        let this = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let this_ok = this.clone();
+            let this_cancel = this.clone();
+            let this_close = this.clone();
+            alert
+                .title(title.clone())
+                .description("Unsaved SQL in the editor will be lost.")
+                // Cancel is the safer default (Enter / primary). Esc uses on_cancel.
+                .on_ok(move |_, _, cx| {
+                    this_ok.update(cx, |workspace, _| {
+                        workspace.close_tabs_confirm_open = false;
+                        workspace.pending_close_tabs = None;
+                    });
+                    true
+                })
+                .on_cancel(move |_, _, cx| {
+                    this_cancel.update(cx, |workspace, _| {
+                        workspace.close_tabs_confirm_open = false;
+                        workspace.pending_close_tabs = None;
+                    });
+                    true
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("close-tabs-cancel")
+                                .label("Cancel")
+                                .primary()
+                                .on_click({
+                                    let this = this.clone();
+                                    move |_, window, cx| {
+                                        this.update(cx, |workspace, _| {
+                                            workspace.close_tabs_confirm_open = false;
+                                            workspace.pending_close_tabs = None;
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("close-tabs-confirm")
+                                .label("Close tabs")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    this_close.update(cx, |workspace, cx| {
+                                        workspace.close_tabs_confirm_open = false;
+                                        match workspace.pending_close_tabs.take() {
+                                            Some(super::PendingCloseTabs::Connect { to_id }) => {
+                                                workspace.proceed_connect_id(to_id, cx);
+                                            }
+                                            Some(super::PendingCloseTabs::Disconnect) => {
+                                                workspace.perform_disconnect(cx);
+                                                workspace.rebuild_tree(cx);
+                                            }
+                                            None => {}
+                                        }
+                                    });
+                                }),
+                        ),
+                )
+        });
     }
 
     pub(super) fn open_form(
@@ -237,7 +403,7 @@ impl Workspace {
         }
         self.session = None;
         self.rebuild_tree(cx);
-        self.connect_id(id, cx);
+        self.connect_id(id, None, cx);
     }
 
     pub(super) fn confirm_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -272,7 +438,7 @@ impl Workspace {
         }
         self.close_tabs_for_connection(id, cx);
         if self.active_id.as_deref() == Some(id) {
-            self.disconnect(cx);
+            self.perform_disconnect(cx);
         }
         if let Err(err) = self.store.save(&self.connections) {
             if let Some(view) = self.active_view_mut() {
@@ -300,7 +466,27 @@ impl Workspace {
         }
     }
 
-    pub(super) fn disconnect(&mut self, cx: &mut Context<Self>) {
+    /// Disconnect from the sidebar. Confirms when the active connection's tabs
+    /// have typed SQL or a busy query.
+    pub(super) fn request_disconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.close_tabs_confirm_open {
+            return;
+        }
+        let Some(id) = self.active_id.clone() else {
+            self.perform_disconnect(cx);
+            self.rebuild_tree(cx);
+            return;
+        };
+        if let Some((_, name, tab_count)) = self.first_close_confirm_target(&[id], cx) {
+            self.pending_close_tabs = Some(super::PendingCloseTabs::Disconnect);
+            self.show_close_tabs_confirm(window, cx, &name, tab_count);
+            return;
+        }
+        self.perform_disconnect(cx);
+        self.rebuild_tree(cx);
+    }
+
+    pub(super) fn perform_disconnect(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.active_id.clone() {
             self.close_tabs_for_connection(&id, cx);
         }
@@ -382,7 +568,7 @@ impl Workspace {
                         .find(|item| item.engine == Engine::Sqlite && item.file_path == path_text)
                         .cloned()
                     {
-                        this.connect_id(existing.id, cx);
+                        this.connect_id(existing.id, None, cx);
                         return;
                     }
                     let mut connection = SavedConnection::new(Engine::Sqlite);
@@ -399,7 +585,7 @@ impl Workspace {
                         }
                     }
                     this.rebuild_tree(cx);
-                    this.connect_id(id, cx);
+                    this.connect_id(id, None, cx);
                 }
                 Err(err) => {
                     if let Some(view) = this.active_view_mut() {

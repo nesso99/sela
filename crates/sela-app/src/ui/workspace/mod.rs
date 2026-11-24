@@ -47,6 +47,13 @@ use super::{
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
 
+/// What to do after the user confirms closing tabs that have typed SQL or a busy query.
+#[derive(Clone)]
+pub(super) enum PendingCloseTabs {
+    Connect { to_id: String },
+    Disconnect,
+}
+
 pub struct Workspace {
     store: ConfigStore,
     tab_store: TabStore,
@@ -88,6 +95,10 @@ pub struct Workspace {
     history_focus_restore: HistoryFocusRestore,
     /// True while the "Quit Sela?" confirm dialog is open (blocks repeat Quit).
     quit_confirm_open: bool,
+    /// True while the Switch/Disconnect close-tabs confirm is open.
+    close_tabs_confirm_open: bool,
+    /// Action to run after the user confirms closing tabs with typed SQL / busy work.
+    pending_close_tabs: Option<PendingCloseTabs>,
     /// Updated each frame from `window.window_decorations()` for the toolbar ×.
     client_decorations: bool,
     #[cfg(not(target_os = "macos"))]
@@ -206,6 +217,8 @@ impl Workspace {
             history_write_failed_once: false,
             history_focus_restore: HistoryFocusRestore::None,
             quit_confirm_open: false,
+            close_tabs_confirm_open: false,
+            pending_close_tabs: None,
             client_decorations: false,
             #[cfg(not(target_os = "macos"))]
             menu_bar: gpui_kit::component::menu::AppMenuBar::new(cx),
@@ -237,7 +250,7 @@ impl Workspace {
             .map(|tab| tab.connection_id.clone())
             .filter(|id| !id.is_empty())
         {
-            workspace.connect_id(connection_id, cx);
+            workspace.connect_id(connection_id, None, cx);
         }
         workspace
     }
@@ -430,10 +443,10 @@ impl Render for Workspace {
             })
             .on_action({
                 let this = this.clone();
-                move |action: &ActivateTab, _, cx| {
+                move |action: &ActivateTab, window, cx| {
                     let number = action.0;
                     this.update(cx, |workspace, cx| {
-                        workspace.activate_tab_number(number, cx);
+                        workspace.activate_tab_number(number, Some(window), cx);
                     });
                 }
             })

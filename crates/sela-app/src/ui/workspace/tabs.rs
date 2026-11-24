@@ -64,9 +64,9 @@ impl Workspace {
                     }))
                     .on_click({
                         let this = this.clone();
-                        move |index, _, cx| {
+                        move |index, window, cx| {
                             this.update(cx, |workspace, cx| {
-                                workspace.activate_tab_index(*index, cx);
+                                workspace.activate_tab_index(*index, Some(window), cx);
                             });
                         }
                     })
@@ -94,21 +94,31 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn activate_tab_index(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn activate_tab_index(
+        &mut self,
+        index: usize,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.tabs.activate_index(index) {
             return;
         }
-        self.on_tab_activated(cx);
+        self.on_tab_activated(window, cx);
         self.persist_tabs(cx);
         cx.notify();
     }
 
-    pub(super) fn activate_tab_number(&mut self, number: usize, cx: &mut Context<Self>) {
+    pub(super) fn activate_tab_number(
+        &mut self,
+        number: usize,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         // Cmd/Ctrl+1 → first tab (index 0).
         if number == 0 {
             return;
         }
-        self.activate_tab_index(number - 1, cx);
+        self.activate_tab_index(number - 1, window, cx);
     }
 
     /// M2 hook: if the tab is dirty, prompt before closing. Editing does not
@@ -135,7 +145,7 @@ impl Workspace {
             return;
         };
         self.views.remove(&id);
-        self.on_tab_activated(cx);
+        self.on_tab_activated(None, cx);
         self.persist_tabs(cx);
         cx.notify();
     }
@@ -167,7 +177,7 @@ impl Workspace {
             self.persist_tabs(cx);
             self.load_source_for(id, cx);
         } else {
-            self.on_tab_activated(cx);
+            self.on_tab_activated(Some(window), cx);
             self.persist_tabs(cx);
             cx.notify();
         }
@@ -226,7 +236,7 @@ impl Workspace {
         self._subscriptions.push(selection);
     }
 
-    pub(super) fn on_tab_activated(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn on_tab_activated(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.active() else {
             return;
         };
@@ -246,7 +256,7 @@ impl Workspace {
             self.refresh_history(cx);
         }
         if !connection_id.is_empty() && self.active_id.as_deref() != Some(connection_id.as_str()) {
-            self.connect_id(connection_id, cx);
+            self.connect_id(connection_id, window, cx);
             return;
         }
         // Reload a restored table tab that has not fetched yet.

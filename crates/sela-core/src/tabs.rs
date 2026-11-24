@@ -242,6 +242,16 @@ impl TabList {
         }
     }
 
+    /// Tabs that belong to `connection_id`.
+    pub fn tabs_for_connection<'a>(
+        &'a self,
+        connection_id: &'a str,
+    ) -> impl Iterator<Item = &'a Tab> + 'a {
+        self.tabs
+            .iter()
+            .filter(move |tab| tab.connection_id == connection_id)
+    }
+
     /// Close every tab for `connection_id`, cancelling each tab's in-flight
     /// work. Used on Disconnect and when switching to another connection.
     pub fn close_for_connection(&mut self, connection_id: &str) -> Vec<Tab> {
@@ -322,6 +332,24 @@ impl TabList {
         self.next_id = self.next_id.wrapping_add(1);
         id
     }
+}
+
+/// True when closing would discard typed SQL or cancel in-flight work.
+///
+/// `editor_sql` is the live editor buffer (not only persisted query text).
+/// Whitespace-only counts as empty.
+pub fn tab_requires_close_confirm(editor_sql: &str, busy: bool) -> bool {
+    busy || !editor_sql.trim().is_empty()
+}
+
+/// How many of the given tabs (already scoped to one connection) need a
+/// close-confirm before Switch or Disconnect.
+pub fn count_tabs_requiring_close_confirm<'a>(
+    tabs: impl IntoIterator<Item = (&'a str, bool)>,
+) -> usize {
+    tabs.into_iter()
+        .filter(|(sql, busy)| tab_requires_close_confirm(sql, *busy))
+        .count()
 }
 
 /// On-disk shape for the open tab list (`tabs.json`).
@@ -422,6 +450,47 @@ mod tests {
         tabs.close(id);
         assert!(watch.is_cancelled());
         assert!(tabs.is_empty());
+    }
+
+    #[test]
+    fn tab_requires_close_confirm_empty_and_whitespace_are_safe() {
+        assert!(!tab_requires_close_confirm("", false));
+        assert!(!tab_requires_close_confirm("   \n\t  ", false));
+        assert!(tab_requires_close_confirm("select 1", false));
+        assert!(tab_requires_close_confirm("", true));
+        assert!(tab_requires_close_confirm("  ", true));
+    }
+
+    #[test]
+    fn count_tabs_requiring_close_confirm_mixed_and_scoped_to_connection() {
+        assert_eq!(count_tabs_requiring_close_confirm([]), 0);
+        assert_eq!(
+            count_tabs_requiring_close_confirm([("", false), ("  ", false)]),
+            0
+        );
+        assert_eq!(
+            count_tabs_requiring_close_confirm([("select 1", false), ("", true), ("  ", false)]),
+            2
+        );
+
+        // Caller filters to the target connection; other connections are ignored.
+        let all = [
+            ("pg", "select 1", false),
+            ("mysql", "select 2", true),
+            ("pg", "   ", false),
+            ("pg", "", true),
+            ("sqlite", "select 3", false),
+        ];
+        let for_pg = all
+            .iter()
+            .filter(|row| row.0 == "pg")
+            .map(|row| (row.1, row.2));
+        assert_eq!(count_tabs_requiring_close_confirm(for_pg), 2);
+        let for_mysql = all
+            .iter()
+            .filter(|row| row.0 == "mysql")
+            .map(|row| (row.1, row.2));
+        assert_eq!(count_tabs_requiring_close_confirm(for_mysql), 1);
     }
 
     #[test]

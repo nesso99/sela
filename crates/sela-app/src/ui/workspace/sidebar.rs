@@ -173,10 +173,9 @@ impl Workspace {
                             .ghost()
                             .label("Disconnect")
                             .disabled(self.session.is_none())
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 this.update(cx, |workspace, cx| {
-                                    workspace.disconnect(cx);
-                                    workspace.rebuild_tree(cx);
+                                    workspace.request_disconnect(window, cx);
                                 });
                             })
                     }),
