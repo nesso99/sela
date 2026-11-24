@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use keyring::credential::CredentialPersistence;
+
 const SERVICE: &str = "app.sela.database";
 
 #[derive(Debug, thiserror::Error)]
@@ -45,10 +47,45 @@ impl SecretStore for MemorySecretStore {
     }
 }
 
+/// True when keyring's default builder is the in-process mock store.
+///
+/// keyring v3 enables no platform backend unless Cargo features are set. The
+/// mock store is the only built-in builder that reports
+/// [`CredentialPersistence::EntryOnly`].
+pub fn default_credential_store_is_mock() -> bool {
+    matches!(
+        keyring::default::default_credential_builder().persistence(),
+        CredentialPersistence::EntryOnly
+    )
+}
+
+/// Fail loudly when a release (or debug) build would silently use the mock store.
+///
+/// Call once at startup. Runtime unavailability of Secret Service / Keychain
+/// still returns [`SecretError`] from [`KeyringStore`] so
+/// [`CachingSecrets`] can keep the #46 memory-only fallback.
+pub fn warn_if_mock_credential_store() {
+    let is_mock = default_credential_store_is_mock();
+    debug_assert!(
+        !is_mock,
+        "keyring default credential store is the in-process mock; \
+         passwords will not persist across launches. Enable platform features \
+         (apple-native, windows-native, sync-secret-service + crypto-rust)."
+    );
+    if is_mock {
+        eprintln!(
+            "sela: ERROR: keyring default credential store is the in-process mock; \
+             passwords will not persist across launches. Enable platform features \
+             (apple-native, windows-native, sync-secret-service + crypto-rust)."
+        );
+    }
+}
+
 /// OS keychain via the `keyring` crate.
 ///
-/// macOS uses Keychain, Windows uses Credential Manager, and Linux uses the
-/// Secret Service (gnome-keyring or KWallet). A headless Linux session with
+/// macOS uses Keychain (`apple-native`), Windows uses Credential Manager
+/// (`windows-native`), and Linux uses the Secret Service
+/// (`sync-secret-service` + `crypto-rust`). A headless Linux session with
 /// no secret service returns [`SecretError`].
 pub struct KeyringStore;
 
@@ -233,5 +270,30 @@ mod tests {
     fn probe_keychain_succeeds_when_backend_answers() {
         let secrets = CachingSecrets::new(MemorySecretStore::default());
         assert!(secrets.probe_keychain().is_ok());
+    }
+
+    #[test]
+    fn default_credential_builder_is_not_mock_on_supported_targets() {
+        // Platforms where Sela ships with a native keyring feature enabled.
+        // The mock store is EntryOnly; native Secret Service / Keychain /
+        // Credential Manager report UntilDelete (or UntilReboot for keyutils).
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "macos",
+            target_os = "windows",
+        ))]
+        {
+            assert!(
+                !default_credential_store_is_mock(),
+                "default keyring builder is the mock store; check Cargo.toml features \
+                 (apple-native, windows-native, sync-secret-service, crypto-rust)"
+            );
+            assert!(!matches!(
+                keyring::default::default_credential_builder().persistence(),
+                CredentialPersistence::EntryOnly
+            ));
+        }
     }
 }

@@ -6,19 +6,19 @@ Sela supports **PostgreSQL**, **MySQL**, and **SQLite**.
 
 Create, edit, and delete connections from the sidebar. Fields (host, port, user, database, SQLite path, TLS paths, and so on) are stored in `connections.json` under the [config directory](./installation.md#config-location) (`schema_version` 2).
 
-**Passwords are never written to that file.** When an OS secret service is available, Sela stores them with the [`keyring`](https://crates.io/crates/keyring) crate under service `app.sela.database`:
+**Passwords are never written to that file.** When an OS secret service is available, Sela stores them with the [`keyring`](https://crates.io/crates/keyring) crate under service `app.sela.database` (native backends: macOS Keychain, Windows Credential Manager, Linux Secret Service over D-Bus):
 
 | OS | Backend |
 | --- | --- |
-| macOS | Login Keychain |
-| Linux | Secret Service (gnome-keyring, KWallet, …) over D-Bus |
-| Windows | Credential Manager |
+| macOS | Login Keychain (`apple-native`) |
+| Linux | Secret Service (gnome-keyring, KWallet, …) over D-Bus (`sync-secret-service` + `crypto-rust`) |
+| Windows | Credential Manager (`windows-native`) |
 
 If no secret service is available (common on headless Linux or minimal desktop sessions), Sela keeps the password in process memory for the session only. The connection dialog shows a clear warning that the password will not be saved after you quit, and the status bar shows: *The OS keychain is unavailable, so the password is kept for this session only.* Connect, reconnect, and switch still work until you quit. Sela asks for the password again on the next launch. It still does not write the password into JSON.
 
 ## Switching and disconnecting
 
-Click another saved connection in the sidebar to switch. Sela cancels queries on the previous connection, closes that connection’s tabs, then connects the one you chose. If a tab has typed SQL or a running query, Sela asks first; Cancel keeps the current session. **Edit** opens the connection you selected in the tree, not only the one that is currently connected.
+Click another saved connection in the sidebar to switch. Sela cancels queries on the previous connection, closes that connection’s tabs, then connects the one you chose. If a tab has typed SQL or a running query, Sela asks first; Cancel keeps the current session. **Edit** opens the connection you selected in the tree, not only the one that is currently connected. A connection error banner from a previous attempt is cleared when you connect, switch, or disconnect, and after a successful connect.
 
 **Disconnect** cancels running queries for the active connection, closes its tabs, and drops the session (with the same confirm when SQL would be lost). Tabs are not left open for a disconnected connection.
 

@@ -45,7 +45,7 @@ crates/
 | Results | Bounded `ResultWindow` (16×100); lazy Json; see [ADR 0002](../adr/0002-bounded-result-window.md) |
 | Cancel | Second-connection server cancel for PG/MySQL; [ADR 0003](../adr/0003-cancel-second-connection.md) |
 | Load-more | Safe re-run classifier; [ADR 0004](../adr/0004-safe-load-more.md) |
-| Secrets | OS keychain; never passwords in JSON |
+| Secrets | OS keychain via keyring v3 (`apple-native` / `windows-native` / `sync-secret-service` + `crypto-rust`); never passwords in JSON |
 | Grid | Keep DataTable; [ADR 0001](../adr/0001-keep-datatable.md) |
 
 Full API shapes, `Value`, `DbError`, config schema plans, and testing matrix: [SPECS.md](../design/SPECS.md).

@@ -286,6 +286,10 @@ impl TableDelegate for GridDelegate {
         // Cell selection installs a Right mouse-down that stop_propagation, so
         // DataTable's row-level TableDelegate::context_menu never opens for
         // cells. Attach the copy menu on the cell content (innermost wins).
+        // ContextMenuExt also stop_propagates, so DataTable never sees the
+        // right-click — select the cell here when it is outside the current
+        // selection so Copy targets the clicked cell (Refs #55).
+        let table = cx.entity();
         div()
             .id(format!("grid-cell:{row_ix}:{col_ix}"))
             .h_full()
@@ -299,7 +303,19 @@ impl TableDelegate for GridDelegate {
             .when_some(bg, |cell, bg| cell.bg(bg))
             .when(null || loading, |cell| cell.italic())
             .child(text)
-            .context_menu(|menu, _, _| copy_context_menu(menu))
+            .context_menu(move |menu, _, menu_cx| {
+                table.update(menu_cx, |state, cx| {
+                    let selection = state.selection();
+                    let range = state.delegate().selection_rect;
+                    if !cell_in_selection(row_ix, col_ix, selection, range) {
+                        state.set_selected_cell(row_ix, col_ix, cx);
+                        // Keep selection_rect in sync immediately; SelectCell
+                        // subscribers also call note_cell_focus, which is fine.
+                        state.delegate_mut().note_cell_focus(row_ix, col_ix, false);
+                    }
+                });
+                copy_context_menu(menu)
+            })
     }
 
     fn visible_rows_changed(
@@ -360,6 +376,29 @@ fn copy_context_menu(menu: PopupMenu) -> PopupMenu {
         .item(PopupMenuItem::new("Copy as CSV").action(Box::new(CopyAsCsv)))
         .item(PopupMenuItem::new("Copy as JSON").action(Box::new(CopyAsJson)))
         .item(PopupMenuItem::new("Copy as INSERT").action(Box::new(CopyAsInsert)))
+}
+
+/// Whether `(row, col)` is already covered by the DataTable selection or our
+/// Shift-range. Right-click keeps the selection when this is true so a range
+/// Copy still copies the whole range; otherwise the clicked cell is selected.
+pub(crate) fn cell_in_selection(
+    row: usize,
+    col: usize,
+    selection: TableSelection,
+    selection_rect: Option<SelectionRect>,
+) -> bool {
+    if let Some(rect) = selection_rect {
+        let (min_r, max_r, min_c, max_c) = rect.normalized();
+        if row >= min_r && row <= max_r && col >= min_c && col <= max_c {
+            return true;
+        }
+    }
+    match selection {
+        TableSelection::None => false,
+        TableSelection::Cell(r, c) => r == row && c == col,
+        TableSelection::Row(r) => r == row,
+        TableSelection::Column(c) => c == col,
+    }
 }
 
 #[cfg(test)]
@@ -480,5 +519,61 @@ mod tests {
             RowState::Ready(cells) => assert_eq!(cells[0].display().as_ref(), "kept"),
             RowState::Loading => panic!("delivered rows were cleared on cancel"),
         }
+    }
+
+    #[test]
+    fn cell_in_selection_empty_is_outside() {
+        assert!(!cell_in_selection(0, 0, TableSelection::None, None));
+    }
+
+    #[test]
+    fn cell_in_selection_matches_single_cell() {
+        assert!(cell_in_selection(
+            1,
+            2,
+            TableSelection::Cell(1, 2),
+            Some(SelectionRect::cell(1, 2))
+        ));
+        assert!(!cell_in_selection(
+            0,
+            0,
+            TableSelection::Cell(1, 2),
+            Some(SelectionRect::cell(1, 2))
+        ));
+    }
+
+    #[test]
+    fn cell_in_selection_keeps_range_member() {
+        let range = SelectionRect::from_corners(CellPos::new(0, 0), CellPos::new(2, 2));
+        assert!(cell_in_selection(
+            1,
+            1,
+            TableSelection::Cell(0, 0),
+            Some(range)
+        ));
+        assert!(!cell_in_selection(
+            3,
+            3,
+            TableSelection::Cell(0, 0),
+            Some(range)
+        ));
+    }
+
+    #[test]
+    fn cell_in_selection_row_and_column() {
+        assert!(cell_in_selection(4, 0, TableSelection::Row(4), None));
+        assert!(!cell_in_selection(3, 0, TableSelection::Row(4), None));
+        assert!(cell_in_selection(0, 2, TableSelection::Column(2), None));
+        assert!(!cell_in_selection(0, 1, TableSelection::Column(2), None));
+    }
+
+    #[test]
+    fn copy_rect_none_when_nothing_selected() {
+        let grid = GridDelegate::empty();
+        // Empty result → None; with rows but no selection also None.
+        assert!(grid.copy_rect(TableSelection::None).is_none());
+        let mut grid = GridDelegate::empty();
+        grid.show_page(page(vec![vec![Value::Text("a".into())]]));
+        assert!(grid.copy_rect(TableSelection::None).is_none());
     }
 }

@@ -90,6 +90,9 @@ impl Workspace {
         for previous in foreign {
             self.close_tabs_for_connection(&previous, cx);
         }
+        // Drop a stale connection-error banner before the new attempt (and on
+        // switch). Query / save errors on other paths set these again as needed.
+        self.clear_connection_banner_error();
         let password = match self.secrets.get(&saved.id) {
             Ok(password) => password,
             Err(err) => {
@@ -111,7 +114,6 @@ impl Workspace {
         self.session = None;
         self.catalog.clear();
         if let Some(view) = self.active_view_mut() {
-            view.error = None;
             view.status = format!("Connecting to {saved_name}…");
         }
         self.rebuild_tree(cx);
@@ -133,9 +135,10 @@ impl Workspace {
                     if let Some(warning) = &this.keychain_session_warning {
                         status = format!("{status} · {warning}");
                     }
+                    // Successful connect must not leave a prior auth failure banner.
+                    this.clear_connection_banner_error();
                     if let Some(view) = this.active_view_mut() {
                         view.status = status;
-                        view.error = None;
                     }
                     this.rebuild_tree(cx);
                     // Load the active table tab now that the session is ready.
@@ -154,6 +157,14 @@ impl Workspace {
                 }
             },
         );
+    }
+
+    /// Clears the connection-error banner sources (boot + active tab).
+    pub(super) fn clear_connection_banner_error(&mut self) {
+        let active_id = self.tabs.active().map(|tab| tab.id);
+        let view_error =
+            active_id.and_then(|id| self.views.get_mut(&id).map(|view| &mut view.error));
+        clear_connection_banner_sources(&mut self.boot_error, view_error);
     }
 
     fn foreign_connection_ids(&self, new_id: &str) -> Vec<String> {
@@ -494,6 +505,9 @@ impl Workspace {
         self.catalog.clear();
         self.active_id = None;
         self.clear_all_structure_caches();
+        // Drop a stale connection-error banner so Disconnect does not leave it
+        // over the empty content pane.
+        self.clear_connection_banner_error();
         // After closing this connection's tabs there is usually no active view.
         if let Some(view) = self.active_view_mut() {
             view.source = GridSource::Idle;
@@ -623,4 +637,64 @@ fn sample_database_path(store: &sela_config::ConfigStore) -> PathBuf {
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .join("sample.sqlite")
+}
+
+/// Banner text when tabs are open: active tab error, else workspace boot error.
+pub(super) fn resolve_banner_error(
+    boot_error: Option<&str>,
+    active_view_error: Option<&str>,
+) -> Option<String> {
+    active_view_error
+        .map(str::to_string)
+        .or_else(|| boot_error.map(str::to_string))
+}
+
+/// Clears connection-lifecycle banner sources (boot + optional active tab).
+/// Mirrors [`Workspace::clear_connection_banner_error`].
+fn clear_connection_banner_sources(
+    boot_error: &mut Option<String>,
+    active_view_error: Option<&mut Option<String>>,
+) {
+    *boot_error = None;
+    if let Some(error) = active_view_error {
+        *error = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn banner_prefers_active_view_error_over_boot() {
+        assert_eq!(
+            resolve_banner_error(Some("boot"), Some("view")).as_deref(),
+            Some("view")
+        );
+        assert_eq!(
+            resolve_banner_error(Some("boot"), None).as_deref(),
+            Some("boot")
+        );
+        assert_eq!(resolve_banner_error(None, None), None);
+    }
+
+    #[test]
+    fn clearing_connection_banner_drops_boot_and_view_errors() {
+        let mut boot = Some("Access denied for user 'selaqa'".into());
+        let mut view_err = Some("password authentication failed".into());
+        clear_connection_banner_sources(&mut boot, Some(&mut view_err));
+        assert!(boot.is_none());
+        assert!(view_err.is_none());
+        assert_eq!(
+            resolve_banner_error(boot.as_deref(), view_err.as_deref()),
+            None
+        );
+    }
+
+    #[test]
+    fn clearing_connection_banner_with_no_active_view_clears_boot_only() {
+        let mut boot = Some("Connection failed".into());
+        clear_connection_banner_sources(&mut boot, None);
+        assert!(boot.is_none());
+    }
 }
