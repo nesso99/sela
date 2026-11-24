@@ -92,7 +92,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | M2-2 | `ChangePlan` → dialect SQL + golden tests | Snapshots for 3 engines | Done (core + `apply_changes` + golden / integration tests) |
 | M2-3 | Preview SQL, one-transaction commit, discard, rollback keeps changes | US-06 | Done (core/drivers + pending bar, Preview sheet, Commit/Discard UI) |
 | M2-4 | Safe mode 3 levels, no-WHERE warnings (`sqlparser`) | US-07 | |
-| M2-5 | Connection color/label, groups, duplicate, import URL | US-01 complete | |
+| M2-5 | Connection color/label, groups, duplicate, import URL | US-01 complete | Done (color/label/group/duplicate/import; Red→Confirm hook for M2-4) |
 
 ### M2-1 / M2-2 details (core)
 

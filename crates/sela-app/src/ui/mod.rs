@@ -71,7 +71,10 @@ actions!(
         PreviewChanges,
         CommitChanges,
         DiscardChanges,
-        Quit
+        Quit,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize
     ]
 );
 
@@ -121,6 +124,11 @@ pub fn run() {
             // Quit: ⌘Q on macOS, Ctrl+Q elsewhere. Global so it works in the
             // SQL editor and dialogs.
             bind_secondary(cx, "secondary-q", Box::new(Quit), None);
+            // Font size (#39): global, including inside text fields.
+            bind_secondary(cx, "secondary-=", Box::new(IncreaseFontSize), None);
+            bind_secondary(cx, "secondary-+", Box::new(IncreaseFontSize), None);
+            bind_secondary(cx, "secondary--", Box::new(DecreaseFontSize), None);
+            bind_secondary(cx, "secondary-0", Box::new(ResetFontSize), None);
             // Platform secondary modifier (⌘ on macOS, Ctrl elsewhere) — M1-3 filter bar.
             bind_secondary(cx, "secondary-f", Box::new(ToggleFilterBar), None);
             bind_secondary(cx, "secondary-enter", Box::new(RunQuery), Some("SqlEditor"));

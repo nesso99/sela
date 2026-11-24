@@ -14,7 +14,8 @@ use sela_config::{
     SavedConnection,
 };
 use sela_core::{
-    count_tabs_requiring_close_confirm, DatabaseSession, DbError, Engine, LoadedSchema,
+    count_tabs_requiring_close_confirm, duplicate_connection, DatabaseSession, DbError, Engine,
+    LoadedSchema,
 };
 use sela_drivers::{connect, create_sample_database, load_catalog};
 
@@ -390,9 +391,33 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title.clone())
-                .width(px(520.))
+                .width(px(560.))
                 .child(form.clone())
         });
+    }
+
+    /// Duplicate the selected (or active) connection without copying the password.
+    pub(super) fn duplicate_selected_connection(&mut self, cx: &mut Context<Self>) {
+        let Some(source) = self.selected_or_active_connection().cloned() else {
+            return;
+        };
+        let names: Vec<String> = self.connections.iter().map(|c| c.name.clone()).collect();
+        let copy = duplicate_connection(&source, &names);
+        let source_name = source.name.clone();
+        self.connections.push(copy);
+        if let Err(err) = self.store.save(&self.connections) {
+            if let Some(view) = self.active_view_mut() {
+                view.error = Some(err.to_string());
+            } else {
+                self.boot_error = Some(err.to_string());
+            }
+        }
+        let status = format!("Duplicated {source_name}. Type the password to connect.");
+        if let Some(view) = self.active_view_mut() {
+            view.status = status;
+        }
+        self.rebuild_tree(cx);
+        cx.notify();
     }
 
     pub(super) fn save_draft(&mut self, draft: ConnectionDraft, cx: &mut Context<Self>) {

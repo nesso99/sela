@@ -7,8 +7,11 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, IntoElement};
 
 use sela_config::SavedConnection;
+use sela_core::{sidebar_connection_layout, SidebarConnectionNode};
 
-use super::tree::{conn_key, render_tree_entry, schema_key, table_item, SEP};
+use super::tree::{
+    conn_key, conn_key_with_meta, group_key, render_tree_entry, schema_key, table_item, SEP,
+};
 use super::Workspace;
 
 impl Workspace {
@@ -21,24 +24,38 @@ impl Workspace {
     }
 
     fn tree_items(&self) -> Vec<TreeItem> {
-        self.connections
-            .iter()
-            .map(|connection| self.connection_item(connection))
+        sidebar_connection_layout(&self.connections)
+            .into_iter()
+            .flat_map(|node| match node {
+                SidebarConnectionNode::Connection(connection) => {
+                    vec![self.connection_item(connection)]
+                }
+                SidebarConnectionNode::Group { name, members } => {
+                    let key = group_key(name);
+                    let children = members
+                        .into_iter()
+                        .map(|connection| self.connection_item(connection));
+                    vec![TreeItem::new(key.clone(), name.to_string())
+                        .children(children)
+                        .expanded(self.expanded.contains(&key))]
+                }
+            })
             .collect()
     }
 
     fn connection_item(&self, connection: &SavedConnection) -> TreeItem {
-        let key = conn_key(&connection.id);
+        let key = conn_key_with_meta(&connection.id, connection.color, &connection.label);
+        // Also treat the legacy key without color as expanded for the session.
+        let expanded =
+            self.expanded.contains(&key) || self.expanded.contains(&conn_key(&connection.id));
         let active = self.active_id.as_deref() == Some(connection.id.as_str());
         let mark = if active && self.session.is_some() {
             "●"
         } else {
             "○"
         };
-        let mut item = TreeItem::new(
-            key.clone(),
-            format!("{mark}  {}  {}", connection.engine.short(), connection.name),
-        );
+        let label = format!("{mark}  {}  {}", connection.engine.short(), connection.name);
+        let mut item = TreeItem::new(key.clone(), label);
         if active {
             let children = self.catalog.iter().map(|schema| {
                 let schema_key = schema_key(&connection.id, &schema.name);
@@ -58,9 +75,7 @@ impl Workspace {
                 }
                 schema_item
             });
-            item = item
-                .children(children)
-                .expanded(self.expanded.contains(&key));
+            item = item.children(children).expanded(expanded);
         }
         item
     }
@@ -141,6 +156,19 @@ impl Workspace {
                                     if let Some(existing) = existing {
                                         workspace.open_form(Some(existing), window, cx);
                                     }
+                                });
+                            })
+                    })
+                    .child({
+                        let this = this.clone();
+                        Button::new("duplicate-connection")
+                            .xsmall()
+                            .ghost()
+                            .label("Duplicate")
+                            .disabled(!has_edit_target)
+                            .on_click(move |_, _, cx| {
+                                this.update(cx, |workspace, cx| {
+                                    workspace.duplicate_selected_connection(cx);
                                 });
                             })
                     })

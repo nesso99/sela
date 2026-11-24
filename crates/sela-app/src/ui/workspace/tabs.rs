@@ -11,10 +11,11 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{h_flex, ActiveTheme, IconName, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, Context, IntoElement, Window};
+use gpui_kit::{div, px, Context, IntoElement, Window};
 
-use sela_core::{TabId, TabKind, TabList};
+use sela_core::{ConnectionColor, TabId, TabKind, TabList};
 
+use super::super::theme::SelaPalette;
 use super::tab_view::TabView;
 use super::{GridSource, Workspace};
 
@@ -35,11 +36,17 @@ impl Workspace {
             })
             .collect();
 
+        let conn_color = self
+            .active_connection()
+            .map(|c| c.color)
+            .unwrap_or(ConnectionColor::None);
+        let tab_strip = SelaPalette::for_mode(cx.theme().mode).connection_color(conn_color);
         h_flex()
             .w_full()
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().muted)
+            .relative()
             .child(
                 TabBar::new("sela-tabs")
                     .w_full()
@@ -91,6 +98,18 @@ impl Workspace {
                             })
                     }),
             )
+            .when_some(tab_strip, |row, color| {
+                // 2px bottom edge in the connection color (every tab shares one connection).
+                row.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .bg(color),
+                )
+            })
     }
 
     pub(super) fn new_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {

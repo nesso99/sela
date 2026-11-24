@@ -19,6 +19,10 @@ pub use secrets::{
 pub use sela_core::{
     Engine, PersistedTab, PersistedTabs, SavedConnection, TabKind, TlsMode, TlsSettings,
 };
-pub use settings::{resolve_theme_mode, SettingsStore, ThemePreference};
+pub use settings::{
+    clamp_font_size, content_row_height, editor_line_height, mono_font_size, resolve_theme_mode,
+    text_xs_font_size, ui_line_height, AppSettings, SettingsStore, ThemePreference,
+    DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE,
+};
 pub use store::{config_dir, ConfigError, ConfigStore, SCHEMA_VERSION};
 pub use tabs::TabStore;

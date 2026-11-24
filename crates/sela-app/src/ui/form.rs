@@ -5,11 +5,13 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, Entity, EventEmitter, IntoElement, MouseButton, Render, Subscription, Window};
+use gpui_kit::{
+    div, px, Context, Entity, EventEmitter, IntoElement, MouseButton, Render, Subscription, Window,
+};
 
 use sela_core::{
-    parse_connection_url, ConnectionColor, DefaultSafetyLevel, Engine, SavedConnection, TlsMode,
-    TlsSettings, default_safety_level_for_color,
+    default_safety_level_for_color, parse_connection_url, ConnectionColor, DefaultSafetyLevel,
+    Engine, SavedConnection, TlsMode, TlsSettings,
 };
 
 use super::theme::SelaPalette;
@@ -92,8 +94,7 @@ impl ConnectionForm {
             error: None,
             import_note: None,
             import_url: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("postgres://user:pass@host:5432/db")
+                InputState::new(window, cx).placeholder("postgres://user:pass@host:5432/db")
             }),
             name: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -135,9 +136,7 @@ impl ConnectionForm {
                     .placeholder("prod")
                     .default_value(seed.label)
             }),
-            group: cx.new(|cx| {
-                InputState::new(window, cx).default_value(seed.group)
-            }),
+            group: cx.new(|cx| InputState::new(window, cx).default_value(seed.group)),
             ca_path: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("/path/to/ca.pem")
@@ -265,7 +264,12 @@ impl ConnectionForm {
                         window,
                         cx,
                     );
-                    Self::set_value(&self.client_key_path, imported.tls.client_key_path, window, cx);
+                    Self::set_value(
+                        &self.client_key_path,
+                        imported.tls.client_key_path,
+                        window,
+                        cx,
+                    );
                 }
                 let mut note =
                     "Filled from the URL. The password is only in the password field.".to_string();
@@ -563,7 +567,9 @@ fn color_swatch(
         .h(px(16.))
         .flex_shrink_0()
         .cursor_pointer()
-        .when(selected, |swatch| swatch.border_2().border_color(cx.theme().ring))
+        .when(selected, |swatch| {
+            swatch.border_2().border_color(cx.theme().ring)
+        })
         .when(!selected, |swatch| {
             swatch.border_1().border_color(cx.theme().border)
         })

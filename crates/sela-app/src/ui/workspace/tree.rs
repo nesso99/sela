@@ -2,10 +2,13 @@
 
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tree::{TreeEntry, TreeItem};
+use gpui_kit::component::{h_flex, ActiveTheme};
 use gpui_kit::prelude::*;
-use gpui_kit::{px, App, Window};
+use gpui_kit::{div, px, App, Hsla, Window};
 
-use sela_core::{RelationKind, TableInfo};
+use sela_core::{ConnectionColor, RelationKind, TableInfo};
+
+use super::super::theme::SelaPalette;
 
 pub(super) const SEP: char = '\u{1f}';
 
@@ -19,28 +22,79 @@ pub(super) fn render_tree_entry(
     entry: &TreeEntry,
     _: bool,
     _: &mut Window,
-    _: &mut App,
+    cx: &mut App,
 ) -> ListItem {
     let depth = entry.depth() as f32;
+    let id = entry.item().id.as_str();
     let marker = if entry.is_folder() {
         if entry.is_expanded() {
             "▾"
         } else {
             "▸"
         }
-    } else if entry.item().id.starts_with('t') {
+    } else if id.starts_with('t') {
         "·"
     } else {
         ""
     };
-    let label = if marker.is_empty() {
+
+    let palette = SelaPalette::for_mode(cx.theme().mode);
+    let meta = connection_meta_from_id(id);
+    let swatch = meta
+        .as_ref()
+        .and_then(|m| palette.connection_color(m.color));
+    let conn_label = meta
+        .as_ref()
+        .map(|m| m.label.as_str())
+        .filter(|s| !s.is_empty());
+
+    let label_text = if marker.is_empty() {
         entry.item().label.to_string()
     } else {
         format!("{marker}  {}", entry.item().label)
     };
+
     ListItem::new(entry.item().id.clone())
         .pl(px(8. + depth * 14.))
-        .child(label)
+        .child(
+            h_flex()
+                .items_center()
+                .gap_1()
+                .when_some(swatch, |row, color| {
+                    row.child(connection_swatch(color, cx.theme().border))
+                })
+                .child(div().child(label_text))
+                .when_some(conn_label.map(str::to_string), |row, tag| {
+                    row.child(div().text_color(cx.theme().muted_foreground).child(tag))
+                }),
+        )
+}
+
+fn connection_swatch(fill: Hsla, border: Hsla) -> impl IntoElement {
+    div()
+        .size(px(8.))
+        .flex_shrink_0()
+        .border_1()
+        .border_color(border)
+        .bg(fill)
+}
+
+struct ConnMeta {
+    color: ConnectionColor,
+    label: String,
+}
+
+fn connection_meta_from_id(id: &str) -> Option<ConnMeta> {
+    let mut parts = id.split(SEP);
+    match parts.next()? {
+        "c" => {
+            let _connection = parts.next()?;
+            let color = ConnectionColor::parse(parts.next().unwrap_or("none"));
+            let label = parts.next().unwrap_or("").to_string();
+            Some(ConnMeta { color, label })
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn table_item(connection: &str, schema: &str, table: &TableInfo) -> TreeItem {
@@ -56,6 +110,15 @@ pub(super) fn table_item(connection: &str, schema: &str, table: &TableInfo) -> T
 
 pub(super) fn conn_key(id: &str) -> String {
     format!("c{SEP}{id}")
+}
+
+/// Connection tree id that embeds color and optional label for rendering.
+pub(super) fn conn_key_with_meta(id: &str, color: ConnectionColor, label: &str) -> String {
+    format!("c{SEP}{id}{SEP}{}{SEP}{}", color.as_str(), label.trim())
+}
+
+pub(super) fn group_key(name: &str) -> String {
+    format!("g{SEP}{name}")
 }
 
 pub(super) fn schema_key(connection: &str, schema: &str) -> String {
@@ -80,6 +143,8 @@ pub(super) fn parse_node(id: &str) -> Option<NodeId> {
                 Some(NodeId::Table { schema, table })
             }
         }
+        // Group rows only expand/collapse; they are not connections.
+        "g" => None,
         _ => None,
     }
 }
@@ -112,6 +177,11 @@ mod tests {
             Some(id)
         );
         assert_eq!(
+            connection_id_from_selection(&conn_key_with_meta(id, ConnectionColor::Red, "prod"))
+                .as_deref(),
+            Some(id)
+        );
+        assert_eq!(
             connection_id_from_selection(&schema_key(id, "public")).as_deref(),
             Some(id)
         );
@@ -120,6 +190,7 @@ mod tests {
             Some(id)
         );
         assert_eq!(connection_id_from_selection("n\u{1f}noise"), None);
+        assert_eq!(connection_id_from_selection(&group_key("Work")), None);
     }
 
     #[test]
@@ -129,5 +200,17 @@ mod tests {
         let active = Some("pg-qa".to_string());
         let target = selected.or(active);
         assert_eq!(target.as_deref(), Some("mysql-qa"));
+    }
+
+    #[test]
+    fn color_and_label_embedded_in_conn_key_parses() {
+        let id = conn_key_with_meta("x", ConnectionColor::Teal, "qa");
+        let meta = connection_meta_from_id(&id).unwrap();
+        assert_eq!(meta.color, ConnectionColor::Teal);
+        assert_eq!(meta.label, "qa");
+        assert!(matches!(
+            parse_node(&id),
+            Some(NodeId::Connection(ref s)) if s == "x"
+        ));
     }
 }

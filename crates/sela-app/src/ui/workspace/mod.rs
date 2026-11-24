@@ -43,12 +43,13 @@ use sela_core::{
 
 use super::{
     AcceptCellEditor, ActivateTab, CancelCellEditor, CancelQuery, CloseTab, CommitChanges,
-    CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, DeleteEditRow, DiscardChanges,
-    DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory, ExtendGridSelectionDown,
-    ExtendGridSelectionLeft, ExtendGridSelectionRight, ExtendGridSelectionUp, FindInSql, FindNext,
-    FindPrevious, FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen,
-    HistoryRerun, HistorySelectDown, HistorySelectUp, InsertEditRow, InsertFilterRow, NewQueryTab,
-    PreviewChanges, Quit, RemoveFilterRow, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery,
+    CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, DecreaseFontSize, DeleteEditRow,
+    DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory,
+    ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
+    ExtendGridSelectionUp, FindInSql, FindNext, FindPrevious, FocusHistorySearch, HistoryCopy,
+    HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun, HistorySelectDown, HistorySelectUp,
+    IncreaseFontSize, InsertEditRow, InsertFilterRow, NewQueryTab, PreviewChanges, Quit,
+    RemoveFilterRow, ResetFontSize, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery,
     SelectAllGrid, SetCellNull, ShowTableData, ShowTableStructure, ToggleEditor, ToggleFilterBar,
     ToggleHistory,
 };
@@ -68,6 +69,7 @@ pub struct Workspace {
     history_store: Option<Arc<HistoryStore>>,
     settings: SettingsStore,
     theme_preference: ThemePreference,
+    font_size: u8,
     /// True when the status menu may offer System (window appearance available).
     system_theme_available: bool,
     result_strip_focus: FocusHandle,
@@ -183,9 +185,11 @@ impl Workspace {
                 }
             });
         let settings = SettingsStore::with_path(SettingsStore::default_path());
-        let theme_preference = settings.load();
+        let app_settings = settings.load();
+        let theme_preference = app_settings.theme;
+        let font_size = app_settings.font_size;
         let system_theme_available = super::theme::system_appearance_available(window);
-        super::theme::install_sela_themes(theme_preference, Some(window), cx);
+        super::theme::install_sela_themes(theme_preference, font_size, Some(window), cx);
         // keyring v3 falls back to an in-process mock when no platform feature
         // is enabled; fail loudly so passwords are not silently non-persistent.
         warn_if_mock_credential_store();
@@ -207,6 +211,7 @@ impl Workspace {
             history_store,
             settings,
             theme_preference,
+            font_size,
             system_theme_available,
             result_strip_focus: cx.focus_handle(),
             secrets: CachingSecrets::new(KeyringStore),
@@ -418,6 +423,24 @@ impl Render for Workspace {
                 let this = this.clone();
                 move |_: &Quit, window, cx| {
                     this.update(cx, |workspace, cx| workspace.request_quit(window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &IncreaseFontSize, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.bump_font_size(1, window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &DecreaseFontSize, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.bump_font_size(-1, window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ResetFontSize, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.reset_font_size(window, cx));
                 }
             })
             .on_action({
@@ -848,7 +871,7 @@ impl Render for Workspace {
                                         column.child(self.error_banner(cx, error))
                                     })
                                     .child(match table_pane {
-                                        TablePane::Data => self.results_area().into_any_element(),
+                                        TablePane::Data => self.results_area(cx).into_any_element(),
                                         TablePane::Structure => {
                                             self.structure_area(cx).into_any_element()
                                         }

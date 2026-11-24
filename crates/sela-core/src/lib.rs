@@ -7,6 +7,9 @@ mod change_plan;
 mod change_set;
 mod column_kind;
 mod connection;
+mod connection_color;
+mod connection_org;
+mod connection_url;
 mod copy_format;
 mod error;
 mod filter;
@@ -23,6 +26,12 @@ pub use change_plan::{ApplyChangesResult, ChangePlan, PlanOp, PlannedStatement};
 pub use change_set::{CellChange, ChangeError, ChangeSet, RowChange, TableRef};
 pub use column_kind::{ColumnKind, MAX_SORT_KEYS};
 pub use connection::{SavedConnection, TlsMode, TlsSettings};
+pub use connection_color::{default_safety_level_for_color, ConnectionColor, DefaultSafetyLevel};
+pub use connection_org::{
+    connection_color_is_visible, duplicate_connection, existing_group_names, next_duplicate_name,
+    sidebar_connection_layout, SidebarConnectionNode,
+};
+pub use connection_url::{parse_connection_url, ImportUrlError, ImportedConnection};
 pub use copy_format::{
     escape_csv_field, escape_sql_string, extract_selection_matrix, format_selection,
     value_to_copy_cell, CopyCell, CopyError, CopyFormat, CopyScalarKind,
