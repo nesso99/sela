@@ -136,6 +136,104 @@ fn numbers_and_bools_unquoted_in_insert() {
 }
 
 #[test]
+fn postgres_insert_quotes_non_finite_floats() {
+    let headers = vec!["x".into(), "y".into(), "z".into()];
+    let rows = vec![vec![number("NaN"), number("inf"), number("-inf")]];
+    let sql = format_selection(
+        &headers,
+        &rows,
+        CopyFormat::Insert,
+        Some("t"),
+        Dialect::Postgres,
+    )
+    .unwrap();
+    assert!(sql.contains("('NaN', 'Infinity', '-Infinity')"));
+    // Also accept Postgres spellings as input display text.
+    let rows2 = vec![vec![number("Infinity"), number("-Infinity")]];
+    let sql2 = format_selection(
+        &["a".into(), "b".into()],
+        &rows2,
+        CopyFormat::Insert,
+        Some("t"),
+        Dialect::Postgres,
+    )
+    .unwrap();
+    assert!(sql2.contains("('Infinity', '-Infinity')"));
+}
+
+#[test]
+fn mysql_insert_refuses_non_finite_floats() {
+    let headers = vec!["id".into(), "x".into()];
+    let rows = vec![vec![number("1"), number("NaN")]];
+    let err = format_selection(
+        &headers,
+        &rows,
+        CopyFormat::Insert,
+        Some("t"),
+        Dialect::Mysql,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        &err,
+        CopyError::NonFiniteInInsert { column } if column == "x"
+    ));
+    assert_eq!(
+        err.status_message(),
+        "Cannot copy as INSERT: column \"x\" has a non-finite number (NaN/Infinity)"
+    );
+}
+
+#[test]
+fn sqlite_insert_refuses_non_finite_floats() {
+    let headers = vec!["score".into()];
+    let rows = vec![vec![number("Infinity")]];
+    let err = format_selection(
+        &headers,
+        &rows,
+        CopyFormat::Insert,
+        Some("t"),
+        Dialect::Sqlite,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        &err,
+        CopyError::NonFiniteInInsert { column } if column == "score"
+    ));
+    assert!(err.status_message().contains("\"score\""));
+    assert!(err.status_message().contains("non-finite number"));
+}
+
+#[test]
+fn json_emits_string_for_non_finite_numbers() {
+    // serde_json::Number rejects NaN/±Infinity; we emit a JSON string instead of
+    // invalid JSON or null, using the cell's display text (Rust f64 Display).
+    let headers = vec!["x".into()];
+    for text in ["NaN", "inf", "-inf"] {
+        let rows = vec![vec![number(text)]];
+        let json =
+            format_selection(&headers, &rows, CopyFormat::Json, None, Dialect::Sqlite).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["x"], text);
+        assert!(parsed[0]["x"].is_string());
+    }
+    // Finite floats stay JSON numbers.
+    let rows = vec![vec![number("1.5")]];
+    let json = format_selection(&headers, &rows, CopyFormat::Json, None, Dialect::Sqlite).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed[0]["x"], 1.5);
+}
+
+#[test]
+fn tsv_csv_keep_non_finite_display_text() {
+    let headers = vec!["x".into()];
+    let rows = vec![vec![number("NaN")], vec![number("inf")]];
+    let tsv = format_selection(&headers, &rows, CopyFormat::Tsv, None, Dialect::Sqlite).unwrap();
+    assert_eq!(tsv, "x\nNaN\ninf\n");
+    let csv = format_selection(&headers, &rows, CopyFormat::Csv, None, Dialect::Sqlite).unwrap();
+    assert_eq!(csv, "x\nNaN\ninf\n");
+}
+
+#[test]
 fn value_to_copy_cell_preserves_text_null() {
     assert_eq!(value_to_copy_cell(&Value::Null), CopyCell::Null);
     assert_eq!(
