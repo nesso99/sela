@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Package a macOS universal (or single-arch) sela binary as .app inside a .dmg and a .zip.
+# Package a macOS sela binary as .app inside a .dmg and a .zip.
 # Env:
 #   VERSION     - version without leading v (required)
-#   BINARY      - path to the (possibly universal) binary (required)
+#   BINARY      - path to the binary (required)
 #   OUT_DIR     - output directory (default: dist)
 #   REPO_ROOT   - repository root (default: cwd)
-#   ARCH_LABEL  - artifact arch label (default: universal)
+#   ARCH_LABEL  - artifact arch label (default: arm64)
 set -euo pipefail
 
 VERSION="${VERSION:?VERSION required}"
 BINARY="${BINARY:?BINARY required}"
 OUT_DIR="${OUT_DIR:-dist}"
 REPO_ROOT="${REPO_ROOT:-$(pwd)}"
-ARCH_LABEL="${ARCH_LABEL:-universal}"
+ARCH_LABEL="${ARCH_LABEL:-arm64}"
 
 mkdir -p "$OUT_DIR"
 test -x "$BINARY"
