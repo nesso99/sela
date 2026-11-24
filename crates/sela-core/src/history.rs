@@ -392,6 +392,8 @@ mod tests {
             "CREATE USER 'u'@'%' IDENTIFIED WITH caching_sha2_password BY 'secret'",
             "CREATE USER 'u'@'%' IDENTIFIED WITH auth_plugin BY 'secret'",
             "CREATE USER u IDENTIFIED WITH auth_plugin BY 'secret'",
+            // Quoted plugin name: the blanked string leaves `IDENTIFIED WITH BY`.
+            "CREATE USER u IDENTIFIED WITH 'mysql_native_password' BY 'secret'",
         ];
         for sql in positives {
             assert!(
