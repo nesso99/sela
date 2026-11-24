@@ -51,6 +51,8 @@ pub enum CopyError {
     NotLoaded { rows: usize },
     /// INSERT refused because a decode/unsupported cell cannot be re-inserted.
     DecodeInInsert { column: String },
+    /// INSERT refused on MySQL/SQLite because a number is NaN or ±Infinity.
+    NonFiniteInInsert { column: String },
     /// Identifier quoting failed.
     Ident(String),
 }
@@ -64,6 +66,11 @@ impl CopyError {
             Self::DecodeInInsert { column } => {
                 format!(
                     "Cannot copy INSERT: column `{column}` has a decode error or unsupported type"
+                )
+            }
+            Self::NonFiniteInInsert { column } => {
+                format!(
+                    "Cannot copy as INSERT: column \"{column}\" has a non-finite number (NaN/Infinity)"
                 )
             }
             Self::Ident(msg) => msg.clone(),
@@ -245,7 +252,48 @@ fn parse_json_number(text: &str) -> Option<serde_json::Value> {
         return Some(serde_json::Value::Number(n.into()));
     }
     let f: f64 = text.parse().ok()?;
+    // Non-finite floats are not valid JSON numbers; callers fall back to a JSON string.
     serde_json::Number::from_f64(f).map(serde_json::Value::Number)
+}
+
+/// Classify a numeric display string as NaN / ±Infinity when it is not a finite literal.
+///
+/// Matches Rust `f64` Display (`NaN`, `inf`, `-inf`) and the Postgres spellings
+/// (`Infinity`, `-Infinity`).
+fn classify_non_finite(text: &str) -> Option<NonFiniteKind> {
+    let t = text.trim();
+    if t.eq_ignore_ascii_case("nan") {
+        return Some(NonFiniteKind::Nan);
+    }
+    if t.eq_ignore_ascii_case("inf")
+        || t.eq_ignore_ascii_case("+inf")
+        || t.eq_ignore_ascii_case("infinity")
+        || t.eq_ignore_ascii_case("+infinity")
+    {
+        return Some(NonFiniteKind::PosInf);
+    }
+    if t.eq_ignore_ascii_case("-inf") || t.eq_ignore_ascii_case("-infinity") {
+        return Some(NonFiniteKind::NegInf);
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonFiniteKind {
+    Nan,
+    PosInf,
+    NegInf,
+}
+
+impl NonFiniteKind {
+    /// Postgres float4/float8/numeric accept these as quoted string literals.
+    fn postgres_sql_literal(self) -> &'static str {
+        match self {
+            Self::Nan => "'NaN'",
+            Self::PosInf => "'Infinity'",
+            Self::NegInf => "'-Infinity'",
+        }
+    }
 }
 
 fn format_insert(
@@ -256,6 +304,11 @@ fn format_insert(
 ) -> Result<String, CopyError> {
     if let Some(column) = first_decode_column(headers, rows) {
         return Err(CopyError::DecodeInInsert { column });
+    }
+    if matches!(dialect, Dialect::Mysql | Dialect::Sqlite) {
+        if let Some(column) = first_non_finite_column(headers, rows) {
+            return Err(CopyError::NonFiniteInInsert { column });
+        }
     }
     let placeholder = table_name.is_none();
     let table = table_name.unwrap_or("table");
@@ -293,22 +346,48 @@ fn first_decode_column(headers: &[String], rows: &[Vec<CopyCell>]) -> Option<Str
     for row in rows {
         for (ci, cell) in row.iter().enumerate() {
             if matches!(cell, CopyCell::Decode(_)) {
-                return Some(
-                    headers
-                        .get(ci)
-                        .cloned()
-                        .unwrap_or_else(|| format!("column {ci}")),
-                );
+                return Some(column_name(headers, ci));
             }
         }
     }
     None
 }
 
+fn first_non_finite_column(headers: &[String], rows: &[Vec<CopyCell>]) -> Option<String> {
+    for row in rows {
+        for (ci, cell) in row.iter().enumerate() {
+            if let CopyCell::Value(text, CopyScalarKind::Number) = cell {
+                if classify_non_finite(text).is_some() {
+                    return Some(column_name(headers, ci));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn column_name(headers: &[String], ci: usize) -> String {
+    headers
+        .get(ci)
+        .cloned()
+        .unwrap_or_else(|| format!("column {ci}"))
+}
+
 fn cell_to_sql_literal(cell: &CopyCell, dialect: Dialect) -> String {
     match cell {
         CopyCell::Null => "NULL".into(),
-        CopyCell::Value(text, CopyScalarKind::Number | CopyScalarKind::Bool) => text.clone(),
+        CopyCell::Value(text, CopyScalarKind::Number) => {
+            if let Some(kind) = classify_non_finite(text) {
+                // MySQL/SQLite refuse earlier; Postgres needs quoted specials.
+                match dialect {
+                    Dialect::Postgres => kind.postgres_sql_literal().into(),
+                    Dialect::Mysql | Dialect::Sqlite => "NULL".into(),
+                }
+            } else {
+                text.clone()
+            }
+        }
+        CopyCell::Value(text, CopyScalarKind::Bool) => text.clone(),
         CopyCell::Value(text, CopyScalarKind::Text) => escape_sql_string(text, dialect),
         // Refused earlier for INSERT; defensive fallback.
         CopyCell::Decode(_) | CopyCell::NotLoaded => "NULL".into(),

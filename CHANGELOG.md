@@ -8,6 +8,10 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 
 ## [Unreleased]
 
+### Fixed
+
+- Copy as INSERT: non-finite floats (`NaN` / ±Infinity) are quoted for Postgres (`'NaN'`, `'Infinity'`, `'-Infinity'`) and refused on MySQL/SQLite with a status message naming the column. JSON copy emits a JSON string for those values (valid JSON; not a bare `NaN` token). Roadmap/SPECS M1-3 and M1-7 status markers updated to Done (#17/#22, #24).
+
 ### Added
 
 - M1-5 query history (US-10): `history.sqlite` with FTS5 (mode `0600`), global 10 000-row retention, per-connection `record_history` (default on), bottom history panel with scope/outcome/search, Open / Insert / Copy / Rerun / Delete / Clear history. Rerun uses `is_safe_to_rerun_for_load_more` and confirms otherwise; Open/Insert never auto-run. Password-setting DDL (`CREATE`/`ALTER` `USER`|`ROLE` … `PASSWORD`, `IDENTIFIED BY`, `SET PASSWORD`) is skipped (not redacted) with status note `not saved to history (contains a password)`. User docs: `docs/user/query-history.md`.
