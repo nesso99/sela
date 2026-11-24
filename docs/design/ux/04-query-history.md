@@ -21,7 +21,7 @@ The sidebar stays the schema tree. A history row has to show a SQL preview at th
 | Row | 26px | Same height as the dense grid row in [06-theme-tokens.md](./06-theme-tokens.md) |
 | Error detail | 22px | Only when the selected row failed |
 
-The open/closed state and the height live in memory for the session. Do not write them into `connections.json`. Persistence is the same open question as the sidebar width in the batch 1 main-window spec.
+The open/closed state and the height live in memory for the session (`history_open` and `history_height` on `Workspace`). Do not write them into `connections.json` or `settings.json`. The panel remembers its height for the session only. Persisting that height comes later, together with the sidebar width and the editor height. See [Decisions](#decisions).
 
 The status bar gains one ghost button, `History`, on the right, before the source label. `xsmall`, inside the existing 28px. It uses the selected button style while the panel is open. `secondary-shift-h` toggles the panel from anywhere except a modal. `secondary-h` is Hide on macOS and stays free. `secondary-y` is redo in text fields on Windows and Linux and stays free.
 
@@ -190,7 +190,4 @@ Bindings use a history focus context. The full group is in [README.md](./README.
 2. Rerun runs directly only when the statement passes `is_safe_to_rerun_for_load_more`. Every other statement gets a confirm dialog that shows the SQL. Cancel is the default button. Rerun stays available.
 3. An unencrypted `history.sqlite` with mode `0600` is acceptable. Clear history is the way to remove it. The user-facing note is in [faq.md](../../user/faq.md).
 4. One global cap of 10,000 rows. The oldest rows in the file are the ones removed.
-
-## Still open
-
-Should the open/closed state and the panel height persist with the theme setting, or stay in memory for the session? The spec keeps them in memory until that is decided. Same question as the sidebar width in the main-window spec.
+5. The history panel remembers its height for the session only. Persisting that height comes later, together with the sidebar width and the editor height. Do not store it in the theme setting. The open/closed state stays in memory for the session as well.

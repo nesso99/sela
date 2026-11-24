@@ -15,6 +15,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 ### Fixed
 
 - Query history: MySQL `IDENTIFIED WITH <plugin> BY` (including `caching_sha2_password` and `mysql_native_password`) is skipped like other password-setting DDL, instead of being stored in `history.sqlite` (#32).
+- Filter `LIKE` / `NOT LIKE`: pass the user's pattern through with `ESCAPE '!'` so `!%`, `!_`, and `!!` match literal `%`, `_`, and `!` (dangling `!` becomes `!!`). Legacy contains/starts/ends still fully escape. (#33)
 - Copy as INSERT: non-finite floats (`NaN` / ±Infinity) are quoted for Postgres (`'NaN'`, `'Infinity'`, `'-Infinity'`) and refused on MySQL/SQLite with a status message naming the column. JSON copy emits a JSON string for those values (valid JSON; not a bare `NaN` token). Roadmap/SPECS M1-3 and M1-7 status markers updated to Done (#17/#22, #24).
 
 ### Added
@@ -42,6 +43,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 
 ### Changed
 
+- UX: quit and window lifecycle in the main-window spec (shutdown also flushes `history.sqlite`: WAL checkpoint and close, inside the same ~2s cap). History panel height stays session-only (persisted later with sidebar and editor sizes). Verify-full checks the Host field; a certificate hostname override is backlog. Dark chrome (`#171717`) and a 13px UI font are the confirmed density.
 - Upgrade sqlx from 0.8.6 to 0.9.1. Drop the vendored `sqlx-core` backport of [sqlx#3861](https://github.com/launchbadge/sqlx/pull/3861) (`vendor/`, `[patch.crates-io]`, and the `vendor-drift` CI job). Feature flags move from `runtime-tokio-rustls` to `runtime-tokio` + `tls-rustls`; `macros` is enabled for `Executor::describe`. Dynamic SQL goes through `AssertSqlSafe` / a small `query` helper. Align `bit-vec` 0.8 and `ipnetwork` 0.21 with sqlx. (#19)
 - New PostgreSQL and MySQL connections default to `tls.mode = prefer` (dialog / `SavedConnection::new`). Saved configs with no `tls` value still deserialize as `disable`; `TlsMode::default` stays `disable`. Prefer shows the hint: *prefer may fall back to unencrypted; use require or verify-full for remote servers*.
 - M1-3 polish: bool filter values use a true/false menu (null ops still hide the control); filter-bar keyboard extras (`secondary-shift-enter` insert row, `secondary-backspace` remove/clear sole row when the focused column/value field is empty or focus is not in a text field — otherwise delete-to-line-start for macOS ⌘⌫, Escape leaves the bar per the UX spec); UX review notes for sortable header clicks, legacy contains/starts/ends restore, and ASC→DESC→none sort cycle.

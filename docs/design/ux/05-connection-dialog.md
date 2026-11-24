@@ -111,7 +111,7 @@ That hint is hidden for the other modes. The docker sample still works on Prefer
 
 Postgres `Allow` is not a mode in this dialog. MySQL has no separate `Allow`. Verify full on MySQL is `VerifyIdentity`, not a fifth name in the UI. The stored value is the left-hand column (`disable`, `prefer`, `require`, `verify-ca`, `verify-full`), which is the shape in the SPECS config example.
 
-The hostname that Verify full checks is the Host field. `127.0.0.1` and `localhost` are different names to a certificate.
+The hostname that Verify full checks is the Host field. There is no separate certificate-hostname field. A hostname override is backlog. `127.0.0.1` and `localhost` are different names to a certificate.
 
 ### Certificate fields
 
@@ -257,7 +257,4 @@ Focus order is the field order above, then Cancel, Test, Save, Save & connect. T
 2. The dialog keeps both Save and Save & connect. Save does not reconnect. Save & connect does.
 3. No client-key passphrase in this dialog. It is backlog. The key file is an unencrypted PEM.
 4. The JSON names are `ca_path`, `client_cert_path`, and `client_key_path`.
-
-## Still open
-
-Verify full checks the Host field. A separate certificate-hostname override, for when Host is an IP, is not in this dialog.
+5. No separate certificate hostname field. Verify full checks the Host field. A hostname override is backlog.
