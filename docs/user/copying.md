@@ -15,7 +15,8 @@ With the grid focused (`DataTable` key context):
 | Action | Shortcut / control |
 | --- | --- |
 | Copy as TSV (default) | Cmd/Ctrl+C |
-| Copy as TSV / CSV / JSON / INSERT | Right-click context menu |
+| Copy | Right-click → Copy (same TSV as Cmd/Ctrl+C) |
+| Copy as TSV / CSV / JSON / INSERT | Right-click context menu on a cell or row header |
 
 - **TSV** — tab-separated values with a header row. Default for Cmd/Ctrl+C so spreadsheets paste cleanly.
 - **CSV** — comma-separated values; fields with commas, quotes, or newlines are quoted (RFC 4180-style).
