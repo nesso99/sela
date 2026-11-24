@@ -2,7 +2,7 @@
 
 The Sela window is one sidebar and one content column. The content column is a tab bar, a toolbar, an optional error banner, the results (grid or Structure), the SQL editor, and a status bar. Nothing in this layout is a card. Regions meet on 1px borders.
 
-This spec matches the window in `crates/sela-app/src/ui/workspace/` and the shortcuts in `crates/sela-app/src/ui/mod.rs`. Filter-bar behavior is specified in [02-filter-sort-review.md](./02-filter-sort-review.md). The editor split, autocomplete, and gutter errors are specified in [03-sql-editor.md](./03-sql-editor.md). Shortcut notation is in [README.md](./README.md).
+This spec matches the window in `crates/sela-app/src/ui/workspace/` and the shortcuts in `crates/sela-app/src/ui/mod.rs`. Filter-bar behavior is specified in [02-filter-sort-review.md](./02-filter-sort-review.md). The editor split, autocomplete, and gutter errors are specified in [03-sql-editor.md](./03-sql-editor.md). Shortcut notation is in [README.md](./README.md). Quit and the close control are in [Quit and window lifecycle](#quit-and-window-lifecycle).
 
 ![Main window layout with dimensions](images/main-layout.png)
 
@@ -36,7 +36,7 @@ Column widths stay as they are: `GridDelegate::column` sizes from the header tex
 
 **Tab bar** (`tabs.rs`). One tab per table or query. The close control is on the tab. `+` creates a query tab. With no tabs the bar shows a disabled “No tabs” item, which is what the code does today.
 
-**Toolbar** (`content.rs`). Left: `TabView::source_label` (`schema.table`, `SQL result`, or `No table open`) and, under it, the engine and endpoint. Right, only when a table is open: Data, Structure, and Refresh while Structure is showing. On the Data pane: the page label, Previous, Next. Page label logic in `Workspace::render` stays: `Page N of M` when `total_rows` is known, otherwise `Page N · 100 rows`.
+**Toolbar** (`content.rs`). Left: `TabView::source_label` (`schema.table`, `SQL result`, or `No table open`) and, under it, the engine and endpoint. Right, only when a table is open: Data, Structure, and Refresh while Structure is showing. On the Data pane: the page label, Previous, Next. Page label logic in `Workspace::render` stays: `Page N of M` when `total_rows` is known, otherwise `Page N · 100 rows`. When the platform is not drawing a close button, a small close control sits at the right end of this bar. It is not a Quit button. See [Quit and window lifecycle](#quit-and-window-lifecycle).
 
 **Grid** (`grid.rs`, gpui-component `DataTable`). Monospace. Header is the column name, then the type name (`format!("{}   {}", meta.name, meta.type_name)`). NULL is italic and `muted_foreground`. A loading cell is italic `…`. Other values use `foreground`. Cells are one line, truncated at `CELL_DISPLAY_MAX_CHARS` (200) by `truncate_one_line`.
 
@@ -167,7 +167,7 @@ Tab order, top to bottom. Shift+Tab reverses. The status text and the source lab
 9. Run, Stop, and Load more in the editor header.
 10. `Count` or `Load more` in the status bar, when that button is visible.
 
-A modal (connection form, delete confirm) traps focus until it closes. An open menu, the autocomplete popup, or the inspect popover keeps Tab, arrows, Enter, and Escape inside itself.
+A modal (connection form, delete confirm, quit confirm) traps focus until it closes. `secondary-q` still reaches the quit handler from a dialog other than the quit confirm. An open menu, the autocomplete popup, or the inspect popover keeps Tab, arrows, Enter, and Escape inside itself.
 
 ## Keyboard shortcuts
 
@@ -184,9 +184,25 @@ Full tables and reserved chords are in [README.md](./README.md). The window-leve
 | Cancel | `secondary-.` | Bound. |
 | Toggle editor | `secondary-shift-e` | |
 | Inspect cell | `Space` | Grid focused. |
-| Quit | `secondary-q` | Bound as `cmd-q` only today. |
+| Quit | `secondary-q` | Global, including the editor and dialogs. Bound as `cmd-q` only today. |
 
-Filter and editor chords are in the other two specs. They must be context-scoped so they do not fire from this list’s focus.
+Filter and editor chords are in the other specs. They must be context-scoped so they do not fire from this list’s focus. `secondary-q` is the exception: it is not scoped.
+
+## Quit and window lifecycle
+
+The window always has a close control. Use server-side decorations where the platform draws them. On Linux and Wayland, when the server does not draw decorations, show a small client-side close button at the right end of the 44px toolbar. GPUI draws no native menu bar on Linux, so that button is the close control on those sessions. It is not a Quit button. Do not put Quit on the toolbar.
+
+`secondary-q` quits. That is Command+Q on macOS and Control+Q on Linux and Windows. The binding is global: it works from the SQL editor and from dialogs. On Windows, Alt+F4 is the OS close and uses the same quit path. Register it once, with `bind_secondary`, not as a second `cmd-q` / `ctrl-q` pair.
+
+On macOS the app menu item is `Quit Sela`, last, after a separator. On Linux and Windows the File menu item is `Quit`, last, after a separator, with a Ctrl+Q hint. GPUI does not draw a native menu bar on Linux, so that item is not visible there.
+
+Closing the last window quits on Linux and Windows. On macOS the app stays running after the last window closes, and Command+Q quits. That is gpui-pre 0.3.12 `QuitMode::Default` (`Explicit` on macOS, `LastWindowClosed` elsewhere). `ui/mod.rs` does not call `set_quit_mode`. Keep that default. The shortcut, the menu item, Alt+F4, and the close control go through one quit handler. Closing the window on macOS is not that handler.
+
+Confirm only while a query is running. Count is included: `spawn_work` sets `view.busy` for Count the same way it does for a query. If any tab is busy, confirm. Title `Quit Sela?`. Body `A query is still running. Quitting will cancel it.` Buttons are Cancel, then Quit. Cancel is the default and the focused button. Escape cancels. Quit is not primary-styled. A second `secondary-q` while this dialog is open does not quit.
+
+On quit, cancel in-flight queries and close pools. Wait about 2 seconds, then exit anyway.
+
+Today `Quit` is bound as `cmd-q` with context `None`, and the handler is `cx.quit()`. There is no confirm, no menu, and no toolbar close button. The window title bar is the default (`TitlebarOptions` title `Sela`, `appears_transparent` left false) and `window_decorations` is unset.
 
 ## Status text
 
@@ -220,9 +236,21 @@ Filter and editor chords are in the other two specs. They must be context-scoped
 - Banner: keep `error_banner`. Add `max_h` around 60px and vertical scroll. Append SQLSTATE from `DbError` instead of only `Display`, which is the message alone (`error.rs`).
 - Load more footer: a sibling under the `DataTable` inside `results_area`, visible only when `GridSource::Sql` and `truncated`. It is not a row in `ResultWindow`.
 - Do not turn on `TableState::sortable(true)`. Header sort is specified in the filter spec and is server-side.
+- Quit goes through one handler, as in [Quit and window lifecycle](#quit-and-window-lifecycle). Do the about-2-second wait in that handler before `cx.quit()`.
 
 ## Decisions
 
-1. **Do not persist sidebar width or editor height yet.** Keep both in memory for the session. A later optional config field may store them with a serde default. That change has no migration.
+1. **Do not persist sidebar width or editor height yet.** Keep both in memory for the session. A later optional config field may store them with a serde default, together with the history panel height. That change has no migration. See [04-query-history.md](./04-query-history.md).
 2. **Keep both error surfaces.** The banner always shows the full message. The gutter marker and underline are drawn only when the engine reports a position.
 3. **M1-9 is done** (#13, `pg_decode.rs`). Text fallbacks are normal cells, as in the decode-error section. Do not edit `roadmap.md` for that status here. Engineering updates the roadmap, PRD, and SPECS status rows in the M1-3 pull request.
+
+## Open questions
+
+Differences from `ui/mod.rs` and gpui-pre 0.3.12. [Quit and window lifecycle](#quit-and-window-lifecycle) is the target.
+
+1. The binding is `cmd-q`, not `secondary-q`. In this gpui-pre, `cmd` is the platform modifier and `secondary` is Control on Linux and Windows, so Ctrl+Q is not bound. The context is already `None` (global). Whether an open dialog eats the key before `cx.on_action` is not handled.
+2. The handler is `cx.quit()` with no confirm, no cancel, and no pool shutdown. The title-bar close button and Alt+F4 follow `QuitMode::Default` and do not call `Quit`, so they skip that handler. The last-window rule itself matches the default (macOS stays running, other platforms quit). Sela does not call `set_quit_mode`. Keep it.
+3. Nothing reads `Window::window_decorations()`, and the toolbar has no close button. `window_decorations` is unset, so a Wayland session without server-side decorations may have no close control until the toolbar button exists.
+4. `set_menus` is never called. There is no `Quit Sela` item and no File > Quit item.
+5. Nothing waits about 2 seconds. `SHUTDOWN_TIMEOUT` is 200ms and only bounds `on_app_quit` futures, which Sela does not register. The cap has to finish before `cx.quit()`.
+6. On macOS, closing the window leaves the app running and does not cancel an in-flight query. This section does not define that case.
