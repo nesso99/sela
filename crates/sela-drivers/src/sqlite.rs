@@ -1164,4 +1164,95 @@ mod tests {
         .unwrap();
         assert_eq!(exact, 8);
     }
+
+    /// Menu `LIKE` with `ESCAPE '!'`: `!%` / `!_` / `!!` match literal `%` / `_` / `!`.
+    #[tokio::test]
+    async fn like_escape_matches_literals() {
+        use sela_core::{FilterCondition, FilterOp, SortSpec, StatementOutcome, TablePreview};
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = SqliteSession::open(&dir.path().join("like_escape.sqlite"), true)
+            .await
+            .unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_like_escape (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "INSERT INTO sela_like_escape (id, name) VALUES
+                 (1, '100%'),
+                 (2, '100x'),
+                 (3, 'a_b'),
+                 (4, 'axb'),
+                 (5, 'wow!')",
+            )
+            .await
+            .unwrap();
+
+        let pct = preview_table(
+            &session,
+            "main",
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "100!%")],
+                sorts: &[SortSpec::asc("id")],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = pct else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("100%"));
+
+        let under = preview_table(
+            &session,
+            "main",
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "a!_b")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = under else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("a_b"));
+
+        let bang = preview_table(
+            &session,
+            "main",
+            "sela_like_escape",
+            PAGE_SIZE,
+            0,
+            CancellationToken::new(),
+            TablePreview {
+                filters: &[FilterCondition::new("name", FilterOp::Like, "wow!!")],
+                sorts: &[],
+            },
+        )
+        .await
+        .unwrap();
+        let StatementOutcome::Rows(rows) = bang else {
+            panic!("rows");
+        };
+        assert_eq!(rows.page.rows.len(), 1);
+        assert_eq!(rows.page.rows[0][1], Value::text("wow!"));
+    }
 }
