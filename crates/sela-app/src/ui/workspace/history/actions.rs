@@ -311,7 +311,53 @@ impl Workspace {
         let Some(entry) = self.selected_history_entry().cloned() else {
             return;
         };
-        if !self.connections.iter().any(|c| c.id == entry.connection_id) {
+        let Some(conn) = self
+            .connections
+            .iter()
+            .find(|c| c.id == entry.connection_id)
+            .cloned()
+        else {
+            return;
+        };
+        // Writes follow safe mode (09-safe-mode.md). Reads keep the existing
+        // history_rerun_needs_confirm path.
+        let safety = sela_core::classify_statement_safety(&entry.sql, conn.engine.dialect());
+        if safety.is_write {
+            let classified = [(entry.sql.clone(), safety)];
+            let gate = sela_core::decide_editor_gate(conn.safe_mode, &classified);
+            match gate {
+                sela_core::EditorGate::Allow => {
+                    self.open_query_tab_with_sql(
+                        &entry.connection_id,
+                        &entry.sql,
+                        true,
+                        window,
+                        cx,
+                    );
+                }
+                sela_core::EditorGate::RefuseReadOnly => {
+                    // Open the tab so the refusal is visible; do not run.
+                    self.open_query_tab_with_sql(
+                        &entry.connection_id,
+                        &entry.sql,
+                        false,
+                        window,
+                        cx,
+                    );
+                    if let Some(tab_id) = self.tabs.active().map(|t| t.id) {
+                        self.refuse_read_only_run(tab_id, cx);
+                    }
+                }
+                gate => {
+                    self.show_history_safe_mode_confirm(
+                        window,
+                        cx,
+                        entry.connection_id.clone(),
+                        entry.sql.clone(),
+                        gate,
+                    );
+                }
+            }
             return;
         }
         if history_rerun_needs_confirm(&entry.sql) {

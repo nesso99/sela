@@ -193,6 +193,49 @@ mod tests {
     }
 
     #[test]
+    fn safe_mode_round_trip_and_missing_defaults_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connections.json");
+        // Legacy file without safe_mode still loads as Off.
+        let seeded = r#"{
+            "schema_version": 2,
+            "connections": [{
+                "id": "c1",
+                "name": "Local",
+                "engine": "postgres",
+                "host": "127.0.0.1",
+                "port": 5432,
+                "username": "sela",
+                "database": "sample"
+            }]
+        }"#;
+        fs::write(&path, seeded).unwrap();
+        let store = ConfigStore::with_path(&path);
+        let mut loaded = store.load().unwrap();
+        assert_eq!(loaded[0].safe_mode, sela_core::SafeMode::Off);
+
+        loaded[0].safe_mode = sela_core::SafeMode::Confirm;
+        store.save(&loaded).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("\"safe_mode\": \"confirm\"")
+                || text.contains("\"safe_mode\":\"confirm\"")
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()["schema_version"],
+            2
+        );
+
+        let reloaded = store.load().unwrap();
+        assert_eq!(reloaded[0].safe_mode, sela_core::SafeMode::Confirm);
+
+        loaded[0].safe_mode = sela_core::SafeMode::Off;
+        store.save(&loaded).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("safe_mode"), "Off omits safe_mode: {text}");
+    }
+
+    #[test]
     fn loads_v1_file_without_schema_version_or_tls() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("connections.json");

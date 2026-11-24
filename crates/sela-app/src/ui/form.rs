@@ -7,7 +7,7 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, Context, Entity, EventEmitter, IntoElement, Render, Window};
 
-use sela_core::{Engine, SavedConnection, TlsMode, TlsSettings};
+use sela_core::{Engine, SafeMode, SavedConnection, TlsMode, TlsSettings};
 
 #[derive(Clone)]
 pub struct ConnectionDraft {
@@ -25,6 +25,7 @@ pub struct ConnectionForm {
     engine: Engine,
     tls_mode: TlsMode,
     record_history: bool,
+    safe_mode: SafeMode,
     warning: Option<String>,
     /// True when the OS keychain probe failed; changes the password helper copy.
     keychain_unavailable: bool,
@@ -69,6 +70,7 @@ impl ConnectionForm {
             engine,
             tls_mode: seed.tls.mode,
             record_history: seed.record_history,
+            safe_mode: seed.safe_mode,
             warning,
             keychain_unavailable,
             error: None,
@@ -161,6 +163,14 @@ impl ConnectionForm {
         cx.notify();
     }
 
+    fn set_safe_mode(&mut self, mode: SafeMode, cx: &mut Context<Self>) {
+        if self.safe_mode == mode {
+            return;
+        }
+        self.safe_mode = mode;
+        cx.notify();
+    }
+
     fn submit(&mut self, cx: &mut Context<Self>) {
         let mut connection = SavedConnection::new(self.engine);
         if let Some(id) = &self.existing_id {
@@ -173,6 +183,7 @@ impl ConnectionForm {
         connection.database = Self::value(&self.database, cx).trim().to_string();
         connection.file_path = Self::value(&self.file_path, cx).trim().to_string();
         connection.record_history = self.record_history;
+        connection.safe_mode = self.safe_mode;
         let port_text = Self::value(&self.port, cx).trim().to_string();
         if self.engine == Engine::Sqlite {
             connection.port = 0;
@@ -302,6 +313,19 @@ impl Render for ConnectionForm {
                         "Stores SQL you run on this connection in history.sqlite on this computer.",
                     ),
             )
+            .child(label("Safe mode", cx))
+            .child(h_flex().gap_1().children(
+                SafeMode::all()
+                    .iter()
+                    .copied()
+                    .map(|mode| safe_mode_button(this.clone(), mode, self.safe_mode)),
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.safe_mode.helper()),
+            )
             .child(
                 div()
                     .text_xs()
@@ -389,5 +413,26 @@ fn tls_mode_button(
         .when(!selected, |button| button.ghost())
         .on_click(move |_, _, cx| {
             form.update(cx, |form, cx| form.set_tls_mode(mode, cx));
+        })
+}
+
+fn safe_mode_button(
+    form: Entity<ConnectionForm>,
+    mode: SafeMode,
+    current: SafeMode,
+) -> impl IntoElement {
+    let selected = mode == current;
+    let id = match mode {
+        SafeMode::Off => "safe-mode-off",
+        SafeMode::Confirm => "safe-mode-confirm",
+        SafeMode::ReadOnly => "safe-mode-read-only",
+    };
+    Button::new(id)
+        .small()
+        .label(mode.form_label())
+        .when(selected, |button| button.primary())
+        .when(!selected, |button| button.ghost())
+        .on_click(move |_, _, cx| {
+            form.update(cx, |form, cx| form.set_safe_mode(mode, cx));
         })
 }

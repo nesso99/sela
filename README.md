@@ -35,7 +35,8 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Filter bar + column sort (table tabs) | Done |
 | Query history (FTS, per-connection scope) | Done (M1-5) |
 | Grid selection + copy (TSV/CSV/JSON/INSERT); light/dark/system themes | Done (M1-7) |
-| Inline edit, safe mode, connection color, SSH, export | Planned — edit, preview, and safe mode are specified in [docs/design/ux](docs/design/ux/README.md); SSH and export stay later on the [roadmap](docs/design/roadmap.md) |
+| Safe mode (editor) | Done (M2-4) — [safe mode](docs/user/safe-mode.md) |
+| Inline edit, connection color, SSH, export | Planned — edit/preview in [docs/design/ux](docs/design/ux/README.md); SSH and export later on the [roadmap](docs/design/roadmap.md) |
 
 ## Documentation
 
@@ -43,6 +44,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | --- | --- |
 | Install | [docs/user/installation.md](docs/user/installation.md) |
 | Connecting | [docs/user/connecting.md](docs/user/connecting.md) |
+| Safe mode | [docs/user/safe-mode.md](docs/user/safe-mode.md) |
 | Keyboard shortcuts | [docs/user/keyboard-shortcuts.md](docs/user/keyboard-shortcuts.md) |
 | Filtering & sorting | [docs/user/filtering.md](docs/user/filtering.md) |
 | Query history | [docs/user/query-history.md](docs/user/query-history.md) |

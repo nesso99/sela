@@ -91,7 +91,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | M2-1 | `ChangeSet` + grid overlay (edit, insert, delete, duplicate) | US-05 on tables with PK | Core `ChangeSet` done (no UI overlay yet) |
 | M2-2 | `ChangePlan` → dialect SQL + golden tests | Snapshots for 3 engines | Done (core + `apply_changes` + golden / integration tests) |
 | M2-3 | Preview SQL, one-transaction commit, discard, rollback keeps changes | US-06 | Preview + transactional `apply_changes` in core/drivers; UI commit/discard next |
-| M2-4 | Safe mode 3 levels, no-WHERE warnings (`sqlparser`) | US-07 | |
+| M2-4 | Safe mode 3 levels, no-WHERE warnings (`sqlparser`) | US-07 | Done (config + classifier + editor/history gating; toolbar; grid Commit gate helper for M2-3 UI) |
 | M2-5 | Connection color/label, groups, duplicate, import URL | US-01 complete | |
 
 ### M2-1 / M2-2 details (core)
@@ -99,6 +99,12 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 - `sela-core::ChangeSet` records pending cell updates, inserts, and deletes for one table. Tables without a primary key are rejected (`ChangeError::NoPrimaryKey`). Merge rules: edit-on-insert updates the insert; delete-of-insert removes it; re-edit back to the original value drops the cell update.
 - `sela-core::ChangePlan::build` emits ordered DELETE → UPDATE → INSERT SQL with dialect quoting and bind placeholders (`$n` / `?`). Values are never interpolated into executable SQL. `preview_sql` / `preview_bound` are for the M2-3 dialog.
 - `DatabaseSession::apply_changes` runs a plan in one transaction (commit on success, rollback on error) on Postgres, MySQL, and SQLite. UPDATE/DELETE must affect exactly one row (`DbError::ChangeConflict` otherwise).
+
+### M2-4 details
+
+- `SavedConnection.safe_mode`: `off` / `confirm` / `read-only` (serde default Off; omit on save when Off; no `schema_version` bump).
+- `classify_statement_safety` + `decide_editor_gate` / `decide_grid_commit_gate` in `sela-core` (`sqlparser`, dialect-matched). Unparseable SQL fails closed. No-WHERE warns on `UPDATE`/`DELETE` without a `WHERE` (including CTE bodies); `WHERE 1=1` does not.
+- App: connection dialog Safe mode select, toolbar `Safe: …` segment, editor and history Rerun gating with quit-style confirms (Cancel primary).
 
 ---
 
