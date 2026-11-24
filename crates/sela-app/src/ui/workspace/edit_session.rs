@@ -1,0 +1,1281 @@
+//! Grid editing view-model (M2-1 / M2-3): ChangeSet overlay, markers, discard, commit state.
+//!
+//! Pure logic with no GPUI dependency so unit tests can drive dirty tracking,
+//! row markers, discard, and failed-commit retention without a window.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use rust_decimal::Decimal;
+use sela_core::{
+    bind_placeholder, escape_sql_string, value_to_copy_cell, CellChange, ChangeError, ChangePlan,
+    ChangeSet, ColumnKind, ColumnStructure, CopyCell, CopyScalarKind, DbError, Dialect, PlanOp,
+    PlannedStatement, RelationKind, RowChange, TableStructure, Value,
+};
+use uuid::Uuid;
+
+/// Why the Data grid refuses edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReadOnlyReason {
+    NoPrimaryKey,
+    View,
+    SqlResult,
+    /// Structure not loaded yet (transient; strip stays hidden).
+    Loading,
+}
+
+impl ReadOnlyReason {
+    pub fn strip_line(&self) -> Option<&'static str> {
+        match self {
+            Self::NoPrimaryKey => Some("Read-only · this table has no primary key."),
+            Self::View => Some("Read-only · views are read-only."),
+            Self::SqlResult => None, // status only, no strip
+            Self::Loading => None,
+        }
+    }
+
+    pub fn status_line(&self) -> &'static str {
+        match self {
+            Self::NoPrimaryKey => "Read-only · this table has no primary key.",
+            Self::View => "Read-only · views are read-only.",
+            Self::SqlResult => "SQL results are read-only. Open the table to edit.",
+            Self::Loading => "Loading table structure…",
+        }
+    }
+}
+
+/// Gutter / wash state for one logical row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowMarker {
+    Clean,
+    Inserted,
+    Duplicated,
+    Dirty,
+    Deleted,
+}
+
+impl RowMarker {
+    pub fn gutter_glyph(self) -> Option<&'static str> {
+        match self {
+            Self::Clean => None,
+            Self::Inserted => Some("+"),
+            Self::Duplicated => Some("++"),
+            Self::Dirty => Some("•"),
+            Self::Deleted => Some("−"),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn gutter_tooltip(self) -> Option<&'static str> {
+        match self {
+            Self::Clean => None,
+            Self::Inserted => Some("New row"),
+            Self::Duplicated => Some("Duplicated row"),
+            Self::Dirty => Some("Edited row"),
+            Self::Deleted => Some("Deleted row"),
+        }
+    }
+
+    pub fn is_insert_wash(self) -> bool {
+        matches!(self, Self::Inserted | Self::Duplicated)
+    }
+}
+
+/// Identity of a row in the editable grid (server page or overlay insert).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum EditRowId {
+    /// Absolute index into the current [`sela_core::ResultWindow`] page.
+    Server {
+        row_ix: usize,
+    },
+    Overlay {
+        insert_id: u64,
+    },
+}
+
+/// Open in-cell editor draft.
+#[derive(Debug, Clone)]
+pub(crate) struct CellEditor {
+    pub row: EditRowId,
+    pub column: String,
+    pub col_ix: usize,
+    pub kind: ColumnKind,
+    /// Text the user is typing. Ignored when [`Self::is_null`].
+    pub draft: String,
+    /// Explicit NULL (ghost NULL button / bool menu). Distinct from `draft == ""`.
+    pub is_null: bool,
+    pub validation_error: Option<String>,
+    #[allow(dead_code)]
+    pub popover: bool,
+}
+
+/// Counts shown on the 26px pending bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct PendingCounts {
+    pub updated: usize,
+    pub inserted: usize,
+    pub deleted: usize,
+}
+
+impl PendingCounts {
+    pub fn total(self) -> usize {
+        self.updated + self.inserted + self.deleted
+    }
+
+    pub fn summary_left(self) -> String {
+        let total = self.total();
+        let mut parts = Vec::new();
+        if self.updated > 0 {
+            parts.push(format!("{} updated", self.updated));
+        }
+        if self.inserted > 0 {
+            parts.push(format!("{} inserted", self.inserted));
+        }
+        if self.deleted > 0 {
+            parts.push(format!("{} deleted", self.deleted));
+        }
+        if parts.is_empty() {
+            format!("{total} pending")
+        } else {
+            format!("{total} pending · {}", parts.join(", "))
+        }
+    }
+}
+
+/// Overlay insert kept beside the ResultWindow (not written into pages).
+#[derive(Debug, Clone)]
+pub(crate) struct OverlayRow {
+    pub insert_id: u64,
+    pub duplicated: bool,
+}
+
+/// Per-tab editing session.
+#[derive(Debug, Clone)]
+pub(crate) struct EditSession {
+    #[allow(dead_code)]
+    pub relation_kind: RelationKind,
+    pub read_only: Option<ReadOnlyReason>,
+    pub changeset: Option<ChangeSet>,
+    pub generated_columns: HashSet<String>,
+    pub column_types: HashMap<String, String>,
+    pub dialect: Dialect,
+    pub overlay: Vec<OverlayRow>,
+    /// Cell updates preserved when a dirty server row is marked deleted.
+    preserved_updates: BTreeMap<PkKey, BTreeMap<String, CellChange>>,
+    pub editor: Option<CellEditor>,
+    pub preview_open: bool,
+    pub committing: bool,
+    /// After a failed commit: pending bar shows "Commit failed. Changes kept."
+    pub commit_failed: bool,
+}
+
+/// Newtype so `Vec<Value>` can be a BTreeMap key via display+Debug-stable order.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PkKey(Vec<String>);
+
+impl PkKey {
+    fn from_values(pk: &[Value]) -> Self {
+        Self(pk.iter().map(|v| v.display().into_owned()).collect())
+    }
+}
+
+impl EditSession {
+    /// SQL result tab — never editable; no strip.
+    pub fn sql_result() -> Self {
+        Self {
+            relation_kind: RelationKind::Table,
+            read_only: Some(ReadOnlyReason::SqlResult),
+            changeset: None,
+            generated_columns: HashSet::new(),
+            column_types: HashMap::new(),
+            dialect: Dialect::Sqlite,
+            overlay: Vec::new(),
+            preserved_updates: BTreeMap::new(),
+            editor: None,
+            preview_open: false,
+            committing: false,
+            commit_failed: false,
+        }
+    }
+
+    /// Idle / unknown — wait for structure.
+    pub fn loading(dialect: Dialect, relation_kind: RelationKind) -> Self {
+        let read_only = if relation_kind == RelationKind::View {
+            Some(ReadOnlyReason::View)
+        } else {
+            Some(ReadOnlyReason::Loading)
+        };
+        Self {
+            relation_kind,
+            read_only,
+            changeset: None,
+            generated_columns: HashSet::new(),
+            column_types: HashMap::new(),
+            dialect,
+            overlay: Vec::new(),
+            preserved_updates: BTreeMap::new(),
+            editor: None,
+            preview_open: false,
+            committing: false,
+            commit_failed: false,
+        }
+    }
+
+    /// Build from introspection. No PK → read-only strip.
+    pub fn from_structure(
+        structure: &TableStructure,
+        dialect: Dialect,
+        relation_kind: RelationKind,
+    ) -> Self {
+        if relation_kind == RelationKind::View {
+            return Self {
+                relation_kind,
+                read_only: Some(ReadOnlyReason::View),
+                changeset: None,
+                generated_columns: HashSet::new(),
+                column_types: column_type_map(structure),
+                dialect,
+                overlay: Vec::new(),
+                preserved_updates: BTreeMap::new(),
+                editor: None,
+                preview_open: false,
+                committing: false,
+                commit_failed: false,
+            };
+        }
+        let generated = detect_generated_columns(structure);
+        let column_types = column_type_map(structure);
+        match ChangeSet::from_structure(structure) {
+            Ok(cs) => Self {
+                relation_kind,
+                read_only: None,
+                changeset: Some(cs),
+                generated_columns: generated,
+                column_types,
+                dialect,
+                overlay: Vec::new(),
+                preserved_updates: BTreeMap::new(),
+                editor: None,
+                preview_open: false,
+                committing: false,
+                commit_failed: false,
+            },
+            Err(ChangeError::NoPrimaryKey) => Self {
+                relation_kind,
+                read_only: Some(ReadOnlyReason::NoPrimaryKey),
+                changeset: None,
+                generated_columns: generated,
+                column_types,
+                dialect,
+                overlay: Vec::new(),
+                preserved_updates: BTreeMap::new(),
+                editor: None,
+                preview_open: false,
+                committing: false,
+                commit_failed: false,
+            },
+            Err(_) => Self {
+                relation_kind,
+                read_only: Some(ReadOnlyReason::NoPrimaryKey),
+                changeset: None,
+                generated_columns: generated,
+                column_types,
+                dialect,
+                overlay: Vec::new(),
+                preserved_updates: BTreeMap::new(),
+                editor: None,
+                preview_open: false,
+                committing: false,
+                commit_failed: false,
+            },
+        }
+    }
+
+    pub fn is_editable(&self) -> bool {
+        self.read_only.is_none() && self.changeset.is_some()
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.changeset.as_ref().is_some_and(|cs| !cs.is_empty()) || !self.overlay.is_empty()
+    }
+
+    pub fn pending_counts(&self) -> PendingCounts {
+        let Some(cs) = &self.changeset else {
+            return PendingCounts::default();
+        };
+        let mut counts = PendingCounts::default();
+        for change in cs.changes() {
+            match change {
+                RowChange::Update { cells, .. } if !cells.is_empty() => counts.updated += 1,
+                RowChange::Insert { .. } => counts.inserted += 1,
+                RowChange::Delete { .. } => counts.deleted += 1,
+                RowChange::Update { .. } => {}
+            }
+        }
+        counts
+    }
+
+    pub fn strip_line(&self) -> Option<&'static str> {
+        self.read_only.as_ref().and_then(|r| r.strip_line())
+    }
+
+    /// Whether Commit may run (required PK cells on new rows are set).
+    pub fn commit_blocked_reason(&self) -> Option<&'static str> {
+        if self.committing {
+            return Some("Committing…");
+        }
+        let Some(cs) = &self.changeset else {
+            return Some("This table is read-only.");
+        };
+        if cs.is_empty() {
+            return Some("No pending changes.");
+        }
+        for change in cs.changes() {
+            if let RowChange::Insert { values, .. } = change {
+                for pk in cs.pk_columns() {
+                    if self.generated_columns.contains(pk) {
+                        continue;
+                    }
+                    if !values.contains_key(pk) {
+                        return Some("Set a primary key for the new row.");
+                    }
+                }
+            }
+        }
+        // Empty insert values would fail ChangePlan::build.
+        for change in cs.changes() {
+            if let RowChange::Insert { values, .. } = change {
+                if values.is_empty() {
+                    return Some("Set a primary key for the new row.");
+                }
+            }
+        }
+        None
+    }
+
+    pub fn row_marker_for_server(&self, pk: &[Value]) -> RowMarker {
+        let Some(cs) = &self.changeset else {
+            return RowMarker::Clean;
+        };
+        for change in cs.changes() {
+            match change {
+                RowChange::Delete { pk: deleted } if pk_match(deleted, pk) => {
+                    return RowMarker::Deleted;
+                }
+                RowChange::Update { pk: updated, cells }
+                    if pk_match(updated, pk) && !cells.is_empty() =>
+                {
+                    return RowMarker::Dirty;
+                }
+                _ => {}
+            }
+        }
+        RowMarker::Clean
+    }
+
+    pub fn row_marker_for_overlay(&self, insert_id: u64) -> RowMarker {
+        if self
+            .overlay
+            .iter()
+            .any(|o| o.insert_id == insert_id && o.duplicated)
+        {
+            RowMarker::Duplicated
+        } else {
+            RowMarker::Inserted
+        }
+    }
+
+    /// Pending display value for a server cell, if dirty.
+    pub fn pending_server_value(&self, pk: &[Value], column: &str) -> Option<&Value> {
+        let cs = self.changeset.as_ref()?;
+        for change in cs.changes() {
+            match change {
+                RowChange::Update { pk: updated, cells } if pk_match(updated, pk) => {
+                    return cells.get(column).map(|c| &c.new_value);
+                }
+                RowChange::Delete { pk: deleted } if pk_match(deleted, pk) => {
+                    // Show preserved edit under strikethrough when present.
+                    let key = PkKey::from_values(pk);
+                    return self
+                        .preserved_updates
+                        .get(&key)
+                        .and_then(|cells| cells.get(column).map(|c| &c.new_value));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Original value for a dirty cell (triangle tooltip).
+    pub fn original_server_value(&self, pk: &[Value], column: &str) -> Option<&Value> {
+        let cs = self.changeset.as_ref()?;
+        for change in cs.changes() {
+            if let RowChange::Update { pk: updated, cells } = change {
+                if pk_match(updated, pk) {
+                    return cells.get(column).map(|c| &c.old_value);
+                }
+            }
+        }
+        let key = PkKey::from_values(pk);
+        self.preserved_updates
+            .get(&key)
+            .and_then(|cells| cells.get(column).map(|c| &c.old_value))
+    }
+
+    #[allow(dead_code)]
+    pub fn is_server_cell_dirty(&self, pk: &[Value], column: &str) -> bool {
+        matches!(self.row_marker_for_server(pk), RowMarker::Dirty)
+            && self.pending_server_value(pk, column).is_some()
+    }
+
+    pub fn overlay_value(&self, insert_id: u64, column: &str) -> Option<&Value> {
+        let cs = self.changeset.as_ref()?;
+        for change in cs.changes() {
+            if let RowChange::Insert { id, values } = change {
+                if *id == insert_id {
+                    return values.get(column);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn is_generated(&self, column: &str) -> bool {
+        self.generated_columns.contains(column)
+    }
+
+    pub fn column_kind(&self, column: &str) -> ColumnKind {
+        ColumnKind::from_type_name(
+            self.column_types
+                .get(column)
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+        )
+    }
+
+    pub fn cell_editable(
+        &self,
+        column: &str,
+        value: Option<&Value>,
+        row_deleted: bool,
+    ) -> Result<(), &'static str> {
+        if !self.is_editable() {
+            return Err(self
+                .read_only
+                .as_ref()
+                .map(|r| r.status_line())
+                .unwrap_or("This table is read-only."));
+        }
+        if row_deleted {
+            return Err("This row is marked for delete. Choose Delete again to restore it.");
+        }
+        if self.is_generated(column) {
+            return Err("Filled on commit.");
+        }
+        let kind = self.column_kind(column);
+        if matches!(kind, ColumnKind::Bytes | ColumnKind::Other) {
+            return Err(if matches!(kind, ColumnKind::Bytes) {
+                "This cell is read-only. Use SQL to change it."
+            } else {
+                "This cell is read-only."
+            });
+        }
+        if let Some(v) = value {
+            if v.is_decode_error() || v.is_unsupported_placeholder() {
+                return Err("This cell is read-only.");
+            }
+        }
+        Ok(())
+    }
+
+    /// Open the in-cell editor. `server_value` is the current (possibly pending) value.
+    pub fn begin_edit(
+        &mut self,
+        row: EditRowId,
+        column: String,
+        col_ix: usize,
+        server_value: Option<&Value>,
+        row_deleted: bool,
+    ) -> Result<(), &'static str> {
+        self.cell_editable(&column, server_value, row_deleted)?;
+        let kind = self.column_kind(&column);
+        let (draft, is_null) = match server_value {
+            None | Some(Value::Null) => (String::new(), true),
+            Some(v) => (v.display().into_owned(), false),
+        };
+        // Unset PK on overlay: empty draft, not NULL, placeholder "Required" in UI.
+        let (draft, is_null) = if matches!(row, EditRowId::Overlay { .. })
+            && server_value.is_none()
+            && self
+                .changeset
+                .as_ref()
+                .is_some_and(|cs| cs.pk_columns().iter().any(|c| c == &column))
+            && !self.is_generated(&column)
+        {
+            (String::new(), false)
+        } else {
+            (draft, is_null)
+        };
+        let popover =
+            matches!(kind, ColumnKind::Json) || draft.contains('\n') || draft.contains('\r');
+        self.editor = Some(CellEditor {
+            row,
+            column,
+            col_ix,
+            kind,
+            draft,
+            is_null,
+            validation_error: None,
+            popover,
+        });
+        Ok(())
+    }
+
+    pub fn cancel_editor(&mut self) {
+        self.editor = None;
+    }
+
+    pub fn set_editor_null(&mut self) {
+        if let Some(ed) = &mut self.editor {
+            ed.is_null = true;
+            ed.draft.clear();
+            ed.validation_error = None;
+        }
+    }
+
+    /// Accept the open editor into the ChangeSet. Returns Err with status text on validation failure.
+    pub fn accept_editor(
+        &mut self,
+        pk_for_server: Option<&[Value]>,
+        old_server_value: Option<Value>,
+    ) -> Result<(), String> {
+        let editor = self
+            .editor
+            .as_ref()
+            .ok_or_else(|| "No open editor.".to_string())?
+            .clone();
+        let value = if editor.is_null {
+            Value::Null
+        } else {
+            match parse_edit_value(&editor.draft, editor.kind, self.dialect) {
+                Ok(v) => v,
+                Err(msg) => {
+                    if let Some(ed) = &mut self.editor {
+                        ed.validation_error = Some(msg.clone());
+                    }
+                    return Err(msg);
+                }
+            }
+        };
+        match &editor.row {
+            EditRowId::Server { .. } => {
+                let pk = pk_for_server.ok_or_else(|| "Missing primary key.".to_string())?;
+                let old = old_server_value.unwrap_or(Value::Null);
+                let cs = self
+                    .changeset
+                    .as_mut()
+                    .ok_or_else(|| "This table is read-only.".to_string())?;
+                cs.set_cell(pk, &editor.column, old, value)
+                    .map_err(|e| e.to_string())?;
+            }
+            EditRowId::Overlay { insert_id } => {
+                let cs = self
+                    .changeset
+                    .as_mut()
+                    .ok_or_else(|| "This table is read-only.".to_string())?;
+                cs.set_insert_cell(*insert_id, &editor.column, value)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        self.editor = None;
+        self.commit_failed = false;
+        Ok(())
+    }
+
+    pub fn insert_blank_row(&mut self) -> Result<u64, String> {
+        if !self.is_editable() {
+            return Err(self
+                .read_only
+                .as_ref()
+                .map(|r| r.status_line().to_string())
+                .unwrap_or_else(|| "This table is read-only.".into()));
+        }
+        let cs = self.changeset.as_mut().unwrap();
+        let id = cs.insert_row(BTreeMap::new()).map_err(|e| e.to_string())?;
+        self.overlay.push(OverlayRow {
+            insert_id: id,
+            duplicated: false,
+        });
+        self.commit_failed = false;
+        Ok(id)
+    }
+
+    /// Duplicate a server row: copy non-generated values; leave PK unset.
+    pub fn duplicate_server_row(
+        &mut self,
+        columns: &[(String, Value)],
+        pk_columns: &[String],
+    ) -> Result<u64, String> {
+        if !self.is_editable() {
+            return Err(self
+                .read_only
+                .as_ref()
+                .map(|r| r.status_line().to_string())
+                .unwrap_or_else(|| "This table is read-only.".into()));
+        }
+        let mut values = BTreeMap::new();
+        for (name, value) in columns {
+            if self.generated_columns.contains(name) {
+                continue;
+            }
+            if pk_columns.iter().any(|p| p == name) {
+                continue;
+            }
+            values.insert(name.clone(), value.clone());
+        }
+        let cs = self.changeset.as_mut().unwrap();
+        let id = cs.insert_row(values).map_err(|e| e.to_string())?;
+        self.overlay.push(OverlayRow {
+            insert_id: id,
+            duplicated: true,
+        });
+        self.commit_failed = false;
+        Ok(id)
+    }
+
+    pub fn delete_or_restore_server(&mut self, pk: &[Value]) -> Result<RowMarker, String> {
+        if !self.is_editable() {
+            return Err(self
+                .read_only
+                .as_ref()
+                .map(|r| r.status_line().to_string())
+                .unwrap_or_else(|| "This table is read-only.".into()));
+        }
+        let marker = self.row_marker_for_server(pk);
+        let cs = self.changeset.as_mut().unwrap();
+        if marker == RowMarker::Deleted {
+            // Undelete: restore preserved cell edits.
+            cs.undelete_row(pk).map_err(|e| e.to_string())?;
+            let key = PkKey::from_values(pk);
+            if let Some(cells) = self.preserved_updates.remove(&key) {
+                for (col, cell) in cells {
+                    cs.set_cell(pk, &col, cell.old_value, cell.new_value)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            self.commit_failed = false;
+            return Ok(self.row_marker_for_server(pk));
+        }
+        // Preserve pending updates before delete replaces them.
+        if let Some(RowChange::Update { cells, .. }) = cs.changes().iter().find(|c| match c {
+            RowChange::Update { pk: p, .. } => pk_match(p, pk),
+            _ => false,
+        }) {
+            self.preserved_updates
+                .insert(PkKey::from_values(pk), cells.clone());
+        }
+        cs.delete_row(pk).map_err(|e| e.to_string())?;
+        self.commit_failed = false;
+        Ok(RowMarker::Deleted)
+    }
+
+    pub fn delete_overlay(&mut self, insert_id: u64) -> Result<(), String> {
+        if !self.is_editable() {
+            return Err("This table is read-only.".into());
+        }
+        let cs = self.changeset.as_mut().unwrap();
+        cs.delete_insert(insert_id).map_err(|e| e.to_string())?;
+        self.overlay.retain(|o| o.insert_id != insert_id);
+        self.commit_failed = false;
+        Ok(())
+    }
+
+    /// Discard all pending edits (after confirm). Keeps editability / structure.
+    pub fn discard(&mut self) {
+        if let Some(cs) = &mut self.changeset {
+            cs.clear();
+        }
+        self.overlay.clear();
+        self.preserved_updates.clear();
+        self.editor = None;
+        self.preview_open = false;
+        self.commit_failed = false;
+        self.committing = false;
+    }
+
+    /// Successful commit: clear set and close sheet. Caller reloads the page.
+    pub fn note_commit_success(&mut self) {
+        self.discard();
+    }
+
+    /// Failed commit: keep edits; do not reload. Caller sets banner/status.
+    pub fn note_commit_failure(&mut self) {
+        self.committing = false;
+        self.commit_failed = true;
+    }
+
+    pub fn build_plan(&self) -> Result<ChangePlan, ChangeError> {
+        let cs = self.changeset.as_ref().ok_or(ChangeError::NoPrimaryKey)?;
+        ChangePlan::build(cs, self.dialect)
+    }
+
+    pub fn preview_sheet_text(&self) -> Result<String, String> {
+        let plan = self.build_plan().map_err(|e| e.to_string())?;
+        Ok(format_preview_sheet(&plan))
+    }
+
+    #[allow(dead_code)]
+    pub fn overlay_row_count(&self) -> usize {
+        self.overlay.len()
+    }
+
+    pub fn schema_table_label(&self) -> String {
+        self.changeset
+            .as_ref()
+            .map(|cs| format!("{}.{}", cs.table().schema, cs.table().table))
+            .unwrap_or_else(|| "table".into())
+    }
+}
+
+fn column_type_map(structure: &TableStructure) -> HashMap<String, String> {
+    structure
+        .columns
+        .iter()
+        .map(|c| (c.name.clone(), c.type_name.clone()))
+        .collect()
+}
+
+/// Generated / identity columns are not editable (07-grid-editing.md).
+pub(crate) fn detect_generated_columns(structure: &TableStructure) -> HashSet<String> {
+    let pk = structure.primary_key_columns().unwrap_or_default();
+    let mut out = HashSet::new();
+    for col in &structure.columns {
+        if column_looks_generated(col) {
+            out.insert(col.name.clone());
+            continue;
+        }
+        // SQLite INTEGER PRIMARY KEY rowid alias (single-column INTEGER PK).
+        if pk.len() == 1
+            && pk[0] == col.name
+            && col.type_name.trim().eq_ignore_ascii_case("INTEGER")
+        {
+            out.insert(col.name.clone());
+        }
+    }
+    out
+}
+
+fn column_looks_generated(col: &ColumnStructure) -> bool {
+    let t = col.type_name.to_ascii_uppercase();
+    let d = col.default.as_deref().unwrap_or("").to_ascii_uppercase();
+    t.contains("SERIAL")
+        || t.contains("IDENTITY")
+        || t.contains("AUTO_INCREMENT")
+        || t.contains("AUTOINCREMENT")
+        || d.contains("GENERATED")
+        || d.contains("NEXTVAL")
+        || d.contains("AUTOINCREMENT")
+}
+
+fn pk_match(a: &[Value], b: &[Value]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|(x, y)| match (x, y) {
+            (Value::Float(l), Value::Float(r)) if l.is_nan() && r.is_nan() => true,
+            _ => x == y,
+        })
+}
+
+/// Parse editor text into a [`Value`]. Empty text for Text → `''`; other kinds error.
+pub(crate) fn parse_edit_value(
+    raw: &str,
+    kind: ColumnKind,
+    dialect: Dialect,
+) -> Result<Value, String> {
+    let type_label = kind_label(kind);
+    match kind {
+        ColumnKind::Text => Ok(Value::text(raw)),
+        ColumnKind::Bool => {
+            if let Some(b) = parse_bool(raw) {
+                Ok(Value::Bool(b))
+            } else {
+                Err(format!("Enter a valid {type_label}, or set NULL."))
+            }
+        }
+        ColumnKind::Int => raw
+            .trim()
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|_| format!("Enter a valid {type_label}, or set NULL.")),
+        ColumnKind::Float => {
+            let n: f64 = raw
+                .trim()
+                .parse()
+                .map_err(|_| format!("Enter a valid {type_label}, or set NULL."))?;
+            if !n.is_finite() {
+                match dialect {
+                    Dialect::Postgres => Ok(Value::Float(n)),
+                    Dialect::Mysql | Dialect::Sqlite => {
+                        Err(format!("Enter a valid {type_label}, or set NULL."))
+                    }
+                }
+            } else {
+                Ok(Value::Float(n))
+            }
+        }
+        ColumnKind::Decimal => Decimal::from_str_exact(raw.trim())
+            .or_else(|_| Decimal::from_str(raw.trim()))
+            .map(Value::Decimal)
+            .map_err(|_| format!("Enter a valid {type_label}, or set NULL.")),
+        ColumnKind::Uuid => Uuid::parse_str(raw.trim())
+            .map(Value::Uuid)
+            .map_err(|_| format!("Enter a valid {type_label}, or set NULL.")),
+        ColumnKind::Date => chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+            .map(Value::Date)
+            .map_err(|_| format!("Enter a valid {type_label}, or set NULL.")),
+        ColumnKind::Json => {
+            serde_json::from_str::<serde_json::Value>(raw.trim())
+                .map_err(|_| format!("Enter a valid {type_label}, or set NULL."))?;
+            Ok(Value::json_raw(raw.trim()))
+        }
+        ColumnKind::Time | ColumnKind::Timestamp | ColumnKind::Interval => {
+            // Keep display text; engine validates on commit.
+            if raw.trim().is_empty() {
+                Err(format!("Enter a valid {type_label}, or set NULL."))
+            } else {
+                Ok(Value::text(raw))
+            }
+        }
+        ColumnKind::Bytes | ColumnKind::Other => Err("This cell is read-only.".into()),
+    }
+}
+
+fn kind_label(kind: ColumnKind) -> &'static str {
+    match kind {
+        ColumnKind::Bool => "bool",
+        ColumnKind::Int => "integer",
+        ColumnKind::Float => "float",
+        ColumnKind::Decimal => "decimal",
+        ColumnKind::Date => "date",
+        ColumnKind::Time => "time",
+        ColumnKind::Timestamp => "timestamp",
+        ColumnKind::Interval => "interval",
+        ColumnKind::Text => "text",
+        ColumnKind::Uuid => "uuid",
+        ColumnKind::Json => "json",
+        ColumnKind::Bytes => "bytes",
+        ColumnKind::Other => "value",
+    }
+}
+
+fn parse_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "t" | "yes" | "y" | "1" => Some(true),
+        "false" | "f" | "no" | "n" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+use std::str::FromStr;
+
+/// Format the Preview SQL sheet: placeholders + bound values (08-preview-commit.md).
+pub(crate) fn format_preview_sheet(plan: &ChangePlan) -> String {
+    let mut out = String::new();
+    for stmt in &plan.statements {
+        out.push_str(&preview_comment(stmt));
+        out.push('\n');
+        out.push_str(&stmt.sql);
+        out.push('\n');
+        for (i, param) in stmt.params.iter().enumerate() {
+            let ph = bind_placeholder(plan.dialect, i);
+            out.push_str(&ph);
+            out.push_str(" = ");
+            out.push_str(&param_display(param, plan.dialect));
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn preview_comment(stmt: &PlannedStatement) -> String {
+    let op = match stmt.op {
+        PlanOp::Delete => "delete",
+        PlanOp::Update => "update",
+        PlanOp::Insert => "insert",
+    };
+    if stmt.pk.is_empty() {
+        format!("-- {op}")
+    } else {
+        let key = stmt
+            .pk
+            .iter()
+            .map(|v| v.display().into_owned())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("-- {op} · {key}")
+    }
+}
+
+fn param_display(value: &Value, dialect: Dialect) -> String {
+    match value_to_copy_cell(value) {
+        CopyCell::Null => "NULL".into(),
+        CopyCell::Value(text, CopyScalarKind::Number | CopyScalarKind::Bool) => text,
+        CopyCell::Value(text, CopyScalarKind::Text) => escape_sql_string(&text, dialect),
+        CopyCell::Decode(text) => escape_sql_string(&text, dialect),
+        CopyCell::NotLoaded => "NULL".into(),
+    }
+}
+
+/// Status / banner text for a failed commit (keeps edits; no reload).
+pub(crate) fn format_commit_failure(err: &DbError, statement_count: usize) -> (String, String) {
+    let banner = err.to_string();
+    let status = match err {
+        DbError::ChangeConflict {
+            statement_index, ..
+        } => {
+            let n = statement_index + 1;
+            format!("Commit failed · statement {n} of {statement_count} · changes kept")
+        }
+        _ => "Commit failed · changes kept".into(),
+    };
+    (banner, status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sela_core::{ColumnStructure, IndexInfo, TableRef};
+
+    fn books_structure() -> TableStructure {
+        TableStructure {
+            schema: "public".into(),
+            table: "books".into(),
+            columns: vec![
+                ColumnStructure {
+                    name: "id".into(),
+                    type_name: "integer".into(),
+                    nullable: false,
+                    default: Some("nextval('books_id_seq')".into()),
+                    comment: None,
+                },
+                ColumnStructure {
+                    name: "title".into(),
+                    type_name: "text".into(),
+                    nullable: true,
+                    default: None,
+                    comment: None,
+                },
+                ColumnStructure {
+                    name: "pages".into(),
+                    type_name: "integer".into(),
+                    nullable: true,
+                    default: None,
+                    comment: None,
+                },
+            ],
+            indexes: vec![IndexInfo {
+                name: "books_pkey".into(),
+                columns: vec!["id".into()],
+                unique: true,
+                primary: true,
+                definition: None,
+            }],
+            foreign_keys: vec![],
+            ddl: String::new(),
+        }
+    }
+
+    fn no_pk_structure() -> TableStructure {
+        let mut s = books_structure();
+        s.indexes.clear();
+        s
+    }
+
+    #[test]
+    fn no_primary_key_is_read_only_with_strip() {
+        let session =
+            EditSession::from_structure(&no_pk_structure(), Dialect::Postgres, RelationKind::Table);
+        assert!(!session.is_editable());
+        assert_eq!(
+            session.strip_line(),
+            Some("Read-only · this table has no primary key.")
+        );
+    }
+
+    #[test]
+    fn view_is_read_only() {
+        let session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::View);
+        assert_eq!(
+            session.strip_line(),
+            Some("Read-only · views are read-only.")
+        );
+    }
+
+    #[test]
+    fn dirty_tracking_and_row_markers() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let pk = vec![Value::Int(1)];
+        assert_eq!(session.row_marker_for_server(&pk), RowMarker::Clean);
+
+        session
+            .changeset
+            .as_mut()
+            .unwrap()
+            .set_cell(&pk, "title", Value::text("old"), Value::text("new"))
+            .unwrap();
+        assert_eq!(session.row_marker_for_server(&pk), RowMarker::Dirty);
+        assert!(session.is_server_cell_dirty(&pk, "title"));
+        assert_eq!(
+            session.pending_server_value(&pk, "title"),
+            Some(&Value::text("new"))
+        );
+        assert_eq!(session.pending_counts().updated, 1);
+        assert_eq!(session.pending_counts().total(), 1);
+        assert!(session.is_dirty());
+
+        // Revert to original clears dirty.
+        session
+            .changeset
+            .as_mut()
+            .unwrap()
+            .set_cell(&pk, "title", Value::text("old"), Value::text("old"))
+            .unwrap();
+        assert_eq!(session.row_marker_for_server(&pk), RowMarker::Clean);
+        assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn insert_duplicate_delete_overlay_markers() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let id = session.insert_blank_row().unwrap();
+        assert_eq!(session.row_marker_for_overlay(id), RowMarker::Inserted);
+        assert_eq!(session.pending_counts().inserted, 1);
+
+        let dup = session
+            .duplicate_server_row(
+                &[
+                    ("id".into(), Value::Int(3)),
+                    ("title".into(), Value::text("Hobbit")),
+                    ("pages".into(), Value::Int(310)),
+                ],
+                &["id".into()],
+            )
+            .unwrap();
+        assert_eq!(session.row_marker_for_overlay(dup), RowMarker::Duplicated);
+        // PK left unset on duplicate.
+        assert!(session.overlay_value(dup, "id").is_none());
+        assert_eq!(
+            session.overlay_value(dup, "title"),
+            Some(&Value::text("Hobbit"))
+        );
+
+        session.delete_overlay(id).unwrap();
+        assert!(!session.overlay.iter().any(|o| o.insert_id == id));
+    }
+
+    #[test]
+    fn delete_preserves_edits_and_undelete_restores() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let pk = vec![Value::Int(2)];
+        session
+            .changeset
+            .as_mut()
+            .unwrap()
+            .set_cell(&pk, "title", Value::text("a"), Value::text("b"))
+            .unwrap();
+        assert_eq!(session.row_marker_for_server(&pk), RowMarker::Dirty);
+
+        session.delete_or_restore_server(&pk).unwrap();
+        assert_eq!(session.row_marker_for_server(&pk), RowMarker::Deleted);
+        // Pending counts: delete only (update replaced).
+        assert_eq!(session.pending_counts().deleted, 1);
+        assert_eq!(session.pending_counts().updated, 0);
+        // Preserved value still visible for paint.
+        assert_eq!(
+            session.pending_server_value(&pk, "title"),
+            Some(&Value::text("b"))
+        );
+
+        session.delete_or_restore_server(&pk).unwrap();
+        assert_eq!(session.row_marker_for_server(&pk), RowMarker::Dirty);
+        assert_eq!(
+            session.pending_server_value(&pk, "title"),
+            Some(&Value::text("b"))
+        );
+    }
+
+    #[test]
+    fn discard_clears_all_pending() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let pk = vec![Value::Int(1)];
+        session
+            .changeset
+            .as_mut()
+            .unwrap()
+            .set_cell(&pk, "title", Value::text("a"), Value::text("b"))
+            .unwrap();
+        session.insert_blank_row().unwrap();
+        session.preview_open = true;
+        session.commit_failed = true;
+        assert!(session.is_dirty());
+
+        session.discard();
+        assert!(!session.is_dirty());
+        assert!(session.overlay.is_empty());
+        assert!(!session.preview_open);
+        assert!(!session.commit_failed);
+        assert!(session.changeset.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_commit_keeps_edits() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let pk = vec![Value::Int(1)];
+        session
+            .changeset
+            .as_mut()
+            .unwrap()
+            .set_cell(&pk, "title", Value::text("a"), Value::text("b"))
+            .unwrap();
+        session.committing = true;
+        session.note_commit_failure();
+        assert!(session.commit_failed);
+        assert!(!session.committing);
+        assert!(session.is_dirty());
+        assert_eq!(
+            session.pending_server_value(&pk, "title"),
+            Some(&Value::text("b"))
+        );
+    }
+
+    #[test]
+    fn null_and_empty_text_are_distinct() {
+        assert_eq!(
+            parse_edit_value("", ColumnKind::Text, Dialect::Sqlite).unwrap(),
+            Value::text("")
+        );
+        assert!(parse_edit_value("", ColumnKind::Int, Dialect::Sqlite).is_err());
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        session
+            .begin_edit(
+                EditRowId::Server { row_ix: 0 },
+                "title".into(),
+                1,
+                Some(&Value::Null),
+                false,
+            )
+            .unwrap();
+        assert!(session.editor.as_ref().unwrap().is_null);
+        // Accept empty text after clearing NULL → ''.
+        if let Some(ed) = &mut session.editor {
+            ed.is_null = false;
+            ed.draft.clear();
+        }
+        session
+            .accept_editor(Some(&[Value::Int(1)]), Some(Value::Null))
+            .unwrap();
+        assert_eq!(
+            session.pending_server_value(&[Value::Int(1)], "title"),
+            Some(&Value::text(""))
+        );
+    }
+
+    #[test]
+    fn commit_blocked_until_pk_set_on_insert() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        // id is generated (nextval) — does not block.
+        session.insert_blank_row().unwrap();
+        // Empty insert with only generated PK still blocks via EmptyInsert / empty values.
+        assert!(session.commit_blocked_reason().is_some());
+
+        // Manual non-generated PK table.
+        let mut structure = books_structure();
+        structure.columns[0].default = None;
+        structure.columns[0].type_name = "text".into();
+        let mut session =
+            EditSession::from_structure(&structure, Dialect::Postgres, RelationKind::Table);
+        assert!(!session.is_generated("id"));
+        let id = session.insert_blank_row().unwrap();
+        assert_eq!(
+            session.commit_blocked_reason(),
+            Some("Set a primary key for the new row.")
+        );
+        session
+            .changeset
+            .as_mut()
+            .unwrap()
+            .set_insert_cell(id, "id", Value::text("x"))
+            .unwrap();
+        assert_eq!(session.commit_blocked_reason(), None);
+    }
+
+    #[test]
+    fn preview_sheet_lists_placeholders_and_values() {
+        let mut cs = ChangeSet::try_new(
+            TableRef::new("public", "books"),
+            vec!["id".into()],
+            vec!["id".into(), "title".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(3)],
+            "title",
+            Value::text("old"),
+            Value::text("The Hobbit"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let text = format_preview_sheet(&plan);
+        assert!(text.contains("-- update · 3"));
+        assert!(text.contains("$1"));
+        assert!(text.contains("The Hobbit"));
+        assert!(text.contains("WHERE"));
+    }
+
+    #[test]
+    fn change_conflict_status_names_statement() {
+        let err = DbError::change_conflict(1, 0, &[Value::Int(9)]);
+        let (_banner, status) = format_commit_failure(&err, 4);
+        assert!(status.contains("statement 2 of 4"));
+        assert!(status.contains("changes kept"));
+    }
+
+    #[test]
+    fn cancel_editor_leaves_changeset() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        session
+            .begin_edit(
+                EditRowId::Server { row_ix: 0 },
+                "title".into(),
+                1,
+                Some(&Value::text("a")),
+                false,
+            )
+            .unwrap();
+        if let Some(ed) = &mut session.editor {
+            ed.draft = "changed".into();
+        }
+        session.cancel_editor();
+        assert!(session.editor.is_none());
+        assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn pending_summary_omits_zero_counts() {
+        let counts = PendingCounts {
+            updated: 2,
+            inserted: 1,
+            deleted: 0,
+        };
+        assert_eq!(counts.summary_left(), "3 pending · 2 updated, 1 inserted");
+    }
+}

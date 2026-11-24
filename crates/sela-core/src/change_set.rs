@@ -321,6 +321,20 @@ impl ChangeSet {
         self.changes.remove(ix);
         Ok(())
     }
+
+    /// Clear a pending delete for `pk` (undelete).
+    ///
+    /// Does not restore a prior [`RowChange::Update`] — callers that preserved
+    /// cell edits before [`Self::delete_row`] re-apply them with [`Self::set_cell`].
+    pub fn undelete_row(&mut self, pk: &[Value]) -> Result<(), ChangeError> {
+        self.require_pk(pk)?;
+        if let Some(ix) = self.find_existing_mut(pk) {
+            if matches!(self.changes[ix], RowChange::Delete { .. }) {
+                self.changes.remove(ix);
+            }
+        }
+        Ok(())
+    }
 }
 
 fn pk_eq(a: &[Value], b: &[Value]) -> bool {
@@ -415,6 +429,15 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err, ChangeError::RowDeleted);
+    }
+
+    #[test]
+    fn undelete_clears_delete_mark() {
+        let mut cs = books();
+        cs.delete_row(&[Value::Int(2)]).unwrap();
+        assert!(!cs.is_empty());
+        cs.undelete_row(&[Value::Int(2)]).unwrap();
+        assert!(cs.is_empty());
     }
 
     #[test]

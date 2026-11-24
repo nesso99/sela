@@ -11,18 +11,50 @@
 //! Selection (M1-7): cell / row / column via DataTable; optional Shift range on
 //! [`selection_rect`]. Copy formats live in [`sela_core::CopyFormat`].
 
+use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelection, TableState};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, App, IntoElement, MouseButton, SharedString, Window};
 
+use std::collections::BTreeMap;
+
 use sela_core::{
     CellPos, CellView, QueryPage, ResultWindow, RowState, SelectionRect, SortDirection, SortSpec,
 };
 
 use super::theme::SelaPalette;
+use super::workspace::edit_session::{EditRowId, RowMarker};
 use super::{CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection};
+
+/// Paint state synced from [`super::workspace::edit_session::EditSession`].
+#[derive(Debug, Clone, Default)]
+pub struct EditPaintState {
+    pub server: BTreeMap<usize, EditPaintRow>,
+    pub overlays: Vec<OverlayPaintRow>,
+    pub editing: Option<(EditRowId, usize)>,
+    pub editor_error: Option<String>,
+    /// Open cell editor input (when present, render inside the focused cell).
+    pub editor_input: Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EditPaintRow {
+    pub marker: RowMarker,
+    pub dirty_display: BTreeMap<String, String>,
+    pub original_display: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverlayPaintRow {
+    #[allow(dead_code)]
+    pub insert_id: u64,
+    pub marker: RowMarker,
+    pub values: BTreeMap<String, String>,
+    pub required_unset: Vec<String>,
+    pub generated: Vec<String>,
+}
 
 enum CellKind {
     Loading,
@@ -58,9 +90,84 @@ pub struct GridDelegate {
     /// intentional range such as Select-All). Consumed by
     /// [`Self::take_suppress_select_collapse`].
     suppress_select_collapse: bool,
+    /// M2-1 overlay / dirty / delete paint state (not written into ResultWindow).
+    pub edit_paint: EditPaintState,
+    /// Double-click requested edit for this cell (consumed by the workspace).
+    pub pending_edit_cell: Option<(usize, usize)>,
 }
 
 impl GridDelegate {
+    fn render_overlay_td(
+        &self,
+        row_ix: usize,
+        col_ix: usize,
+        col_name: &str,
+        palette: &SelaPalette,
+        cx: &gpui_kit::Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let overlay_ix = row_ix - self.result.total_rows();
+        let overlay = self.edit_paint.overlays.get(overlay_ix);
+        let marker = overlay.map(|o| o.marker).unwrap_or(RowMarker::Inserted);
+        let display = overlay.and_then(|o| o.values.get(col_name).cloned());
+        let required = overlay.is_some_and(|o| o.required_unset.iter().any(|c| c == col_name));
+        let generated = overlay.is_some_and(|o| o.generated.iter().any(|c| c == col_name));
+        let (nullish, text) = if generated {
+            (true, SharedString::from("Filled on commit."))
+        } else if required && display.is_none() {
+            (true, SharedString::from("Required"))
+        } else if let Some(d) = display {
+            let is_null = d == "NULL";
+            (is_null, SharedString::from(d))
+        } else {
+            (true, SharedString::from(""))
+        };
+        let gutter = if col_ix == 0 {
+            marker.gutter_glyph()
+        } else {
+            None
+        };
+        let table = cx.entity();
+        let table_shift = table.clone();
+        div()
+            .id(format!("grid-cell:{row_ix}:{col_ix}"))
+            .h_full()
+            .w_full()
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .truncate()
+            .bg(palette.row_insert_bg)
+            .text_color(if nullish {
+                cx.theme().muted_foreground
+            } else {
+                cx.theme().foreground
+            })
+            .font_family(cx.theme().mono_font_family.clone())
+            .when(nullish, |cell| cell.italic())
+            .when_some(gutter, |cell, glyph| {
+                cell.child(div().w(px(16.)).flex_shrink_0().text_xs().child(glyph))
+            })
+            .child(text)
+            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                let shift = event.modifiers.shift;
+                table_shift.update(cx, |state, _| {
+                    state.delegate_mut().note_pointer_shift(shift);
+                });
+            })
+            .context_menu(move |menu, _, menu_cx| {
+                table.update(menu_cx, |state, cx| {
+                    let selection = state.selection();
+                    let range = state.delegate().selection_rect;
+                    if !cell_in_selection(row_ix, col_ix, selection, range) {
+                        state.set_selected_cell(row_ix, col_ix, cx);
+                        state.delegate_mut().note_cell_focus(row_ix, col_ix, false);
+                    }
+                });
+                copy_context_menu(menu)
+            })
+    }
+
     pub fn empty() -> Self {
         Self {
             result: ResultWindow::empty(),
@@ -74,6 +181,8 @@ impl GridDelegate {
             selection_rect: None,
             pointer_shift: None,
             suppress_select_collapse: false,
+            edit_paint: EditPaintState::default(),
+            pending_edit_cell: None,
         }
     }
 
@@ -311,7 +420,7 @@ impl TableDelegate for GridDelegate {
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.result.total_rows()
+        self.result.total_rows() + self.edit_paint.overlays.len()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
@@ -360,29 +469,77 @@ impl TableDelegate for GridDelegate {
         cx: &mut gpui_kit::Context<TableState<Self>>,
     ) -> impl IntoElement {
         let palette = SelaPalette::for_mode(cx.theme().mode);
+        let server_rows = self.result.total_rows();
+        let col_name = self
+            .result
+            .columns()
+            .get(col_ix)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+
+        // Overlay insert/duplicate rows sit after the ResultWindow page.
+        if row_ix >= server_rows {
+            return self
+                .render_overlay_td(row_ix, col_ix, &col_name, &palette, cx)
+                .into_any_element();
+        }
+
+        let marker = self
+            .edit_paint
+            .server
+            .get(&row_ix)
+            .map(|r| r.marker)
+            .unwrap_or(RowMarker::Clean);
+        let dirty_override = self
+            .edit_paint
+            .server
+            .get(&row_ix)
+            .and_then(|r| r.dirty_display.get(&col_name).cloned());
+        let show_triangle = marker == RowMarker::Dirty
+            && self
+                .edit_paint
+                .server
+                .get(&row_ix)
+                .is_some_and(|r| r.dirty_display.contains_key(&col_name));
+        let triangle_tip = self
+            .edit_paint
+            .server
+            .get(&row_ix)
+            .and_then(|r| r.original_display.get(&col_name))
+            .map(|orig| format!("Edited · was {orig}"))
+            .unwrap_or_else(|| "Edited".into());
+
         // Classify before taking the truncated display cache (needs &mut).
         let kind = match self.result.cell_value(row_ix, col_ix) {
             None => CellKind::Loading,
-            Some(value) if value.is_null() => CellKind::Null,
+            Some(value) if value.is_null() && dirty_override.is_none() => CellKind::Null,
             Some(value) if value.is_decode_error() || value.is_unsupported_placeholder() => {
                 CellKind::Decode(value.display().into_owned())
             }
             Some(_) => CellKind::Normal,
         };
         let is_decode = matches!(kind, CellKind::Decode(_));
-        let (null, loading, text) = match kind {
-            CellKind::Loading => (false, true, SharedString::from("…")),
-            CellKind::Null => (true, false, SharedString::from("NULL")),
-            CellKind::Decode(decode) => (false, false, SharedString::from(format!("!{decode}"))),
-            CellKind::Normal => {
-                let text = match self.result.cell(row_ix, col_ix) {
-                    CellView::Loading => SharedString::from("…"),
-                    CellView::Ready { display, .. } => SharedString::from(display),
-                };
-                (false, false, text)
+        let (null, loading, text) = if let Some(display) = dirty_override {
+            let is_null = display == "NULL";
+            (is_null, false, SharedString::from(display))
+        } else {
+            match kind {
+                CellKind::Loading => (false, true, SharedString::from("…")),
+                CellKind::Null => (true, false, SharedString::from("NULL")),
+                CellKind::Decode(decode) => {
+                    (false, false, SharedString::from(format!("!{decode}")))
+                }
+                CellKind::Normal => {
+                    let text = match self.result.cell(row_ix, col_ix) {
+                        CellView::Loading => SharedString::from("…"),
+                        CellView::Ready { display, .. } => SharedString::from(display),
+                    };
+                    (false, false, text)
+                }
             }
         };
         let in_range = self.cell_in_range(row_ix, col_ix);
+        let deleted = marker == RowMarker::Deleted;
         let (color, decode_bg) = if is_decode {
             (palette.cell_decode_text, Some(palette.cell_decode_bg))
         } else if null || loading {
@@ -390,15 +547,18 @@ impl TableDelegate for GridDelegate {
         } else {
             (cx.theme().foreground, None)
         };
+        let gutter = if col_ix == 0 {
+            marker.gutter_glyph()
+        } else {
+            None
+        };
+        let insert_wash = marker.is_insert_wash();
         // Cell selection installs a Right mouse-down that stop_propagation, so
         // DataTable's row-level TableDelegate::context_menu never opens for
         // cells. Attach the copy menu on the cell content (innermost wins).
-        // ContextMenuExt also stop_propagates, so DataTable never sees the
-        // right-click — select the cell here when it is outside the current
-        // selection so Copy targets the clicked cell (Refs #55). When the click
-        // is already inside `selection_rect`, leave the range alone (#59).
         let table = cx.entity();
         let table_shift = table.clone();
+        let _ = triangle_tip;
         div()
             .id(format!("grid-cell:{row_ix}:{col_ix}"))
             .h_full()
@@ -406,24 +566,90 @@ impl TableDelegate for GridDelegate {
             .px_2()
             .flex()
             .items_center()
+            .gap_1()
             .truncate()
-            .text_color(color)
+            .text_color(if deleted {
+                cx.theme().foreground
+            } else {
+                color
+            })
             .font_family(cx.theme().mono_font_family.clone())
+            .when(deleted, |cell| cell.line_through())
             .when_some(decode_bg, |cell, bg| cell.bg(bg))
-            // Paint the Shift-range wash under cell text (DataTable only
-            // highlights the focused cell).
-            .when(in_range && !is_decode, |cell| {
+            .when(insert_wash, |cell| cell.bg(palette.row_insert_bg))
+            .when(in_range && !is_decode && !insert_wash, |cell| {
                 cell.bg(cx.theme().tokens.table_active)
             })
             .when(null || loading, |cell| cell.italic())
-            .child(text)
-            // Capture Shift on press before SelectCell runs; window.modifiers()
-            // alone is not reliable by the time the table event subscriber fires.
+            .when_some(gutter, |cell, glyph| {
+                cell.child(
+                    div()
+                        .w(px(16.))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(if deleted {
+                            palette.status_error
+                        } else {
+                            cx.theme().foreground
+                        })
+                        .child(glyph),
+                )
+            })
+            .child({
+                let editing_here = self.edit_paint.editing.as_ref().is_some_and(|(row, c)| {
+                    *c == col_ix
+                        && matches!(
+                            row,
+                            EditRowId::Server { row_ix: r } if *r == row_ix
+                        )
+                });
+                if editing_here {
+                    if let Some(input) = &self.edit_paint.editor_input {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .key_context("CellEditor")
+                            .child(Input::new(input).h(px(22.)))
+                            .into_any_element()
+                    } else {
+                        div().child(text).into_any_element()
+                    }
+                } else {
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .when(show_triangle && !deleted, |el| {
+                            el.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.cell_dirty_mark)
+                                    .child("▲"),
+                            )
+                        })
+                        .child(text)
+                        .into_any_element()
+                }
+            })
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 let shift = event.modifiers.shift;
                 table_shift.update(cx, |state, _| {
                     state.delegate_mut().note_pointer_shift(shift);
                 });
+            })
+            .on_click({
+                let table_dbl = table.clone();
+                move |event, _, cx| {
+                    if event.click_count() >= 2 {
+                        // Double-click opens the cell editor (07-grid-editing.md).
+                        table_dbl.update(cx, |state, cx| {
+                            state.set_selected_cell(row_ix, col_ix, cx);
+                            state.delegate_mut().note_cell_focus(row_ix, col_ix, false);
+                            state.delegate_mut().pending_edit_cell = Some((row_ix, col_ix));
+                            state.refresh(cx);
+                        });
+                    }
+                }
             })
             .context_menu(move |menu, _, menu_cx| {
                 table.update(menu_cx, |state, cx| {
@@ -431,15 +657,12 @@ impl TableDelegate for GridDelegate {
                     let range = state.delegate().selection_rect;
                     if !cell_in_selection(row_ix, col_ix, selection, range) {
                         state.set_selected_cell(row_ix, col_ix, cx);
-                        // Keep selection_rect in sync immediately; SelectCell
-                        // subscribers also call note_cell_focus, which is fine.
                         state.delegate_mut().note_cell_focus(row_ix, col_ix, false);
                     }
-                    // Inside an existing range: do not call set_selected_cell or
-                    // note_cell_focus — that would collapse the range (#59 / #55).
                 });
                 copy_context_menu(menu)
             })
+            .into_any_element()
     }
 
     fn visible_rows_changed(
@@ -471,11 +694,43 @@ impl TableDelegate for GridDelegate {
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
-        match self.result.row(row_ix) {
-            RowState::Ready(cells) => cells
+        let server_rows = self.result.total_rows();
+        if row_ix >= server_rows {
+            let overlay_ix = row_ix - server_rows;
+            let col_name = self
+                .result
+                .columns()
                 .get(col_ix)
-                .map(|cell| cell.display().into_owned())
-                .unwrap_or_else(|| "NULL".into()),
+                .map(|c| c.name.as_str())
+                .unwrap_or("");
+            return self
+                .edit_paint
+                .overlays
+                .get(overlay_ix)
+                .and_then(|o| o.values.get(col_name).cloned())
+                .unwrap_or_default();
+        }
+        match self.result.row(row_ix) {
+            RowState::Ready(cells) => {
+                let col_name = self
+                    .result
+                    .columns()
+                    .get(col_ix)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                if let Some(display) = self
+                    .edit_paint
+                    .server
+                    .get(&row_ix)
+                    .and_then(|r| r.dirty_display.get(&col_name))
+                {
+                    return display.clone();
+                }
+                cells
+                    .get(col_ix)
+                    .map(|cell| cell.display().into_owned())
+                    .unwrap_or_else(|| "NULL".into())
+            }
             RowState::Loading => String::new(),
         }
     }
@@ -494,12 +749,17 @@ impl TableDelegate for GridDelegate {
 
 /// Copy formats for the grid context menu (TC-COPY-01 / US-14).
 fn copy_context_menu(menu: PopupMenu) -> PopupMenu {
+    use super::{DeleteEditRow, DuplicateEditRow, InsertEditRow};
     menu.item(PopupMenuItem::new("Copy").action(Box::new(CopySelection)))
         .separator()
         .item(PopupMenuItem::new("Copy as TSV").action(Box::new(CopyAsTsv)))
         .item(PopupMenuItem::new("Copy as CSV").action(Box::new(CopyAsCsv)))
         .item(PopupMenuItem::new("Copy as JSON").action(Box::new(CopyAsJson)))
         .item(PopupMenuItem::new("Copy as INSERT").action(Box::new(CopyAsInsert)))
+        .separator()
+        .item(PopupMenuItem::new("Insert").action(Box::new(InsertEditRow)))
+        .item(PopupMenuItem::new("Duplicate").action(Box::new(DuplicateEditRow)))
+        .item(PopupMenuItem::new("Delete").action(Box::new(DeleteEditRow)))
 }
 
 /// Whether `(row, col)` is already covered by the DataTable selection or our

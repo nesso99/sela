@@ -419,7 +419,7 @@ impl Workspace {
         let Some(view) = self.views.get(&tab_id) else {
             return;
         };
-        let GridSource::Table { schema, table } = view.source.clone() else {
+        let GridSource::Table { schema, table, .. } = view.source.clone() else {
             return;
         };
         let filters = view.filters.clone();
@@ -873,7 +873,7 @@ impl Workspace {
         let Some(view) = self.views.get(&tab_id) else {
             return;
         };
-        let GridSource::Table { schema, table } = view.source.clone() else {
+        let GridSource::Table { schema, table, .. } = view.source.clone() else {
             return;
         };
         let filters = view.filters.clone();
@@ -1265,7 +1265,7 @@ pub(super) async fn run_source(
 ) -> Result<Option<StatementOutcome>, DbError> {
     match source {
         GridSource::Idle => Ok(None),
-        GridSource::Table { schema, table } => preview_table(
+        GridSource::Table { schema, table, .. } => preview_table(
             session.as_ref(),
             &schema,
             &table,

@@ -689,7 +689,7 @@ impl Workspace {
         let Some(view) = view else {
             return div().into_any_element();
         };
-        let super::GridSource::Table { schema, table } = &view.source else {
+        let super::GridSource::Table { schema, table, .. } = &view.source else {
             return div().into_any_element();
         };
         if view.filters.is_empty() && view.sorts.is_empty() {

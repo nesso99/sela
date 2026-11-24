@@ -1,7 +1,7 @@
 //! The GPUI window. Database work is started here and finished on the tokio runtime.
 
 mod form;
-mod grid;
+pub(crate) mod grid;
 mod theme;
 mod workspace;
 
@@ -60,6 +60,16 @@ actions!(
         ExtendGridSelectionRight,
         ResultStripPrev,
         ResultStripNext,
+        EditCell,
+        CancelCellEditor,
+        AcceptCellEditor,
+        SetCellNull,
+        InsertEditRow,
+        DuplicateEditRow,
+        DeleteEditRow,
+        PreviewChanges,
+        CommitChanges,
+        DiscardChanges,
         Quit
     ]
 );
@@ -234,6 +244,53 @@ pub fn run() {
             // Result strip Prev/Next when the strip itself is focused.
             bind_secondary(cx, "left", Box::new(ResultStripPrev), Some("ResultStrip"));
             bind_secondary(cx, "right", Box::new(ResultStripNext), Some("ResultStrip"));
+            // M2-1 / M2-3 grid editing (DataTable context; not SqlEditor).
+            bind_secondary(cx, "enter", Box::new(EditCell), Some("DataTable"));
+            bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("DataTable"));
+            bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("CellEditor"));
+            bind_secondary(cx, "enter", Box::new(AcceptCellEditor), Some("CellEditor"));
+            bind_secondary(
+                cx,
+                "secondary-enter",
+                Box::new(AcceptCellEditor),
+                Some("CellEditor"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-i",
+                Box::new(InsertEditRow),
+                Some("DataTable"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-d",
+                Box::new(DuplicateEditRow),
+                Some("DataTable"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-backspace",
+                Box::new(DeleteEditRow),
+                Some("DataTable"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-shift-p",
+                Box::new(PreviewChanges),
+                Some("DataTable"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-s",
+                Box::new(CommitChanges),
+                Some("DataTable"),
+            );
+            bind_secondary(
+                cx,
+                "secondary-shift-z",
+                Box::new(DiscardChanges),
+                Some("DataTable"),
+            );
             install_menus(cx);
             // Route Quit through the workspace (confirm + clean shutdown). With
             // no open window (macOS after the last close), quit immediately.
