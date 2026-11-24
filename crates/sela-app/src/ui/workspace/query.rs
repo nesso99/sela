@@ -999,6 +999,7 @@ impl Workspace {
                 );
             }
         }
+        self.flush_history_password_note(tab_id);
         cx.notify();
     }
 
@@ -1145,6 +1146,7 @@ impl Workspace {
         if let Some(outcome) = batch_outcome {
             self.maybe_finish_sql_batch(tab_id, &outcome, cx);
         }
+        self.flush_history_password_note(tab_id);
         cx.notify();
     }
 

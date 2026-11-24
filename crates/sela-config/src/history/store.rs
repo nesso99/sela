@@ -1,8 +1,8 @@
-//! Persist query history in `history.sqlite` (FTS5 on statement text).
+//! SQLite-backed [`HistoryStore`] implementation.
 //!
-//! Never stores passwords. The file is created with Unix mode `0600`. SQLite
-//! journaling is the durability path; a corrupt file is renamed to
-//! `history.sqlite.bad` and replaced with an empty store.
+//! Stores statement text as provided by the app. Password-setting DDL must be
+//! filtered before insert (`history_sql_contains_password_clause`). The file is
+//! created with Unix mode `0600`.
 
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};

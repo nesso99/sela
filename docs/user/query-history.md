@@ -8,6 +8,7 @@ Statements you run from the SQL editor are stored in `history.sqlite` next to yo
 - Multi-statement runs add one row for each statement that actually started.
 - Catalog, Structure, paging, Count, filter SQL, and Load more are not recorded.
 - Empty buffers are not recorded.
+- Password-setting statements (for example `CREATE ROLE … PASSWORD`, `IDENTIFIED BY`, `SET PASSWORD`) are not recorded. The status bar notes `not saved to history (contains a password)`.
 
 Recording is on by default. Turn it off per connection with **Record query history** in the connection dialog. Existing rows stay until you delete them or use **Clear history**.
 
@@ -31,6 +32,6 @@ The panel sits under the SQL editor. Default height is 196px; drag the top edge 
 
 ## Privacy
 
-The file is not encrypted. On Unix its mode is `0600`. It stores SQL text, including literals. Passwords are never written there. See [FAQ](./faq.md#does-query-history-store-my-sql).
+The file is not encrypted. On Unix its mode is `0600`. It stores SQL text, including ordinary string literals (for example values in a `WHERE` clause). Connection passwords from the OS keychain are not written into history. Statements that set a database role or user password are skipped rather than stored. See [FAQ](./faq.md#does-query-history-store-my-sql).
 
 The store keeps at most about 10 000 rows globally; the oldest rows are removed after each insert.

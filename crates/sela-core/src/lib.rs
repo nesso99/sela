@@ -27,8 +27,9 @@ pub use filter::{
 };
 pub use history::{
     format_history_duration, format_history_when, history_fts_query, history_rerun_needs_confirm,
-    history_rows_label_affected, history_rows_label_for_rows, history_sql_preview,
-    should_record_history_sql, HistoryEntry, HistoryFilter, HistoryOutcome, HISTORY_ROW_CAP,
+    history_rows_label_affected, history_rows_label_for_rows, history_sql_contains_password_clause,
+    history_sql_preview, should_record_history_sql, HistoryEntry, HistoryFilter, HistoryOutcome,
+    HISTORY_PASSWORD_SKIP_NOTE, HISTORY_ROW_CAP,
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
 pub use session::{

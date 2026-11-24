@@ -85,6 +85,9 @@ pub(super) struct TabView {
     /// When true, the in-flight SQL statement came from the editor run path and
     /// should be written to history when it finishes (not load-more / catalog).
     pub history_should_record: bool,
+    /// Set when a finished statement was skipped because it looks like
+    /// password-setting DDL; flushed into the status strip after the outcome.
+    pub history_password_note_pending: bool,
 }
 
 impl TabView {
@@ -151,6 +154,7 @@ impl TabView {
             filter_bar_open: false,
             filter_rows: Vec::new(),
             history_should_record: false,
+            history_password_note_pending: false,
         }
     }
 

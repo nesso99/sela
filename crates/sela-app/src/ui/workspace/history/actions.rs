@@ -454,6 +454,26 @@ impl Workspace {
         cx.notify();
     }
 
+    pub(in super::super) fn flush_history_password_note(&mut self, tab_id: sela_core::TabId) {
+        let Some(view) = self.view_mut(tab_id) else {
+            return;
+        };
+        if !view.history_password_note_pending {
+            return;
+        }
+        view.history_password_note_pending = false;
+        let msg = sela_core::HISTORY_PASSWORD_SKIP_NOTE;
+        view.note = Some(msg.into());
+        if view.status.contains(msg) {
+            return;
+        }
+        if view.status.is_empty() {
+            view.status = msg.into();
+        } else {
+            view.status = format!("{} · {msg}", view.status);
+        }
+    }
+
     pub(in super::super) fn record_finished_sql(
         &mut self,
         tab_id: sela_core::TabId,
@@ -463,6 +483,12 @@ impl Workspace {
         error_message: String,
         cx: &mut Context<Self>,
     ) {
+        if sela_core::history_sql_contains_password_clause(sql) {
+            if let Some(view) = self.view_mut(tab_id) {
+                view.history_password_note_pending = true;
+            }
+            return;
+        }
         if !sela_core::should_record_history_sql(sql) {
             return;
         }
