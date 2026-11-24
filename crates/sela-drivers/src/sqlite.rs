@@ -366,15 +366,15 @@ impl DatabaseSession for SqliteSession {
 mod tests {
     use super::*;
     use sela_core::{
-        preview_table, run_user_sql, split_statements, StatementOutcome, TablePreview, Value,
-        PAGE_SIZE,
+        preview_table, run_user_sql, split_statements, Dialect, StatementOutcome, TablePreview,
+        Value, PAGE_SIZE,
     };
 
     async fn seeded() -> (tempfile::TempDir, SqliteSession) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.sqlite");
         let session = SqliteSession::open(&path, true).await.unwrap();
-        for statement in split_statements(SAMPLE_SQL).unwrap() {
+        for statement in split_statements(SAMPLE_SQL, Dialect::Sqlite).unwrap() {
             session.execute(&statement.text).await.unwrap();
         }
         (dir, session)

@@ -70,6 +70,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 - Optional OR combine / raw-WHERE mode for filters
 - Remaining Postgres `<TYPE>` placeholders (tsquery, polygon, composites, …)
 - TLS client-key passphrase. rustls needs an unencrypted PEM today. A passphrase, if added later, goes to the OS keychain and never into `connections.json`.
+- **M1-7:** Keyboard and accessibility pass on the SQL result strip (Prev/Next and tab order so the strip is a proper focus target, not only clickable buttons).
 
 ---
 
@@ -90,7 +91,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | ID | Work | Done when |
 | --- | --- | --- |
 | M3-1 | SSH tunnel (russh): password, key + passphrase, agent, `~/.ssh/config`, known_hosts | US-02; openssh container test |
-| M3-2 | Schema + alias autocomplete | US-08 complete |
+| M3-2 | Schema + alias autocomplete; optional MIT tree-sitter SQL grammar for muted keyword/comment highlight | US-08 complete |
 | M3-3 | Export CSV/JSON/SQL with background progress; CSV import | US-12 |
 | M3-4 | Command palette + quick open table | Every primary action reachable from palette |
 

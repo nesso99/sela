@@ -24,13 +24,14 @@ impl Workspace {
         let Some(view) = self.active_view() else {
             return Err(SqlError::Empty);
         };
+        let dialect = self.active_dialect();
         let buffer = view.sql.read(cx).value().to_string();
         if buffer.trim().is_empty() {
             return Err(SqlError::Empty);
         }
         let range = view.sql.read(cx).selected_range();
         if range.is_empty() {
-            let statements = split_statements(&buffer)?;
+            let statements = split_statements(&buffer, dialect)?;
             let ix = statement_index_at(&statements, range.end)
                 .or(Some(0))
                 .filter(|i| statements.get(*i).is_some())
@@ -38,7 +39,7 @@ impl Workspace {
             Ok(vec![statements[ix].text.clone()])
         } else {
             let slice = substring_by_bytes(&buffer, &range);
-            Ok(split_statements(slice)?
+            Ok(split_statements(slice, dialect)?
                 .into_iter()
                 .map(|s| s.text)
                 .collect())
@@ -52,11 +53,12 @@ impl Workspace {
         let Some(view) = self.active_view() else {
             return Err(SqlError::Empty);
         };
+        let dialect = self.active_dialect();
         let buffer = view.sql.read(cx).value().to_string();
         if buffer.trim().is_empty() {
             return Err(SqlError::Empty);
         }
-        Ok(split_statements(&buffer)?
+        Ok(split_statements(&buffer, dialect)?
             .into_iter()
             .map(|s| s.text)
             .collect())

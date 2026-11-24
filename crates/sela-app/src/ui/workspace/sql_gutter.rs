@@ -20,7 +20,7 @@ impl Workspace {
         let selection = view.sql.read(cx).selected_range();
         let caret = selection.end;
         let has_selection = !selection.is_empty();
-        let statements = split_statements(&buffer).ok();
+        let statements = split_statements(&buffer, self.active_dialect()).ok();
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
         let gutter = view.sql_gutter.clone();

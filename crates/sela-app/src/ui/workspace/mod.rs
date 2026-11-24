@@ -128,6 +128,15 @@ impl Workspace {
             .and_then(|id| self.connections.iter().find(|item| &item.id == id))
     }
 
+    /// Dialect for statement splitting / quoting in the SQL editor.
+    pub(super) fn active_dialect(&self) -> sela_core::Dialect {
+        self.session
+            .as_ref()
+            .map(|session| session.dialect())
+            .or_else(|| self.active_connection().map(|c| c.engine.dialect()))
+            .unwrap_or(sela_core::Dialect::Sqlite)
+    }
+
     fn banner_error(&self) -> Option<String> {
         self.active_view()
             .and_then(|view| view.error.clone())

@@ -106,7 +106,7 @@ pub async fn create_sample_database(path: &std::path::Path) -> Result<(), DbErro
         })?;
     }
     let session = SqliteSession::open(path, true).await?;
-    for statement in sela_core::split_statements(sqlite::SAMPLE_SQL)
+    for statement in sela_core::split_statements(sqlite::SAMPLE_SQL, sela_core::Dialect::Sqlite)
         .map_err(|err| DbError::query(err.to_string()))?
     {
         session.execute(&statement.text).await?;
