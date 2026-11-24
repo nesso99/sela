@@ -11,6 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, IntoElement, Window};
 
 use sela_core::{ChangePlan, DbError, TabId};
+use sela_drivers::drive;
 
 use super::edit_session::format_commit_failure;
 use super::Workspace;
@@ -412,40 +413,54 @@ impl Workspace {
             return;
         };
         let statement_count = plan.statements.len();
-        if let Some(edit) = self.view_mut(tab_id).and_then(|v| v.edit.as_mut()) {
-            edit.committing = true;
-            edit.commit_failed = false;
-        }
+        let Some(generation) = self
+            .view_mut(tab_id)
+            .and_then(|v| v.edit.as_mut())
+            .map(|edit| edit.begin_commit())
+        else {
+            return;
+        };
         cx.notify();
         let started = Instant::now();
-        self.spawn_work(
-            Some(tab_id),
-            cx,
-            move |_| async move { session.apply_changes(&plan).await },
-            move |this, result, cx| {
+        // Commit runs outside the tab request gate so sort/filter/paging cannot
+        // bump request and drop the result (leaving committing=true forever).
+        cx.spawn(async move |this, async_cx| {
+            let result = drive(async move { session.apply_changes(&plan).await }).await;
+            this.update(async_cx, |this, cx| {
+                let Some(view) = this.views.get(&tab_id) else {
+                    return;
+                };
+                let Some(edit) = view.edit.as_ref() else {
+                    return;
+                };
+                if edit.commit_generation != generation {
+                    return;
+                }
                 match result {
                     Ok(applied) => {
                         let ms = started.elapsed().as_millis();
+                        let statements = applied.statements_executed;
                         if let Some(view) = this.view_mut(tab_id) {
                             if let Some(edit) = view.edit.as_mut() {
-                                edit.note_commit_success();
+                                if !edit.note_commit_success(generation) {
+                                    return;
+                                }
                             }
                             view.error = None;
-                            view.status = format!(
-                                "Committed · {} statements · {} ms",
-                                applied.statements_executed, ms
-                            );
+                            view.status = format!("Committed · {statements} statements · {ms} ms");
+                            view.post_commit_reload = true;
                         }
                         this.sync_tab_dirty(tab_id);
                         this.sync_grid_edit_paint(tab_id, cx);
-                        // Reload current page from the server.
                         this.reload_table_page_after_commit(tab_id, cx);
                     }
                     Err(err) => {
                         let (banner, status) = format_commit_failure(&err, statement_count);
                         if let Some(view) = this.view_mut(tab_id) {
                             if let Some(edit) = view.edit.as_mut() {
-                                edit.note_commit_failure();
+                                if !edit.note_commit_failure(generation) {
+                                    return;
+                                }
                             }
                             view.error = Some(banner);
                             view.last_error_sqlstate = match &err {
@@ -459,8 +474,10 @@ impl Workspace {
                         cx.notify();
                     }
                 }
-            },
-        );
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn reload_table_page_after_commit(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
@@ -472,7 +489,6 @@ impl Workspace {
             cx.notify();
             return;
         }
-        // `load_source_for` refreshes the current page for the tab.
         self.load_source_for(tab_id, cx);
     }
 

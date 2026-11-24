@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Grid editing review follow-ups: block mutations and page reload/sort/filter/paging/catalog refresh while Commit is in flight (own spawn + commit generation); capture PK/old value in the cell editor; unchanged accept is a no-op; multi-line cells stay read-only (`Use SQL to change it.`); typed Time/Timestamp parse; Postgres `$n::type` casts for uuid/date/numeric/json(b)/timestamptz/interval; edit Insert/Duplicate overlay rows (double-click + editor); keep dirty ChangeSet when `describe_table` fails; `ColumnStructure.generated` from drivers (identity / EXTRA / table_xinfo); ChangeConflict banner `No row matched {schema.table} for this key.` with 1-based statement status; post-commit reload failure status `Committed · the page failed to reload.`; confirm pending edits on Switch / Disconnect / Delete connection.
 - Result grid range selection: Shift+click and Shift+arrow extend `selection_rect` (highlighted), Ctrl/Cmd+A selects all cells, and right-click inside a range still keeps the range for Copy (#59).
 - Result grid keyboard selection: Shift+arrow binds explicitly in the `DataTable` context (DataTable only handles plain arrows), and Ctrl/Cmd+A no longer collapses after a deferred `SelectCell` from `set_selected_cell` (#59).
 - SQLite: expression column headers show the runtime storage class (INTEGER / REAL / TEXT / BLOB) of the first non-NULL value, or no type when unknown / all NULL — never `NULL` as a type (#60).

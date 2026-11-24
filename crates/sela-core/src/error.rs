@@ -166,7 +166,9 @@ impl DbError {
 
     /// Build a [`Self::ChangeConflict`] for a plan statement that did not hit
     /// exactly one row. `pk` is the original primary-key identity from the plan.
+    /// `statement_index` is 0-based into [`crate::ChangePlan::statements`].
     pub fn change_conflict(
+        table: &crate::change_set::TableRef,
         statement_index: usize,
         rows_affected: u64,
         pk: &[crate::types::Value],
@@ -175,10 +177,17 @@ impl DbError {
             .iter()
             .map(|value| value.display().into_owned())
             .collect();
-        let pk_joined = pk_display.join(", ");
-        let message = format!(
-            "change plan statement {statement_index} affected {rows_affected} rows (expected exactly 1); primary key: [{pk_joined}]"
-        );
+        let table_name = format!("{}.{}", table.schema, table.table);
+        let message = if rows_affected == 0 {
+            format!("No row matched {table_name} for this key.")
+        } else {
+            let pk_joined = pk_display.join(", ");
+            // Banner text uses 1-based statement numbers (08-preview-commit.md).
+            let statement_n = statement_index + 1;
+            format!(
+                "Expected exactly 1 row for {table_name}, got {rows_affected} (statement {statement_n}); primary key: [{pk_joined}]"
+            )
+        };
         Self::ChangeConflict {
             message,
             statement_index,
@@ -243,7 +252,8 @@ mod tests {
 
     #[test]
     fn change_conflict_names_index_and_pk() {
-        let err = DbError::change_conflict(2, 0, &[Value::Int(9), Value::text("k")]);
+        let table = crate::change_set::TableRef::new("public", "books");
+        let err = DbError::change_conflict(&table, 2, 0, &[Value::Int(9), Value::text("k")]);
         match &err {
             DbError::ChangeConflict {
                 statement_index,
@@ -258,9 +268,17 @@ mod tests {
             other => panic!("expected ChangeConflict, got {other:?}"),
         }
         let text = err.to_string();
-        assert!(text.contains("statement 2"));
-        assert!(text.contains("0 rows"));
-        assert!(text.contains("expected exactly 1"));
-        assert!(text.contains("[9, k]"));
+        assert_eq!(text, "No row matched public.books for this key.");
+    }
+
+    #[test]
+    fn change_conflict_multi_row_names_table_and_pk() {
+        let table = crate::change_set::TableRef::new("public", "books");
+        let err = DbError::change_conflict(&table, 1, 3, &[Value::Int(9)]);
+        let text = err.to_string();
+        assert!(text.contains("public.books"));
+        assert!(text.contains("got 3"));
+        assert!(text.contains("statement 2")); // 1-based in the message
+        assert!(text.contains("[9]"));
     }
 }

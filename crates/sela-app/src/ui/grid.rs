@@ -126,6 +126,13 @@ impl GridDelegate {
         } else {
             None
         };
+        let insert_id = overlay.map(|o| o.insert_id);
+        let editing_here = self.edit_paint.editing.as_ref().is_some_and(|(row, c)| {
+            *c == col_ix
+                && insert_id.is_some_and(
+                    |id| matches!(row, EditRowId::Overlay { insert_id: rid } if *rid == id),
+                )
+        });
         let table = cx.entity();
         let table_shift = table.clone();
         div()
@@ -144,16 +151,49 @@ impl GridDelegate {
                 cx.theme().foreground
             })
             .font_family(cx.theme().mono_font_family.clone())
-            .when(nullish, |cell| cell.italic())
+            .when(nullish && !editing_here, |cell| cell.italic())
             .when_some(gutter, |cell, glyph| {
                 cell.child(div().w(px(16.)).flex_shrink_0().text_xs().child(glyph))
             })
-            .child(text)
+            .child({
+                if editing_here {
+                    if let Some(input) = &self.edit_paint.editor_input {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .key_context("CellEditor")
+                            .child(Input::new(input).h(px(22.)))
+                            .into_any_element()
+                    } else {
+                        div().child(text).into_any_element()
+                    }
+                } else {
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .child(text)
+                        .into_any_element()
+                }
+            })
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 let shift = event.modifiers.shift;
                 table_shift.update(cx, |state, _| {
                     state.delegate_mut().note_pointer_shift(shift);
                 });
+            })
+            .on_click({
+                let table_dbl = table.clone();
+                move |event, _, cx| {
+                    if event.click_count() >= 2 {
+                        table_dbl.update(cx, |state, cx| {
+                            state.set_selected_cell(row_ix, col_ix, cx);
+                            state.delegate_mut().note_cell_focus(row_ix, col_ix, false);
+                            state.delegate_mut().pending_edit_cell = Some((row_ix, col_ix));
+                            state.refresh(cx);
+                        });
+                    }
+                }
             })
             .context_menu(move |menu, _, menu_cx| {
                 table.update(menu_cx, |state, cx| {

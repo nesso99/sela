@@ -8,6 +8,7 @@
 //! bound parameters only).
 
 use crate::change_set::{ChangeError, ChangeSet, RowChange, TableRef};
+use crate::column_kind::ColumnKind;
 use crate::copy_format::{escape_sql_string, value_to_copy_cell, CopyCell, CopyScalarKind};
 use crate::sql::{bind_placeholder, qualify, quote_ident};
 use crate::types::{Dialect, Value};
@@ -162,7 +163,7 @@ fn build_update(
             first = false;
             sql.push_str(&quote_ident(dialect, col)?);
             sql.push_str(" = ");
-            sql.push_str(&bind_placeholder(dialect, params.len()));
+            sql.push_str(&bind_expr(changeset, dialect, col, params.len()));
             params.push(cell.new_value.clone());
         }
     }
@@ -176,7 +177,7 @@ fn build_update(
         first = false;
         sql.push_str(&quote_ident(dialect, col)?);
         sql.push_str(" = ");
-        sql.push_str(&bind_placeholder(dialect, params.len()));
+        sql.push_str(&bind_expr(changeset, dialect, col, params.len()));
         params.push(cell.new_value.clone());
     }
     append_pk_where(changeset, dialect, &mut sql, &mut params, pk)?;
@@ -223,12 +224,12 @@ fn build_insert(
         sql.push_str(&quote_ident(dialect, col)?);
     }
     sql.push_str(") VALUES (");
-    for i in 0..params.len() {
+    for (i, col) in cols.iter().enumerate() {
         if i > 0 {
             sql.push_str(", ");
         }
         // Placeholders are 0-based into this statement’s own params vec.
-        sql.push_str(&bind_placeholder(dialect, i));
+        sql.push_str(&bind_expr(changeset, dialect, col, i));
     }
     sql.push(')');
     Ok(PlannedStatement {
@@ -263,11 +264,52 @@ fn append_pk_where(
             sql.push_str(" IS NULL");
         } else {
             sql.push_str(" = ");
-            sql.push_str(&bind_placeholder(dialect, params.len()));
+            sql.push_str(&bind_expr(changeset, dialect, col, params.len()));
             params.push(value.clone());
         }
     }
     Ok(())
+}
+
+/// Bind placeholder, with a Postgres cast when the column type needs one.
+fn bind_expr(changeset: &ChangeSet, dialect: Dialect, col: &str, param_ix: usize) -> String {
+    let ph = bind_placeholder(dialect, param_ix);
+    if dialect != Dialect::Postgres {
+        return ph;
+    }
+    let Some(type_name) = changeset.column_type(col) else {
+        return ph;
+    };
+    match postgres_bind_cast(type_name) {
+        Some(cast) => format!("{ph}::{cast}"),
+        None => ph,
+    }
+}
+
+fn postgres_bind_cast(type_name: &str) -> Option<&'static str> {
+    let lower = type_name.to_ascii_lowercase();
+    match ColumnKind::from_type_name(type_name) {
+        ColumnKind::Uuid => Some("uuid"),
+        ColumnKind::Date => Some("date"),
+        ColumnKind::Time => Some("time"),
+        ColumnKind::Timestamp => {
+            if lower.contains("with time zone") || lower.contains("timestamptz") {
+                Some("timestamptz")
+            } else {
+                Some("timestamp")
+            }
+        }
+        ColumnKind::Decimal => Some("numeric"),
+        ColumnKind::Json => {
+            if lower.contains("jsonb") {
+                Some("jsonb")
+            } else {
+                Some("json")
+            }
+        }
+        ColumnKind::Interval => Some("interval"),
+        _ => None,
+    }
 }
 
 fn render_preview_statement(
@@ -457,5 +499,131 @@ mod tests {
         assert!(preview
             .contains("UPDATE \"public\".\"books\" SET \"title\" = 'O''Reilly' WHERE \"id\" = 1;"));
         assert!(preview.ends_with("COMMIT;"));
+    }
+
+    #[test]
+    fn postgres_typed_binds_emit_casts() {
+        use chrono::{FixedOffset, NaiveDate, TimeZone};
+        use rust_decimal::Decimal;
+        use std::str::FromStr;
+        use uuid::Uuid;
+
+        let mut types = BTreeMap::new();
+        types.insert("id".into(), "uuid".into());
+        types.insert("d".into(), "date".into());
+        types.insert("amt".into(), "numeric".into());
+        types.insert("doc".into(), "jsonb".into());
+        types.insert("ts".into(), "timestamp with time zone".into());
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new("public", "typed"),
+            vec!["id".into()],
+            vec![
+                "id".into(),
+                "d".into(),
+                "amt".into(),
+                "doc".into(),
+                "ts".into(),
+            ],
+            types,
+        )
+        .unwrap();
+
+        let id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let id_del = Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap();
+        let tz = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+            .unwrap();
+        let tz2 = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .unwrap();
+        cs.set_cell(
+            &[Value::Uuid(id)],
+            "d",
+            Value::Date(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()),
+            Value::Date(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Uuid(id)],
+            "amt",
+            Value::Decimal(Decimal::from_str("1.00").unwrap()),
+            Value::Decimal(Decimal::from_str("2.50").unwrap()),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Uuid(id)],
+            "doc",
+            Value::json_raw("{}"),
+            Value::json_raw(r#"{"a":1}"#),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Uuid(id)],
+            "ts",
+            Value::TimestampTz(tz),
+            Value::TimestampTz(tz2),
+        )
+        .unwrap();
+        cs.delete_row(&[Value::Uuid(id_del)]).unwrap();
+
+        let mut insert = BTreeMap::new();
+        insert.insert("id".into(), Value::Uuid(Uuid::nil()));
+        insert.insert(
+            "d".into(),
+            Value::Date(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()),
+        );
+        insert.insert(
+            "amt".into(),
+            Value::Decimal(Decimal::from_str("0").unwrap()),
+        );
+        insert.insert("doc".into(), Value::json_raw("[]"));
+        insert.insert("ts".into(), Value::TimestampTz(tz2));
+        cs.insert_row(insert).unwrap();
+
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let delete_sql = &plan.statements[0].sql;
+        let update_sql = &plan.statements[1].sql;
+        let insert_sql = &plan.statements[2].sql;
+
+        assert!(
+            delete_sql.contains("$1::uuid"),
+            "delete WHERE: {delete_sql}"
+        );
+        assert!(update_sql.contains("$1::date"), "update SET: {update_sql}");
+        assert!(
+            update_sql.contains("$2::numeric"),
+            "update SET: {update_sql}"
+        );
+        assert!(update_sql.contains("$3::jsonb"), "update SET: {update_sql}");
+        assert!(
+            update_sql.contains("$4::timestamptz"),
+            "update SET: {update_sql}"
+        );
+        assert!(
+            update_sql.contains("$5::uuid"),
+            "update WHERE: {update_sql}"
+        );
+        assert!(
+            insert_sql.contains("$1::uuid"),
+            "insert VALUES: {insert_sql}"
+        );
+        assert!(
+            insert_sql.contains("$2::date"),
+            "insert VALUES: {insert_sql}"
+        );
+        assert!(
+            insert_sql.contains("$3::numeric"),
+            "insert VALUES: {insert_sql}"
+        );
+        assert!(
+            insert_sql.contains("$4::jsonb"),
+            "insert VALUES: {insert_sql}"
+        );
+        assert!(
+            insert_sql.contains("$5::timestamptz"),
+            "insert VALUES: {insert_sql}"
+        );
     }
 }

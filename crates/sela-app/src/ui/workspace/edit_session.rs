@@ -4,6 +4,7 @@
 //! row markers, discard, and failed-commit retention without a window.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use rust_decimal::Decimal;
 use sela_core::{
@@ -103,6 +104,14 @@ pub(crate) struct CellEditor {
     pub draft: String,
     /// Explicit NULL (ghost NULL button / bool menu). Distinct from `draft == ""`.
     pub is_null: bool,
+    /// Display string when the editor opened (for unchanged no-op).
+    pub original_display: String,
+    /// Whether the cell was NULL when the editor opened.
+    pub started_as_null: bool,
+    /// Captured primary key for server rows (stable across page reload).
+    pub pk: Option<Vec<Value>>,
+    /// Original server / pending value used for ChangeSet merge (`old_value`).
+    pub old_value: Option<Value>,
     pub validation_error: Option<String>,
     #[allow(dead_code)]
     pub popover: bool,
@@ -164,6 +173,8 @@ pub(crate) struct EditSession {
     pub editor: Option<CellEditor>,
     pub preview_open: bool,
     pub committing: bool,
+    /// Monotonic id so a commit completion can ignore a superseded attempt.
+    pub commit_generation: u64,
     /// After a failed commit: pending bar shows "Commit failed. Changes kept."
     pub commit_failed: bool,
 }
@@ -193,6 +204,7 @@ impl EditSession {
             editor: None,
             preview_open: false,
             committing: false,
+            commit_generation: 0,
             commit_failed: false,
         }
     }
@@ -216,6 +228,7 @@ impl EditSession {
             editor: None,
             preview_open: false,
             committing: false,
+            commit_generation: 0,
             commit_failed: false,
         }
     }
@@ -239,10 +252,11 @@ impl EditSession {
                 editor: None,
                 preview_open: false,
                 committing: false,
+                commit_generation: 0,
                 commit_failed: false,
             };
         }
-        let generated = detect_generated_columns(structure);
+        let generated = detect_generated_columns(structure, dialect);
         let column_types = column_type_map(structure);
         match ChangeSet::from_structure(structure) {
             Ok(cs) => Self {
@@ -257,6 +271,7 @@ impl EditSession {
                 editor: None,
                 preview_open: false,
                 committing: false,
+                commit_generation: 0,
                 commit_failed: false,
             },
             Err(ChangeError::NoPrimaryKey) => Self {
@@ -271,6 +286,7 @@ impl EditSession {
                 editor: None,
                 preview_open: false,
                 committing: false,
+                commit_generation: 0,
                 commit_failed: false,
             },
             Err(_) => Self {
@@ -285,6 +301,7 @@ impl EditSession {
                 editor: None,
                 preview_open: false,
                 committing: false,
+                commit_generation: 0,
                 commit_failed: false,
             },
         }
@@ -459,6 +476,9 @@ impl EditSession {
         value: Option<&Value>,
         row_deleted: bool,
     ) -> Result<(), &'static str> {
+        if self.committing {
+            return Err("Committing…");
+        }
         if !self.is_editable() {
             return Err(self
                 .read_only
@@ -484,11 +504,31 @@ impl EditSession {
             if v.is_decode_error() || v.is_unsupported_placeholder() {
                 return Err("This cell is read-only.");
             }
+            // Multi-line / CR cells stay read-only until a popover editor exists.
+            let display = v.display();
+            if display.contains('\n') || display.contains('\r') {
+                return Err("Use SQL to change it.");
+            }
         }
         Ok(())
     }
 
-    /// Open the in-cell editor. `server_value` is the current (possibly pending) value.
+    fn mutation_allowed(&self) -> Result<(), String> {
+        if self.committing {
+            return Err("Committing…".into());
+        }
+        if !self.is_editable() {
+            return Err(self
+                .read_only
+                .as_ref()
+                .map(|r| r.status_line().to_string())
+                .unwrap_or_else(|| "This table is read-only.".into()));
+        }
+        Ok(())
+    }
+
+    /// Open the in-cell editor. Captures PK + old value at begin time.
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_edit(
         &mut self,
         row: EditRowId,
@@ -496,6 +536,8 @@ impl EditSession {
         col_ix: usize,
         server_value: Option<&Value>,
         row_deleted: bool,
+        pk: Option<Vec<Value>>,
+        old_value: Option<Value>,
     ) -> Result<(), &'static str> {
         self.cell_editable(&column, server_value, row_deleted)?;
         let kind = self.column_kind(&column);
@@ -516,8 +558,9 @@ impl EditSession {
         } else {
             (draft, is_null)
         };
-        let popover =
-            matches!(kind, ColumnKind::Json) || draft.contains('\n') || draft.contains('\r');
+        let original_display = draft.clone();
+        let started_as_null = is_null;
+        let popover = matches!(kind, ColumnKind::Json);
         self.editor = Some(CellEditor {
             row,
             column,
@@ -525,6 +568,10 @@ impl EditSession {
             kind,
             draft,
             is_null,
+            original_display,
+            started_as_null,
+            pk,
+            old_value,
             validation_error: None,
             popover,
         });
@@ -544,16 +591,25 @@ impl EditSession {
     }
 
     /// Accept the open editor into the ChangeSet. Returns Err with status text on validation failure.
-    pub fn accept_editor(
-        &mut self,
-        pk_for_server: Option<&[Value]>,
-        old_server_value: Option<Value>,
-    ) -> Result<(), String> {
+    ///
+    /// Uses the PK / old value captured at [`Self::begin_edit`]. Unchanged draft
+    /// (same display + NULL state) closes without writing.
+    pub fn accept_editor(&mut self) -> Result<(), String> {
+        if self.committing {
+            return Err("Committing…".into());
+        }
         let editor = self
             .editor
             .as_ref()
             .ok_or_else(|| "No open editor.".to_string())?
             .clone();
+        // Unchanged cell: close without set_cell (avoids Bool↔Int / Text↔typed drift).
+        if editor.is_null == editor.started_as_null
+            && (editor.is_null || editor.draft == editor.original_display)
+        {
+            self.editor = None;
+            return Ok(());
+        }
         let value = if editor.is_null {
             Value::Null
         } else {
@@ -569,8 +625,11 @@ impl EditSession {
         };
         match &editor.row {
             EditRowId::Server { .. } => {
-                let pk = pk_for_server.ok_or_else(|| "Missing primary key.".to_string())?;
-                let old = old_server_value.unwrap_or(Value::Null);
+                let pk = editor
+                    .pk
+                    .as_deref()
+                    .ok_or_else(|| "Missing primary key.".to_string())?;
+                let old = editor.old_value.clone().unwrap_or(Value::Null);
                 let cs = self
                     .changeset
                     .as_mut()
@@ -593,13 +652,7 @@ impl EditSession {
     }
 
     pub fn insert_blank_row(&mut self) -> Result<u64, String> {
-        if !self.is_editable() {
-            return Err(self
-                .read_only
-                .as_ref()
-                .map(|r| r.status_line().to_string())
-                .unwrap_or_else(|| "This table is read-only.".into()));
-        }
+        self.mutation_allowed()?;
         let cs = self.changeset.as_mut().unwrap();
         let id = cs.insert_row(BTreeMap::new()).map_err(|e| e.to_string())?;
         self.overlay.push(OverlayRow {
@@ -616,13 +669,7 @@ impl EditSession {
         columns: &[(String, Value)],
         pk_columns: &[String],
     ) -> Result<u64, String> {
-        if !self.is_editable() {
-            return Err(self
-                .read_only
-                .as_ref()
-                .map(|r| r.status_line().to_string())
-                .unwrap_or_else(|| "This table is read-only.".into()));
-        }
+        self.mutation_allowed()?;
         let mut values = BTreeMap::new();
         for (name, value) in columns {
             if self.generated_columns.contains(name) {
@@ -644,13 +691,7 @@ impl EditSession {
     }
 
     pub fn delete_or_restore_server(&mut self, pk: &[Value]) -> Result<RowMarker, String> {
-        if !self.is_editable() {
-            return Err(self
-                .read_only
-                .as_ref()
-                .map(|r| r.status_line().to_string())
-                .unwrap_or_else(|| "This table is read-only.".into()));
-        }
+        self.mutation_allowed()?;
         let marker = self.row_marker_for_server(pk);
         let cs = self.changeset.as_mut().unwrap();
         if marker == RowMarker::Deleted {
@@ -680,9 +721,7 @@ impl EditSession {
     }
 
     pub fn delete_overlay(&mut self, insert_id: u64) -> Result<(), String> {
-        if !self.is_editable() {
-            return Err("This table is read-only.".into());
-        }
+        self.mutation_allowed()?;
         let cs = self.changeset.as_mut().unwrap();
         cs.delete_insert(insert_id).map_err(|e| e.to_string())?;
         self.overlay.retain(|o| o.insert_id != insert_id);
@@ -703,15 +742,32 @@ impl EditSession {
         self.committing = false;
     }
 
+    /// Mark this session as committing and bump the generation id. Returns the id
+    /// the caller must match when the async commit completes.
+    pub fn begin_commit(&mut self) -> u64 {
+        self.committing = true;
+        self.commit_failed = false;
+        self.commit_generation = self.commit_generation.wrapping_add(1);
+        self.commit_generation
+    }
+
     /// Successful commit: clear set and close sheet. Caller reloads the page.
-    pub fn note_commit_success(&mut self) {
+    pub fn note_commit_success(&mut self, generation: u64) -> bool {
+        if self.commit_generation != generation {
+            return false;
+        }
         self.discard();
+        true
     }
 
     /// Failed commit: keep edits; do not reload. Caller sets banner/status.
-    pub fn note_commit_failure(&mut self) {
+    pub fn note_commit_failure(&mut self, generation: u64) -> bool {
+        if self.commit_generation != generation {
+            return false;
+        }
         self.committing = false;
         self.commit_failed = true;
+        true
     }
 
     pub fn build_plan(&self) -> Result<ChangePlan, ChangeError> {
@@ -746,16 +802,20 @@ fn column_type_map(structure: &TableStructure) -> HashMap<String, String> {
 }
 
 /// Generated / identity columns are not editable (07-grid-editing.md).
-pub(crate) fn detect_generated_columns(structure: &TableStructure) -> HashSet<String> {
+pub(crate) fn detect_generated_columns(
+    structure: &TableStructure,
+    dialect: Dialect,
+) -> HashSet<String> {
     let pk = structure.primary_key_columns().unwrap_or_default();
     let mut out = HashSet::new();
     for col in &structure.columns {
-        if column_looks_generated(col) {
+        if col.generated || column_looks_generated(col) {
             out.insert(col.name.clone());
             continue;
         }
         // SQLite INTEGER PRIMARY KEY rowid alias (single-column INTEGER PK).
-        if pk.len() == 1
+        if dialect == Dialect::Sqlite
+            && pk.len() == 1
             && pk[0] == col.name
             && col.type_name.trim().eq_ignore_ascii_case("INTEGER")
         {
@@ -837,16 +897,56 @@ pub(crate) fn parse_edit_value(
                 .map_err(|_| format!("Enter a valid {type_label}, or set NULL."))?;
             Ok(Value::json_raw(raw.trim()))
         }
-        ColumnKind::Time | ColumnKind::Timestamp | ColumnKind::Interval => {
-            // Keep display text; engine validates on commit.
+        ColumnKind::Time => parse_time_value(raw.trim())
+            .ok_or_else(|| format!("Enter a valid {type_label}, or set NULL.")),
+        ColumnKind::Timestamp => parse_timestamp_value(raw.trim())
+            .ok_or_else(|| format!("Enter a valid {type_label}, or set NULL.")),
+        ColumnKind::Interval => {
             if raw.trim().is_empty() {
                 Err(format!("Enter a valid {type_label}, or set NULL."))
             } else {
-                Ok(Value::text(raw))
+                // Interval grammar is engine-specific; keep readable text until typed parse.
+                Ok(Value::Other {
+                    type_name: "interval".into(),
+                    text: Arc::from(raw.trim()),
+                })
             }
         }
         ColumnKind::Bytes | ColumnKind::Other => Err("This cell is read-only.".into()),
     }
+}
+
+fn parse_time_value(raw: &str) -> Option<Value> {
+    use chrono::NaiveTime;
+    const FORMATS: &[&str] = &["%H:%M:%S%.f", "%H:%M:%S", "%H:%M"];
+    for fmt in FORMATS {
+        if let Ok(t) = NaiveTime::parse_from_str(raw, fmt) {
+            return Some(Value::Time(t));
+        }
+    }
+    None
+}
+
+fn parse_timestamp_value(raw: &str) -> Option<Value> {
+    use chrono::{DateTime, NaiveDateTime};
+    if let Ok(dt) = DateTime::parse_from_rfc3339(raw) {
+        return Some(Value::TimestampTz(dt));
+    }
+    if let Ok(dt) = DateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f%z") {
+        return Some(Value::TimestampTz(dt));
+    }
+    const FORMATS: &[&str] = &[
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+    ];
+    for fmt in FORMATS {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(raw, fmt) {
+            return Some(Value::Timestamp(dt));
+        }
+    }
+    None
 }
 
 fn kind_label(kind: ColumnKind) -> &'static str {
@@ -927,18 +1027,23 @@ fn param_display(value: &Value, dialect: Dialect) -> String {
 }
 
 /// Status / banner text for a failed commit (keeps edits; no reload).
+///
+/// Banner and status both number statements from 1 (08-preview-commit.md).
 pub(crate) fn format_commit_failure(err: &DbError, statement_count: usize) -> (String, String) {
-    let banner = err.to_string();
-    let status = match err {
+    match err {
         DbError::ChangeConflict {
-            statement_index, ..
+            statement_index,
+            message,
+            ..
         } => {
             let n = statement_index + 1;
-            format!("Commit failed · statement {n} of {statement_count} · changes kept")
+            let banner = message.clone();
+            let status =
+                format!("Commit failed · statement {n} of {statement_count} · changes kept");
+            (banner, status)
         }
-        _ => "Commit failed · changes kept".into(),
-    };
-    (banner, status)
+        _ => (err.to_string(), "Commit failed · changes kept".into()),
+    }
 }
 
 #[cfg(test)]
@@ -957,6 +1062,7 @@ mod tests {
                     nullable: false,
                     default: Some("nextval('books_id_seq')".into()),
                     comment: None,
+                    generated: false,
                 },
                 ColumnStructure {
                     name: "title".into(),
@@ -964,6 +1070,7 @@ mod tests {
                     nullable: true,
                     default: None,
                     comment: None,
+                    generated: false,
                 },
                 ColumnStructure {
                     name: "pages".into(),
@@ -971,6 +1078,7 @@ mod tests {
                     nullable: true,
                     default: None,
                     comment: None,
+                    generated: false,
                 },
             ],
             indexes: vec![IndexInfo {
@@ -1143,8 +1251,8 @@ mod tests {
             .unwrap()
             .set_cell(&pk, "title", Value::text("a"), Value::text("b"))
             .unwrap();
-        session.committing = true;
-        session.note_commit_failure();
+        let gen = session.begin_commit();
+        assert!(session.note_commit_failure(gen));
         assert!(session.commit_failed);
         assert!(!session.committing);
         assert!(session.is_dirty());
@@ -1170,6 +1278,8 @@ mod tests {
                 1,
                 Some(&Value::Null),
                 false,
+                Some(vec![Value::Int(1)]),
+                Some(Value::Null),
             )
             .unwrap();
         assert!(session.editor.as_ref().unwrap().is_null);
@@ -1178,9 +1288,7 @@ mod tests {
             ed.is_null = false;
             ed.draft.clear();
         }
-        session
-            .accept_editor(Some(&[Value::Int(1)]), Some(Value::Null))
-            .unwrap();
+        session.accept_editor().unwrap();
         assert_eq!(
             session.pending_server_value(&[Value::Int(1)], "title"),
             Some(&Value::text(""))
@@ -1242,8 +1350,10 @@ mod tests {
 
     #[test]
     fn change_conflict_status_names_statement() {
-        let err = DbError::change_conflict(1, 0, &[Value::Int(9)]);
-        let (_banner, status) = format_commit_failure(&err, 4);
+        let err =
+            DbError::change_conflict(&TableRef::new("public", "books"), 1, 0, &[Value::Int(9)]);
+        let (banner, status) = format_commit_failure(&err, 4);
+        assert!(banner.contains("No row matched public.books for this key."));
         assert!(status.contains("statement 2 of 4"));
         assert!(status.contains("changes kept"));
     }
@@ -1259,6 +1369,8 @@ mod tests {
                 1,
                 Some(&Value::text("a")),
                 false,
+                Some(vec![Value::Int(1)]),
+                Some(Value::text("a")),
             )
             .unwrap();
         if let Some(ed) = &mut session.editor {
@@ -1267,6 +1379,141 @@ mod tests {
         session.cancel_editor();
         assert!(session.editor.is_none());
         assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn edits_rejected_while_committing() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let _ = session.begin_commit();
+        assert_eq!(
+            session.begin_edit(
+                EditRowId::Server { row_ix: 0 },
+                "title".into(),
+                1,
+                Some(&Value::text("a")),
+                false,
+                Some(vec![Value::Int(1)]),
+                Some(Value::text("a")),
+            ),
+            Err("Committing…")
+        );
+        assert!(session.insert_blank_row().is_err());
+        assert!(session.delete_or_restore_server(&[Value::Int(1)]).is_err());
+    }
+
+    #[test]
+    fn accepting_unchanged_cell_is_noop() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        session
+            .begin_edit(
+                EditRowId::Server { row_ix: 0 },
+                "title".into(),
+                1,
+                Some(&Value::text("same")),
+                false,
+                Some(vec![Value::Int(1)]),
+                Some(Value::text("same")),
+            )
+            .unwrap();
+        session.accept_editor().unwrap();
+        assert!(!session.is_dirty());
+        assert!(session.editor.is_none());
+    }
+
+    #[test]
+    fn editor_keeps_pk_across_accept() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let pk = vec![Value::Int(42)];
+        session
+            .begin_edit(
+                EditRowId::Server { row_ix: 0 },
+                "title".into(),
+                1,
+                Some(&Value::text("old")),
+                false,
+                Some(pk.clone()),
+                Some(Value::text("old")),
+            )
+            .unwrap();
+        if let Some(ed) = &mut session.editor {
+            ed.draft = "new".into();
+        }
+        session.accept_editor().unwrap();
+        assert_eq!(
+            session.pending_server_value(&pk, "title"),
+            Some(&Value::text("new"))
+        );
+    }
+
+    #[test]
+    fn parsing_per_type() {
+        assert_eq!(
+            parse_edit_value("12:30:00", ColumnKind::Time, Dialect::Postgres).unwrap(),
+            Value::Time(chrono::NaiveTime::from_hms_opt(12, 30, 0).unwrap())
+        );
+        assert!(matches!(
+            parse_edit_value(
+                "2024-01-02 03:04:05",
+                ColumnKind::Timestamp,
+                Dialect::Postgres
+            )
+            .unwrap(),
+            Value::Timestamp(_)
+        ));
+        assert!(matches!(
+            parse_edit_value(
+                "2024-01-02T03:04:05Z",
+                ColumnKind::Timestamp,
+                Dialect::Postgres
+            )
+            .unwrap(),
+            Value::TimestampTz(_)
+        ));
+        assert_eq!(
+            parse_edit_value("2024-01-02", ColumnKind::Date, Dialect::Postgres).unwrap(),
+            Value::Date(chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap())
+        );
+        assert!(matches!(
+            parse_edit_value(
+                "550e8400-e29b-41d4-a716-446655440000",
+                ColumnKind::Uuid,
+                Dialect::Postgres
+            )
+            .unwrap(),
+            Value::Uuid(_)
+        ));
+    }
+
+    #[test]
+    fn generated_column_detection_uses_flag() {
+        let mut structure = books_structure();
+        structure.columns[0].generated = true;
+        structure.columns[0].default = None;
+        structure.columns[0].type_name = "integer".into();
+        let session =
+            EditSession::from_structure(&structure, Dialect::Postgres, RelationKind::Table);
+        assert!(session.is_generated("id"));
+        // Without the flag or SERIAL/nextval heuristics, plain integer PK is not generated
+        // except SQLite INTEGER PRIMARY KEY alias (not this dialect path).
+        let mut plain = books_structure();
+        plain.columns[0].generated = false;
+        plain.columns[0].default = None;
+        plain.columns[0].type_name = "integer".into();
+        let session = EditSession::from_structure(&plain, Dialect::Postgres, RelationKind::Table);
+        assert!(!session.is_generated("id"));
+    }
+
+    #[test]
+    fn multiline_cell_is_read_only() {
+        let session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let err = session
+            .cell_editable("title", Some(&Value::text("a\nb")), false)
+            .unwrap_err();
+        assert_eq!(err, "Use SQL to change it.");
     }
 
     #[test]

@@ -105,12 +105,14 @@ impl Workspace {
                     }
                     Err(err) => {
                         if let Some(view) = this.view_mut(tab_id) {
-                            view.edit = Some(EditSession::loading(dialect, kind));
-                            if let Some(edit) = view.edit.as_mut() {
-                                // Stay loading-style; surface as status, not a hard strip.
-                                let _ = edit;
+                            let keep_dirty = view.edit.as_ref().is_some_and(|e| e.is_dirty());
+                            if keep_dirty {
+                                // Spec: do not wipe pending edits when structure refresh fails.
+                                view.status = format!("Structure for edit failed: {err}");
+                            } else {
+                                view.edit = Some(EditSession::loading(dialect, kind));
+                                view.status = format!("Structure for edit failed: {err}");
                             }
-                            view.status = format!("Structure for edit failed: {err}");
                         }
                         cx.notify();
                     }
@@ -233,7 +235,16 @@ impl Workspace {
             return;
         };
         let (pk, current, deleted) = self.server_row_edit_context(tab_id, row, &column, cx);
-        let _ = pk;
+        let old_value = match &edit_row {
+            EditRowId::Server { .. } => pk.as_ref().and_then(|p| {
+                self.views
+                    .get(&tab_id)
+                    .and_then(|v| v.edit.as_ref())
+                    .and_then(|e| e.original_server_value(p, &column).cloned())
+                    .or_else(|| current.clone())
+            }),
+            EditRowId::Overlay { .. } => current.clone(),
+        };
         let status_msg;
         {
             let Some(view) = self.view_mut(tab_id) else {
@@ -244,7 +255,15 @@ impl Workspace {
                 cx.notify();
                 return;
             };
-            match edit.begin_edit(edit_row, column.clone(), col, current.as_ref(), deleted) {
+            match edit.begin_edit(
+                edit_row,
+                column.clone(),
+                col,
+                current.as_ref(),
+                deleted,
+                pk,
+                old_value,
+            ) {
                 Ok(()) => {
                     let draft = edit
                         .editor
@@ -356,15 +375,11 @@ impl Workspace {
             .get(&tab_id)
             .map(|v| v.cell_editor.read(cx).value().to_string())
             .unwrap_or_default();
-        let (row, column, was_null_button) = {
+        let was_null_button = {
             let view = self.views.get(&tab_id).ok_or("No active tab.")?;
             let edit = view.edit.as_ref().ok_or("Not editable.")?;
             let editor = edit.editor.as_ref().ok_or("No open editor.")?;
-            (
-                editor.row.clone(),
-                editor.column.clone(),
-                editor.is_null && draft.is_empty(),
-            )
+            editor.is_null && draft.is_empty()
         };
         // Sync draft from the input unless NULL was set via the button and left empty.
         if let Some(edit) = self.view_mut(tab_id).and_then(|v| v.edit.as_mut()) {
@@ -374,33 +389,14 @@ impl Workspace {
                     if ed.is_null && !draft.is_empty() {
                         ed.is_null = false;
                     }
-                    // Empty draft on a previously-NULL text cell: treat as '' when not null button.
-                    if ed.is_null && draft.is_empty() && !was_null_button {
-                        // Keep as NULL only if the ghost NULL is still active; accept path uses is_null.
-                    }
                     ed.draft = draft;
                 }
             }
         }
-        let (pk, old) = match &row {
-            EditRowId::Server { row_ix } => {
-                let (pk, current, _) = self.server_row_edit_context(tab_id, *row_ix, &column, cx);
-                // Original value for merge: prefer ChangeSet old, else current server.
-                let old = pk.as_ref().and_then(|p| {
-                    self.views
-                        .get(&tab_id)
-                        .and_then(|v| v.edit.as_ref())
-                        .and_then(|e| e.original_server_value(p, &column).cloned())
-                        .or(current)
-                });
-                (pk, old)
-            }
-            EditRowId::Overlay { .. } => (None, None),
-        };
         let result = {
             let view = self.view_mut(tab_id).ok_or("No active tab.")?;
             let edit = view.edit.as_mut().ok_or("Not editable.")?;
-            edit.accept_editor(pk.as_deref(), old)
+            edit.accept_editor()
         };
         self.sync_tab_dirty(tab_id);
         self.sync_grid_edit_paint(tab_id, cx);

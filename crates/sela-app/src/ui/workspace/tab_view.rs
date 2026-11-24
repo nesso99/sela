@@ -93,6 +93,8 @@ pub(super) struct TabView {
     pub edit: Option<EditSession>,
     /// Shared input for the open in-cell editor.
     pub cell_editor: Entity<InputState>,
+    /// Set after a successful commit while the page reload is in flight.
+    pub post_commit_reload: bool,
 }
 
 impl TabView {
@@ -167,6 +169,7 @@ impl TabView {
             history_password_note_pending: false,
             edit: None,
             cell_editor,
+            post_commit_reload: false,
         }
     }
 

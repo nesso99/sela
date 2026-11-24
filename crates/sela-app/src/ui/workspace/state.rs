@@ -69,11 +69,11 @@ impl Workspace {
         }
         let foreign = self.foreign_connection_ids(&id);
         if let Some(window) = window {
-            if let Some((_confirm_id, name, tab_count)) =
+            if let Some((_confirm_id, name, tab_count, pending)) =
                 self.first_close_confirm_target(&foreign, cx)
             {
                 self.pending_close_tabs = Some(super::PendingCloseTabs::Connect { to_id: id });
-                self.show_close_tabs_confirm(window, cx, &name, tab_count);
+                self.show_close_tabs_confirm(window, cx, &name, tab_count, pending);
                 return;
             }
         }
@@ -178,33 +178,45 @@ impl Workspace {
             .collect()
     }
 
-    /// Editor SQL + busy for each tab of `connection_id`.
+    /// Editor SQL + busy + pending-grid-edits for each tab of `connection_id`.
     fn close_confirm_inputs_for(
         &self,
         connection_id: &str,
         cx: &Context<Self>,
-    ) -> Vec<(String, bool)> {
+    ) -> Vec<(String, bool, bool)> {
         self.tabs
             .tabs_for_connection(connection_id)
             .map(|tab| {
-                let sql = self
-                    .views
-                    .get(&tab.id)
+                let view = self.views.get(&tab.id);
+                let sql = view
                     .map(|view| view.sql.read(cx).value().to_string())
                     .unwrap_or_default();
-                let busy = self.views.get(&tab.id).is_some_and(|view| view.busy);
-                (sql, busy)
+                let busy = view.is_some_and(|view| view.busy);
+                let dirty = view
+                    .and_then(|view| view.edit.as_ref())
+                    .is_some_and(|edit| edit.is_dirty());
+                (sql, busy, dirty)
             })
             .collect()
     }
 
-    /// First connection among `ids` that has typed SQL or a busy query.
-    /// Returns `(connection_id, display_name, tab_count)`.
+    /// Pending grid-edit count across tabs for `connection_id`.
+    fn pending_edit_count_for_connection(&self, connection_id: &str) -> usize {
+        self.tabs
+            .tabs_for_connection(connection_id)
+            .filter_map(|tab| self.views.get(&tab.id))
+            .filter_map(|view| view.edit.as_ref())
+            .map(|edit| edit.pending_counts().total())
+            .sum()
+    }
+
+    /// First connection among `ids` that has typed SQL, a busy query, or pending edits.
+    /// Returns `(connection_id, display_name, tab_count, pending_edits)`.
     fn first_close_confirm_target(
         &self,
         ids: &[String],
         cx: &Context<Self>,
-    ) -> Option<(String, String, usize)> {
+    ) -> Option<(String, String, usize, usize)> {
         for id in ids {
             let inputs = self.close_confirm_inputs_for(id, cx);
             let tab_count = inputs.len();
@@ -212,18 +224,21 @@ impl Workspace {
                 continue;
             }
             let at_risk = count_tabs_requiring_close_confirm(
-                inputs.iter().map(|(sql, busy)| (sql.as_str(), *busy)),
+                inputs
+                    .iter()
+                    .map(|(sql, busy, dirty)| (sql.as_str(), *busy || *dirty)),
             );
             if at_risk == 0 {
                 continue;
             }
+            let pending = self.pending_edit_count_for_connection(id);
             let name = self
                 .connections
                 .iter()
                 .find(|item| &item.id == id)
                 .map(|item| item.name.clone())
                 .unwrap_or_else(|| id.clone());
-            return Some((id.clone(), name, tab_count));
+            return Some((id.clone(), name, tab_count, pending));
         }
         None
     }
@@ -234,6 +249,7 @@ impl Workspace {
         cx: &mut Context<Self>,
         connection_name: &str,
         tab_count: usize,
+        pending_edits: usize,
     ) {
         if self.close_tabs_confirm_open {
             return;
@@ -244,6 +260,13 @@ impl Workspace {
         } else {
             format!("Close {tab_count} tabs for {connection_name}?")
         };
+        let description = if pending_edits > 0 {
+            format!(
+                "Unsaved SQL in the editor will be lost. {pending_edits} pending changes will be discarded."
+            )
+        } else {
+            "Unsaved SQL in the editor will be lost.".into()
+        };
         let this = cx.entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this_ok = this.clone();
@@ -251,7 +274,7 @@ impl Workspace {
             let this_close = this.clone();
             alert
                 .title(title.clone())
-                .description("Unsaved SQL in the editor will be lost.")
+                .description(description.clone())
                 // Cancel is the safer default (Enter / primary). Esc uses on_cancel.
                 .on_ok(move |_, _, cx| {
                     this_ok.update(cx, |workspace, _| {
@@ -422,15 +445,21 @@ impl Workspace {
             return;
         };
         let id = connection.id.clone();
+        let pending = self.pending_edit_count_for_connection(&id);
+        let description = if pending > 0 {
+            format!(
+                "The saved connection is removed. The database itself is left untouched. {pending} pending changes will be discarded."
+            )
+        } else {
+            "The saved connection is removed. The database itself is left untouched.".into()
+        };
         let this = cx.entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this = this.clone();
             let id = id.clone();
             alert
                 .title(format!("Delete {}?", connection.name))
-                .description(
-                    "The saved connection is removed. The database itself is left untouched.",
-                )
+                .description(description.clone())
                 .confirm()
                 .ok_text("Delete")
                 .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
@@ -488,9 +517,9 @@ impl Workspace {
             self.rebuild_tree(cx);
             return;
         };
-        if let Some((_, name, tab_count)) = self.first_close_confirm_target(&[id], cx) {
+        if let Some((_, name, tab_count, pending)) = self.first_close_confirm_target(&[id], cx) {
             self.pending_close_tabs = Some(super::PendingCloseTabs::Disconnect);
-            self.show_close_tabs_confirm(window, cx, &name, tab_count);
+            self.show_close_tabs_confirm(window, cx, &name, tab_count, pending);
             return;
         }
         self.perform_disconnect(cx);
@@ -530,6 +559,18 @@ impl Workspace {
         let Some(session) = self.session.clone() else {
             return;
         };
+        // Do not refresh (or clear structure caches) while a commit is in flight.
+        if self
+            .views
+            .values()
+            .any(|v| v.edit.as_ref().is_some_and(|e| e.committing))
+        {
+            if let Some(view) = self.active_view_mut() {
+                view.status = "Committing…".into();
+            }
+            cx.notify();
+            return;
+        }
         let active = self.active_id.clone();
         self.clear_all_structure_caches();
         if let Some(view) = self.active_view_mut() {

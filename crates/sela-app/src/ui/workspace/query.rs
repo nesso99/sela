@@ -514,6 +514,18 @@ impl Workspace {
     }
 
     pub(super) fn load_source_for(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if self
+            .views
+            .get(&tab_id)
+            .and_then(|v| v.edit.as_ref())
+            .is_some_and(|e| e.committing)
+        {
+            return;
+        }
+        // Page reload cancels an open cell editor so it cannot write to a stale row.
+        if let Some(edit) = self.view_mut(tab_id).and_then(|v| v.edit.as_mut()) {
+            edit.cancel_editor();
+        }
         let Some(session) = self.session.clone() else {
             if let Some(view) = self.view_mut(tab_id) {
                 view.error = Some("Connect to a database before running SQL.".into());
@@ -870,6 +882,14 @@ impl Workspace {
     }
 
     pub(super) fn fetch_pending_pages_for(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if self
+            .views
+            .get(&tab_id)
+            .and_then(|v| v.edit.as_ref())
+            .is_some_and(|e| e.committing)
+        {
+            return;
+        }
         let Some(view) = self.views.get(&tab_id) else {
             return;
         };
@@ -1070,6 +1090,10 @@ impl Workspace {
                 }
                 self.refresh_status_from_state(tab_id);
                 if let Some(view) = self.view_mut(tab_id) {
+                    // Successful post-commit reload: keep the Committed status line.
+                    if view.post_commit_reload {
+                        view.post_commit_reload = false;
+                    }
                     let total_rows = rows.total_rows.map(|n| n as usize);
                     let paged = rows.paged;
                     view.grid.update(cx, |state, cx| {
@@ -1082,6 +1106,7 @@ impl Workspace {
                         state.refresh(cx);
                     });
                 }
+                self.sync_grid_edit_paint(tab_id, cx);
                 self.fetch_pending_pages_for(tab_id, cx);
             }
             Ok(Some(StatementOutcome::Executed(executed))) => {
@@ -1110,14 +1135,22 @@ impl Workspace {
             }
             Err(err) => {
                 if let Some(view) = self.view_mut(tab_id) {
-                    let stmt = view.sql_run_statement_index;
-                    view.status = Self::format_query_failed_status(Some(stmt), err.sqlstate());
-                    view.error = Some(err.to_string());
-                    view.last_error_sqlstate = err.sqlstate().map(str::to_string);
-                    view.grid.update(cx, |state, cx| {
-                        state.delegate_mut().note_query_failed();
-                        state.refresh(cx);
-                    });
+                    if view.post_commit_reload {
+                        // Commit already succeeded; ChangeSet stays cleared (08-preview-commit.md).
+                        view.post_commit_reload = false;
+                        view.status = "Committed · the page failed to reload.".into();
+                        view.error = Some(err.to_string());
+                        view.last_error_sqlstate = err.sqlstate().map(str::to_string);
+                    } else {
+                        let stmt = view.sql_run_statement_index;
+                        view.status = Self::format_query_failed_status(Some(stmt), err.sqlstate());
+                        view.error = Some(err.to_string());
+                        view.last_error_sqlstate = err.sqlstate().map(str::to_string);
+                        view.grid.update(cx, |state, cx| {
+                            state.delegate_mut().note_query_failed();
+                            state.refresh(cx);
+                        });
+                    }
                 }
             }
         }
