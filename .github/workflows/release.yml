@@ -182,17 +182,19 @@ jobs:
         run: |
           set -euo pipefail
           # sela --version / -V must print and exit without opening a window.
-          # Unknown args still launch GPUI; bound with timeout so a missing
-          # flag fails the job instead of hanging the runner.
+          # Unknown args still launch GPUI. Bound by this step's timeout-minutes
+          # (GNU `timeout` is Linux-only; macOS/Windows runners lack it).
           if [[ "$RUNNER_OS_NAME" == "Windows" ]]; then
             BIN="target/release/sela.exe"
-            # Git Bash on windows-latest may lack GNU timeout; use step timeout.
-            run_ver() { "$BIN" "$@"; }
           else
             BIN="target/release/sela"
-            run_ver() { timeout 30s "$BIN" "$@"; }
           fi
           test -f "$BIN"
+          if [[ "$RUNNER_OS_NAME" == "Linux" ]]; then
+            run_ver() { timeout 30s "$BIN" "$@"; }
+          else
+            run_ver() { "$BIN" "$@"; }
+          fi
           out="$(run_ver --version)"
           echo "smoke: $out"
           echo "$out" | grep -E "^sela ${VERSION}( |$)"
