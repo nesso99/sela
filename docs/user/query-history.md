@@ -8,7 +8,7 @@ Statements you run from the SQL editor are stored in `history.sqlite` next to yo
 - Multi-statement runs add one row for each statement that actually started.
 - Catalog, Structure, paging, Count, filter SQL, and Load more are not recorded.
 - Empty buffers are not recorded.
-- Password-setting statements (for example `CREATE ROLE … PASSWORD`, `IDENTIFIED BY`, `SET PASSWORD`) are not recorded. The status bar notes `not saved to history (contains a password)`.
+- Password-setting statements (for example `CREATE ROLE … PASSWORD`, `IDENTIFIED BY`, MySQL `IDENTIFIED WITH <plugin> BY`, `SET PASSWORD`) are not recorded. The status bar notes `not saved to history (contains a password)`.
 
 Recording is on by default. Turn it off per connection with **Record query history** in the connection dialog. Existing rows stay until you delete them or use **Clear history**.
 
