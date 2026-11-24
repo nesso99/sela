@@ -1,4 +1,5 @@
 //! Tree node ids and catalog-tree rendering helpers.
+//! Connection tree ids stay `conn_key(id)` so expand state survives rebuilds.
 
 use std::collections::HashMap;
 
