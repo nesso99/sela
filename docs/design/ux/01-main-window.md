@@ -200,7 +200,7 @@ Closing the last window quits on Linux and Windows. On macOS the app stays runni
 
 Confirm only while a query is running. Count is included: `spawn_work` sets `view.busy` for Count the same way it does for a query. If any tab is busy, confirm. Title `Quit Sela?`. Body `A query is still running. Quitting will cancel it.` Buttons are Cancel, then Quit. Cancel is the default and the focused button. Escape cancels. Quit is not primary-styled. A second `secondary-q` while this dialog is open does not quit.
 
-On quit, cancel in-flight queries and close pools. Wait about 2 seconds, then exit anyway.
+On quit, cancel in-flight queries and close pools, then flush query history: WAL checkpoint and close `history.sqlite`. All of that shares the about-2-second cap. Then exit anyway.
 
 Today `Quit` is bound as `cmd-q` with context `None`, and the handler is `cx.quit()`. There is no confirm, no menu, and no toolbar close button. The window title bar is the default (`TitlebarOptions` title `Sela`, `appears_transparent` left false) and `window_decorations` is unset.
 
@@ -236,7 +236,7 @@ Today `Quit` is bound as `cmd-q` with context `None`, and the handler is `cx.qui
 - Banner: keep `error_banner`. Add `max_h` around 60px and vertical scroll. Append SQLSTATE from `DbError` instead of only `Display`, which is the message alone (`error.rs`).
 - Load more footer: a sibling under the `DataTable` inside `results_area`, visible only when `GridSource::Sql` and `truncated`. It is not a row in `ResultWindow`.
 - Do not turn on `TableState::sortable(true)`. Header sort is specified in the filter spec and is server-side.
-- Quit goes through one handler, as in [Quit and window lifecycle](#quit-and-window-lifecycle). Do the about-2-second wait in that handler before `cx.quit()`.
+- Quit goes through one handler, as in [Quit and window lifecycle](#quit-and-window-lifecycle). Cancel queries, close pools, and flush history (WAL checkpoint, then close `history.sqlite`) inside the about-2-second wait, before `cx.quit()`.
 
 ## Decisions
 
@@ -249,7 +249,7 @@ Today `Quit` is bound as `cmd-q` with context `None`, and the handler is `cx.qui
 Differences from `ui/mod.rs` and gpui-pre 0.3.12. [Quit and window lifecycle](#quit-and-window-lifecycle) is the target.
 
 1. The binding is `cmd-q`, not `secondary-q`. In this gpui-pre, `cmd` is the platform modifier and `secondary` is Control on Linux and Windows, so Ctrl+Q is not bound. The context is already `None` (global). Whether an open dialog eats the key before `cx.on_action` is not handled.
-2. The handler is `cx.quit()` with no confirm, no cancel, and no pool shutdown. The title-bar close button and Alt+F4 follow `QuitMode::Default` and do not call `Quit`, so they skip that handler. The last-window rule itself matches the default (macOS stays running, other platforms quit). Sela does not call `set_quit_mode`. Keep it.
+2. The handler is `cx.quit()` with no confirm, no cancel, no pool shutdown, and no history flush (`history.sqlite` is WAL in `sela-config` and is not checkpointed or closed on quit). The title-bar close button and Alt+F4 follow `QuitMode::Default` and do not call `Quit`, so they skip that handler. The last-window rule itself matches the default (macOS stays running, other platforms quit). Sela does not call `set_quit_mode`. Keep it.
 3. Nothing reads `Window::window_decorations()`, and the toolbar has no close button. `window_decorations` is unset, so a Wayland session without server-side decorations may have no close control until the toolbar button exists.
 4. `set_menus` is never called. There is no `Quit Sela` item and no File > Quit item.
 5. Nothing waits about 2 seconds. `SHUTDOWN_TIMEOUT` is 200ms and only bounds `on_app_quit` futures, which Sela does not register. The cap has to finish before `cx.quit()`.
