@@ -312,8 +312,9 @@ pub struct ChangePlan {
 - Always bound parameters; reuse `quote_ident` / `qualify` / `bind_placeholder`.
 - `UPDATE`/`DELETE` `WHERE` uses only PK columns (`IS NULL` for null PK parts).
 - Commit: driver `apply_changes` → BEGIN → Delete, Update, Insert → COMMIT; on error ROLLBACK and keep `ChangeSet` (caller does not clear).
+- Each UPDATE/DELETE must affect exactly one row; otherwise `DbError::ChangeConflict` (statement index + PK display) and rollback. INSERT is not checked this way. MySQL uses `CLIENT_FOUND_ROWS` (sqlx default + explicit `.found_rows(true)`) so same-value UPDATE still reports one matched row.
 - `ChangePlan::preview_sql` renders literals for the preview dialog; executable SQL stays bound.
-- Optional optimistic WHERE with old non-PK values: not implemented (backlog).
+- Optional optimistic WHERE with old non-PK values: not implemented (backlog — see follow-up issue from M2-1/M2-2).
 - Golden tests per dialect under `crates/sela-core/tests/change_plan_snapshots/`; integration tests exercise `apply_changes` on all three engines.
 
 Safe mode per connection: Off / Confirm writes / Read-only (M2-4). Classify with `classify` + `sqlparser` for no-WHERE writes and writes inside CTEs. Apply to editor and grid commit; production-tagged connections default to Confirm writes.

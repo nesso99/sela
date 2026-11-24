@@ -1350,4 +1350,99 @@ mod tests {
             .unwrap();
         assert_eq!(page.rows[0][0], Value::text("alpha"));
     }
+
+    #[tokio::test]
+    async fn apply_change_plan_missing_update_and_delete_roll_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes_guard.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_guard (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO sela_guard (id, name) VALUES (1, 'a'), (2, 'b')")
+            .await
+            .unwrap();
+
+        // UPDATE existing then UPDATE missing → ChangeConflict; first must not commit.
+        let mut cs = ChangeSet::try_new(
+            TableRef::new("main", "sela_guard"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("changed"),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(999)],
+            "name",
+            Value::text("ghost"),
+            Value::text("nope"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        let err = session.apply_changes(&plan).await.unwrap_err();
+        match err {
+            DbError::ChangeConflict {
+                statement_index,
+                rows_affected,
+                ref pk,
+                ..
+            } => {
+                assert_eq!(statement_index, 1);
+                assert_eq!(rows_affected, 0);
+                assert_eq!(pk, &["999".to_string()]);
+            }
+            other => panic!("expected ChangeConflict, got {other:?}"),
+        }
+        let page = session
+            .query("SELECT name FROM sela_guard WHERE id = 1")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("a"));
+
+        // DELETE existing then DELETE missing → earlier delete must not commit.
+        let mut cs = ChangeSet::try_new(
+            TableRef::new("main", "sela_guard"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into()],
+        )
+        .unwrap();
+        cs.delete_row(&[Value::Int(2)]).unwrap();
+        cs.delete_row(&[Value::Int(999)]).unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        let err = session.apply_changes(&plan).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::ChangeConflict {
+                    statement_index: 1,
+                    rows_affected: 0,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let page = session
+            .query("SELECT id FROM sela_guard WHERE id = 2")
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 1, "earlier DELETE must roll back");
+        let page = session
+            .query("SELECT COUNT(*) AS c FROM sela_guard")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::Int(2));
+    }
 }

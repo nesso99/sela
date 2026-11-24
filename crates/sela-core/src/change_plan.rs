@@ -26,6 +26,9 @@ pub struct PlannedStatement {
     pub op: PlanOp,
     pub sql: String,
     pub params: Vec<Value>,
+    /// Original primary-key identity for UPDATE/DELETE (empty for INSERT).
+    /// Used by `apply_changes` when reporting [`crate::DbError::ChangeConflict`].
+    pub pk: Vec<Value>,
 }
 
 /// Ordered, dialect-specific SQL plan built from a [`ChangeSet`].
@@ -134,6 +137,7 @@ fn build_delete(
         op: PlanOp::Delete,
         sql,
         params,
+        pk: pk.to_vec(),
     })
 }
 
@@ -180,6 +184,7 @@ fn build_update(
         op: PlanOp::Update,
         sql,
         params,
+        pk: pk.to_vec(),
     })
 }
 
@@ -230,6 +235,7 @@ fn build_insert(
         op: PlanOp::Insert,
         sql,
         params,
+        pk: Vec::new(),
     })
 }
 

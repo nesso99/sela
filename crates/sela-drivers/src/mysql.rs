@@ -28,7 +28,11 @@ impl MysqlSession {
             .database(connection.database.trim())
             // TIMESTAMP has no offset on the wire; sqlx's DateTime<Utc> decode assumes the
             // session time_zone is UTC. Pin +00:00 so TIMESTAMP -> TimestampTz stays consistent.
-            .timezone(Some("+00:00".into()));
+            .timezone(Some("+00:00".into()))
+            // CLIENT_FOUND_ROWS: rows_affected = matched rows (sqlx 0.9.1 default is
+            // true). Required so same-value UPDATE still reports 1 for the
+            // change-plan exact-1-row guard — see change_exec.rs.
+            .found_rows(true);
         let options = crate::tls::apply_mysql_tls(options, &connection.tls)?;
         let pool = MySqlPoolOptions::new()
             .max_connections(5)
@@ -45,7 +49,8 @@ impl MysqlSession {
             .parse()
             .map_err(|err| DbError::config(format!("invalid MySQL URL: {err}")))?;
         // Same pin as connect(): TIMESTAMP -> TimestampTz requires session UTC.
-        let options = options.timezone(Some("+00:00".into()));
+        // Re-assert found_rows so URL parse cannot leave CLIENT_FOUND_ROWS off.
+        let options = options.timezone(Some("+00:00".into())).found_rows(true);
         let pool = MySqlPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
@@ -1163,6 +1168,132 @@ mod tests {
 
         session
             .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_changes"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mysql_apply_change_plan_exact_one_row_when_configured() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql change guard: set SELA_MYSQL_URL to run this test");
+            return;
+        };
+        let schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
+        let session = MysqlSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| panic!("SELA_MYSQL_URL is set but MySQL is unreachable: {err}"));
+        let qschema = quote_ident(Dialect::Mysql, &schema).unwrap();
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_guard"))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "CREATE TABLE {qschema}.sela_guard (
+                    id INT PRIMARY KEY,
+                    name VARCHAR(64) NOT NULL
+                )"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_guard (id, name) VALUES (1, 'a'), (2, 'b')"
+            ))
+            .await
+            .unwrap();
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_guard"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("changed"),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(999)],
+            "name",
+            Value::text("ghost"),
+            Value::text("nope"),
+        )
+        .unwrap();
+        let err = session
+            .apply_changes(&ChangePlan::build(&cs, Dialect::Mysql).unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::ChangeConflict {
+                    statement_index: 1,
+                    rows_affected: 0,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let page = session
+            .query(&format!(
+                "SELECT name FROM {qschema}.sela_guard WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("a"));
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_guard"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into()],
+        )
+        .unwrap();
+        cs.delete_row(&[Value::Int(2)]).unwrap();
+        cs.delete_row(&[Value::Int(999)]).unwrap();
+        let err = session
+            .apply_changes(&ChangePlan::build(&cs, Dialect::Mysql).unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::ChangeConflict {
+                    statement_index: 1,
+                    rows_affected: 0,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let page = session
+            .query(&format!("SELECT id FROM {qschema}.sela_guard WHERE id = 2"))
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 1);
+
+        // Same-value UPDATE must succeed: sqlx enables CLIENT_FOUND_ROWS by default
+        // (and we set found_rows(true) explicitly), so matched rows count as 1.
+        // ChangeSet merge rules drop a no-op cell edit, so build the plan manually.
+        let plan = ChangePlan {
+            dialect: Dialect::Mysql,
+            table: TableRef::new(&schema, "sela_guard"),
+            statements: vec![sela_core::PlannedStatement {
+                op: sela_core::PlanOp::Update,
+                sql: format!("UPDATE {qschema}.`sela_guard` SET `name` = ? WHERE `id` = ?"),
+                params: vec![Value::text("a"), Value::Int(1)],
+                pk: vec![Value::Int(1)],
+            }],
+        };
+        let result = session.apply_changes(&plan).await.unwrap();
+        assert_eq!(result.statements_executed, 1);
+        assert_eq!(result.rows_affected, 1);
+
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_guard"))
             .await
             .unwrap();
     }

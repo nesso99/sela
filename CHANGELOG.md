@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- M2-1 / M2-2 safe-editing core (no UI): `ChangeSet` records pending cell updates, inserts, and deletes for tables with a primary key (merge rules for insert-edit, insert-delete, and revert-to-original); `ChangePlan` builds ordered DELETE → UPDATE → INSERT SQL for PostgreSQL, MySQL, and SQLite with dialect quoting and bind parameters only; `ChangePlan::preview_sql` / `preview_bound` for the upcoming preview dialog; `DatabaseSession::apply_changes` runs a plan in one transaction on all three engines. Golden SQL snapshots and driver integration tests included. No schema-migration code.
+- M2-1 / M2-2 safe-editing core (no UI): `ChangeSet` records pending cell updates, inserts, and deletes for tables with a primary key (merge rules for insert-edit, insert-delete, and revert-to-original); `ChangePlan` builds ordered DELETE → UPDATE → INSERT SQL for PostgreSQL, MySQL, and SQLite with dialect quoting and bind parameters only; `ChangePlan::preview_sql` / `preview_bound` for the upcoming preview dialog; `DatabaseSession::apply_changes` runs a plan in one transaction on all three engines. Each UPDATE/DELETE must affect exactly one row (`DbError::ChangeConflict` otherwise, full rollback). MySQL connections keep `CLIENT_FOUND_ROWS` so same-value UPDATEs still count as matched. Golden SQL snapshots and driver integration tests included. No schema-migration code.
 
 ### Fixed
 

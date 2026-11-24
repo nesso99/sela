@@ -97,7 +97,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 
 - `sela-core::ChangeSet` records pending cell updates, inserts, and deletes for one table. Tables without a primary key are rejected (`ChangeError::NoPrimaryKey`). Merge rules: edit-on-insert updates the insert; delete-of-insert removes it; re-edit back to the original value drops the cell update.
 - `sela-core::ChangePlan::build` emits ordered DELETE → UPDATE → INSERT SQL with dialect quoting and bind placeholders (`$n` / `?`). Values are never interpolated into executable SQL. `preview_sql` / `preview_bound` are for the M2-3 dialog.
-- `DatabaseSession::apply_changes` runs a plan in one transaction (commit on success, rollback on error) on Postgres, MySQL, and SQLite.
+- `DatabaseSession::apply_changes` runs a plan in one transaction (commit on success, rollback on error) on Postgres, MySQL, and SQLite. UPDATE/DELETE must affect exactly one row (`DbError::ChangeConflict` otherwise).
 
 ---
 
