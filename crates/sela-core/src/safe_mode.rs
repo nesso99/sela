@@ -523,7 +523,7 @@ mod tests {
             StatementSafety::write(),
         );
         assert_eq!(
-            decide_editor_gate(SafeMode::Off, &[write.clone()]),
+            decide_editor_gate(SafeMode::Off, std::slice::from_ref(&write)),
             EditorGate::Allow
         );
 
