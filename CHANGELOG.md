@@ -10,7 +10,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 
 ### Added
 
-- Per-connection TLS for PostgreSQL and MySQL: modes `disable` / `prefer` / `require` / `verify-ca` / `verify-full`, optional CA and client certificate paths, `DbError::Tls` for handshake/cert failures (including rustls peer-cert errors that sqlx surfaces as Io), and `connections.json` `schema_version` 2 (PR #15). Legacy v1 `ssl: true` maps in memory to `require` (no migration rewriter). Client keys must be unencrypted PEM for now. `verify-ca` skips hostname verification with a trusted CA. This relies on a vendored `sqlx-core` 0.8.6 with a one-line backport of [launchbadge/sqlx#3861](https://github.com/launchbadge/sqlx/pull/3861) (see `vendor/README.md`; CI job `vendor-drift` checks it against upstream); removal is tracked in [#19](https://github.com/nesso99/sela/issues/19). CI job `db-tls-postgres` exercises require, verify-ca (hostname mismatch OK), verify-full hostname mismatch → `DbError::Tls`, and hostssl-only disable.
+- Per-connection TLS for PostgreSQL and MySQL: modes `disable` / `prefer` / `require` / `verify-ca` / `verify-full`, optional CA and client certificate paths, `DbError::Tls` for handshake/cert failures (including rustls peer-cert errors that sqlx surfaces as Io), and `connections.json` `schema_version` 2 (PR #15). Legacy v1 `ssl: true` maps in memory to `require` (no migration rewriter). Client keys must be unencrypted PEM for now. `verify-ca` skips hostname verification with a trusted CA (sqlx ≥ 0.9 / [sqlx#3861](https://github.com/launchbadge/sqlx/pull/3861)). CI job `db-tls-postgres` exercises require, verify-ca (hostname mismatch OK), verify-full hostname mismatch → `DbError::Tls`, and hostssl-only disable.
 - UX specs for the main window, a review of filter/sort, and the SQL editor (`docs/design/ux/`).
 - Cargo workspace with `sela-core`, `sela-drivers`, `sela-config`, and `sela-app` (binary `sela`) (#2).
 - Drivers for PostgreSQL, MySQL, and SQLite via sqlx; typed `Value` decode for NUMERIC, UUID, JSON, timestamptz, and related types (#3, #5).
@@ -29,5 +29,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 
 ### Changed
 
+- Upgrade sqlx from 0.8.6 to 0.9.1. Drop the vendored `sqlx-core` backport of [sqlx#3861](https://github.com/launchbadge/sqlx/pull/3861) (`vendor/`, `[patch.crates-io]`, and the `vendor-drift` CI job). Feature flags move from `runtime-tokio-rustls` to `runtime-tokio` + `tls-rustls`; `macros` is enabled for `Executor::describe`. Dynamic SQL goes through `AssertSqlSafe` / a small `query` helper. Align `bit-vec` 0.8 and `ipnetwork` 0.21 with sqlx. (#19)
+- New PostgreSQL and MySQL connections default to `tls.mode = prefer` (dialog / `SavedConnection::new`). Saved configs with no `tls` value still deserialize as `disable`; `TlsMode::default` stays `disable`. Prefer shows the hint: *prefer may fall back to unencrypted; use require or verify-full for remote servers*.
 - Product rename from Birch to Sela (#1).
 - UI split into focused workspace modules under ~400 lines (#7).

@@ -24,11 +24,13 @@ For Postgres and MySQL, set **SSL mode** and optional certificate paths:
 
 | Mode | Meaning |
 | --- | --- |
-| `disable` | Plain TCP only (default for new connections and for docker-compose) |
-| `prefer` | Try TLS first; fall back to plain if the server refuses |
+| `disable` | Plain TCP only (how saved files with no `tls` object still load) |
+| `prefer` | Try TLS first; fall back to plain if the server refuses (default for new Postgres/MySQL connections) |
 | `require` | Require TLS; do not verify the server certificate |
 | `verify-ca` | Require TLS and verify the server certificate against a CA (hostname not checked) |
 | `verify-full` | Like verify-ca, and check the server hostname |
+
+When Prefer is selected, the dialog shows: *prefer may fall back to unencrypted; use require or verify-full for remote servers*.
 
 Optional paths (plain text in JSON):
 
@@ -52,4 +54,4 @@ docker compose up -d
 | PostgreSQL | `127.0.0.1` | `5432` | `sela` | `sela` | `sample` |
 | MySQL | `127.0.0.1` | `3306` | `sela` | `sela` | `sample` |
 
-Leave SSL mode on **disable** for these containers; they do not serve TLS.
+The default **prefer** mode still works with these containers (they do not serve TLS, so the driver falls back to plain TCP). Use **disable** if you want to skip the TLS attempt.

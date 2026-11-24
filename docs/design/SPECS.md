@@ -206,11 +206,11 @@ TLS fields on each connection (Postgres / MySQL only; SQLite ignores them in the
 
 | Field | Values / notes |
 | --- | --- |
-| `tls.mode` | `disable` (default) / `prefer` / `require` / `verify-ca` / `verify-full` |
+| `tls.mode` | `disable` (serde / missing-`tls` default) / `prefer` (new Postgres/MySQL connection default) / `require` / `verify-ca` / `verify-full` |
 | `tls.ca_path` | Optional CA PEM path (required for verify-ca / verify-full) |
 | `tls.client_cert_path` / `tls.client_key_path` | Optional; both set or both empty. Paths only; keys must be unencrypted PEM today |
 
-Mapped to sqlx: Postgres `PgSslMode::{Disable,Prefer,Require,VerifyCa,VerifyFull}`; MySQL `MySqlSslMode::{Disabled,Preferred,Required,VerifyCa,VerifyIdentity}`. `verify-ca` verifies the CA chain and skips hostname checks (sqlx 0.8.6 rustls needs a one-line `NotValidForNameContext` backport — see `vendor/README.md`).
+Mapped to sqlx: Postgres `PgSslMode::{Disable,Prefer,Require,VerifyCa,VerifyFull}`; MySQL `MySqlSslMode::{Disabled,Preferred,Required,VerifyCa,VerifyIdentity}`. `verify-ca` verifies the CA chain and skips hostname checks (sqlx ≥ 0.9 includes [sqlx#3861](https://github.com/launchbadge/sqlx/pull/3861)).
 
 Current on-disk shape (fields beyond TLS land in later milestones):
 

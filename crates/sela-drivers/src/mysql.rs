@@ -189,7 +189,7 @@ impl MysqlSession {
         let schema_q =
             quote_ident(Dialect::Mysql, schema).map_err(|err| DbError::query(err.to_string()))?;
         let sql = format!("SHOW CREATE TABLE {schema_q}.{table_q}");
-        let row = sqlx::query(&sql)
+        let row = crate::query(&sql)
             .fetch_optional(&self.pool)
             .await
             .map_err(crate::sqlx_err)?
