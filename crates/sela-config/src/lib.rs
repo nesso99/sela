@@ -10,7 +10,7 @@ mod settings;
 mod store;
 mod tabs;
 
-pub use history::{HistoryOpen, HistoryStore};
+pub use history::{checkpoint_history_connection, HistoryOpen, HistoryStore};
 pub use secrets::{
     CachingSecrets, KeyringStore, MemorySecretStore, PasswordPersistence, SecretStore,
 };

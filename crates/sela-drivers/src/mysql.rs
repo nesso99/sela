@@ -345,6 +345,10 @@ impl DatabaseSession for MysqlSession {
         )
         .await
     }
+
+    async fn close(&self) {
+        self.pool.close().await;
+    }
 }
 
 #[cfg(test)]

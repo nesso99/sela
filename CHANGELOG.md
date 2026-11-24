@@ -11,6 +11,7 @@ once a stable release is tagged. Until then, work lands on `main` under **Unrele
 ### Added
 
 - `sela --version` / `-V` prints `sela <version> (<short git SHA>)` (SHA from `git rev-parse` at build time, or the `SELA_GIT_SHA` build env; omitted when neither is available) and `--help` / `-h` prints usage; both exit without opening a window.
+- Quit: Cmd/Ctrl+Q (and File ▸ Quit / Quit Sela on macOS), clean shutdown that cancels running queries (including Count), closes sqlx pools, and checkpoints `history.sqlite` within GPUI’s `SHUTDOWN_TIMEOUT` (200 ms); confirms only while a query is running; last-window close quits on Linux/Windows; client-side close control when server decorations are unavailable (#31).
 
 ### Fixed
 

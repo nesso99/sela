@@ -8,7 +8,7 @@
 
 mod store;
 
-pub use store::{HistoryOpen, HistoryStore};
+pub use store::{checkpoint_history_connection, HistoryOpen, HistoryStore};
 
 #[cfg(test)]
 mod tests;

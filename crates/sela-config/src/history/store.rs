@@ -344,6 +344,38 @@ impl HistoryStore {
         };
         Ok(n as usize)
     }
+
+    /// Flush the WAL into the main database file (`PRAGMA wal_checkpoint(TRUNCATE)`).
+    ///
+    /// Safe to call while the store is still open. Prefer
+    /// [`Self::checkpoint_and_close`] on quit so the connection is released.
+    pub fn checkpoint(&self) -> Result<(), ConfigError> {
+        let conn = self.conn.lock().expect("history mutex");
+        checkpoint_history_connection(&conn).map_err(|source| ConfigError::History {
+            path: self.path.clone(),
+            source,
+        })
+    }
+
+    /// Checkpoint the WAL and close the SQLite connection.
+    pub fn checkpoint_and_close(self) -> Result<(), ConfigError> {
+        let conn = self.conn.into_inner().expect("history mutex");
+        checkpoint_history_connection(&conn).map_err(|source| ConfigError::History {
+            path: self.path.clone(),
+            source,
+        })?;
+        // `Connection` drop closes the handle after the checkpoint.
+        drop(conn);
+        Ok(())
+    }
+}
+
+/// Run `PRAGMA wal_checkpoint(TRUNCATE)` on an open history connection.
+///
+/// Extracted so quit-path tests can exercise the checkpoint without GPUI.
+pub fn checkpoint_history_connection(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    Ok(())
 }
 
 fn map_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {

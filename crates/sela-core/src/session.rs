@@ -58,6 +58,9 @@ pub trait DatabaseSession: Send + Sync {
         cancel: CancellationToken,
         sink: async_channel::Sender<StreamBatch>,
     ) -> Result<StreamOutcome, DbError>;
+
+    /// Close the underlying connection pool. Bounded by the caller on quit.
+    async fn close(&self);
 }
 
 /// Options for a filtered / sorted table preview.

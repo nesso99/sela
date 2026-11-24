@@ -9,11 +9,16 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    actions, px, size, Action, Bounds, KeyBinding, KeyBindingContextPredicate, TitlebarOptions,
-    WindowBounds, WindowOptions,
+    actions, px, size, Action, Bounds, Global, KeyBinding, KeyBindingContextPredicate, Menu,
+    MenuItem, TitlebarOptions, WeakEntity, WindowBounds, WindowDecorations, WindowOptions,
 };
 
 pub use workspace::Workspace;
+
+/// Weak handle so app-level Quit (menu / Cmd+Q with no focus path) reaches the workspace.
+struct QuitWorkspace(WeakEntity<Workspace>);
+
+impl Global for QuitWorkspace {}
 
 actions!(
     sela,
@@ -67,7 +72,6 @@ pub fn run() {
             // Themes are installed once the window exists (needs appearance for System).
             // Until then stay on the kit dark default so the first frame is never light-flashy.
             cx.bind_keys([
-                KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-.", CancelQuery, None),
                 KeyBinding::new("ctrl-.", CancelQuery, None),
                 KeyBinding::new("cmd-t", NewQueryTab, None),
@@ -98,6 +102,9 @@ pub fn run() {
                 KeyBinding::new("cmd-shift-]", ShowTableStructure, None),
                 KeyBinding::new("ctrl-shift-]", ShowTableStructure, None),
             ]);
+            // Quit: ⌘Q on macOS, Ctrl+Q elsewhere. Global so it works in the
+            // SQL editor and dialogs.
+            bind_secondary(cx, "secondary-q", Box::new(Quit), None);
             // Platform secondary modifier (⌘ on macOS, Ctrl elsewhere) — M1-3 filter bar.
             bind_secondary(cx, "secondary-f", Box::new(ToggleFilterBar), None);
             bind_secondary(cx, "secondary-enter", Box::new(RunQuery), Some("SqlEditor"));
@@ -211,16 +218,40 @@ pub fn run() {
             // Result strip Prev/Next when the strip itself is focused.
             bind_secondary(cx, "left", Box::new(ResultStripPrev), Some("ResultStrip"));
             bind_secondary(cx, "right", Box::new(ResultStripNext), Some("ResultStrip"));
-            cx.on_action(|_: &Quit, cx| cx.quit());
+            install_menus(cx);
+            // Route Quit through the workspace (confirm + clean shutdown). With
+            // no open window (macOS after the last close), quit immediately.
+            cx.on_action(|_: &Quit, cx| {
+                let Some(workspace) = cx
+                    .try_global::<QuitWorkspace>()
+                    .and_then(|target| target.0.upgrade())
+                else {
+                    cx.quit();
+                    return;
+                };
+                let Some(handle) = cx.windows().first().copied() else {
+                    cx.quit();
+                    return;
+                };
+                let _ = handle.update(cx, |_root, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.request_quit(window, cx);
+                    });
+                });
+            });
 
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
-            gpui_kit::open_window(
+            let (_handle, workspace) = gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Sela".into()),
                         ..Default::default()
                     }),
+                    // Prefer server-side decorations (OS close button). Wayland
+                    // may refuse and fall back to client decorations; the
+                    // toolbar then shows a close control.
+                    window_decorations: Some(WindowDecorations::Server),
                     window_min_size: Some(size(px(880.), px(560.))),
                     ..Default::default()
                 },
@@ -228,7 +259,28 @@ pub fn run() {
                 |window, cx| cx.new(|cx| Workspace::new(window, cx)),
             )
             .expect("failed to open the Sela window");
+            cx.set_global(QuitWorkspace(workspace.downgrade()));
         });
+}
+
+fn install_menus(cx: &mut gpui_kit::App) {
+    #[cfg(target_os = "macos")]
+    {
+        // First top-level menu is the app menu. Quit Sela is last, after a separator.
+        cx.set_menus([
+            Menu::new("Sela").items([MenuItem::separator(), MenuItem::action("Quit Sela", Quit)])
+        ]);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // File ▸ Quit (last item, after a separator). Keymap supplies the Ctrl+Q hint.
+        cx.set_menus([
+            Menu::new("File").items([MenuItem::separator(), MenuItem::action("Quit", Quit)])
+        ]);
+        if let Some(menus) = cx.get_menus() {
+            gpui_kit::component::GlobalState::global_mut(cx).set_app_menus(menus);
+        }
+    }
 }
 
 fn bind_secondary(

@@ -184,6 +184,41 @@ fn clear_scoped_and_delete_row() {
 }
 
 #[test]
+fn checkpoint_and_close_flushes_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history.sqlite");
+    let store = HistoryStore::open(&path).unwrap().store;
+    let t0 = Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap();
+    store.insert(&sample("ckpt", "c1", "select 1", t0)).unwrap();
+    store.checkpoint().unwrap();
+    // WAL companion files may still exist until close; after checkpoint+close
+    // the main db must reopen cleanly with the row intact.
+    store.checkpoint_and_close().unwrap();
+    let reopened = HistoryStore::open(&path).unwrap().store;
+    assert_eq!(reopened.count(None).unwrap(), 1);
+    let rows = reopened.query(&HistoryFilter::default(), 10).unwrap();
+    assert_eq!(rows[0].id, "ckpt");
+}
+
+#[test]
+fn checkpoint_history_connection_helper() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history.sqlite");
+    let store = HistoryStore::open(&path).unwrap().store;
+    let t0 = Utc.with_ymd_and_hms(2026, 3, 2, 0, 0, 0).unwrap();
+    store
+        .insert(&sample("helper", "c1", "select 2", t0))
+        .unwrap();
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    crate::checkpoint_history_connection(&conn).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[test]
 fn outcome_filter_and_no_secrets_in_schema() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.sqlite");

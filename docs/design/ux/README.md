@@ -48,7 +48,7 @@ The user-facing shortcut page should keep saying “⌘ on macOS, Ctrl on Linux 
 | --- | --- |
 | `secondary-space` | Spotlight on macOS |
 | `ctrl-space` | Input-source switch on macOS. Do not use it to open autocomplete. |
-| `secondary-q` | Quit. Global, including the SQL editor and dialogs. Bound as `cmd-q` today. See [01-main-window.md](./01-main-window.md#quit-and-window-lifecycle). |
+| `secondary-q` | Quit. Global, including the SQL editor and dialogs. Bound. See [01-main-window.md](./01-main-window.md#quit-and-window-lifecycle). |
 | `secondary-w` | Close tab, already bound. It does not close the window. |
 | `secondary-h`, `secondary-m` | Hide and minimize on macOS |
 | `secondary-y` | Redo in text fields on Windows and Linux |
@@ -84,7 +84,7 @@ GPUI key contexts must differ. Do not rely on the action handler to guess.
 
 | Action | Shortcut | Bound today |
 | --- | --- | --- |
-| Quit | `secondary-q` | `cmd-q` only. Global, including the SQL editor and dialogs. |
+| Quit | `secondary-q` | yes. Global, including the SQL editor and dialogs. |
 | New query tab | `secondary-t` | yes |
 | Close tab | `secondary-w` | yes |
 | Switch to tab 1–9 | `secondary-1` … `secondary-9` | yes |
