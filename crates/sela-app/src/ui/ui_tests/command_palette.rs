@@ -410,35 +410,33 @@ async fn pal08_reserved_chords(cx: &mut TestAppContext) {
                         "outside SqlEditor, secondary-space must stay free; got {name}"
                     );
                     let pred = b.predicate().map(|p| p.to_string()).unwrap_or_default();
-                    assert!(
-                        pred.contains("SqlEditor"),
-                        "ShowSqlCompletions must be SqlEditor-scoped; predicate={pred:?}"
+                    assert_eq!(
+                        pred, "SqlEditor",
+                        "ShowSqlCompletions must be exactly SqlEditor-scoped; predicate={pred:?}"
                     );
                 }
             }
         }
 
         // ctrl-space remains editor autocomplete; palette does not bind it.
+        // On every OS (including macOS), every ctrl-space binding is ShowSqlCompletions.
         let ctrl_space = Keystroke::parse_with_os("ctrl-space", os).expect("parse ctrl-space");
         let ctrl_matches = cx.all_bindings_for_input(&[ctrl_space]);
         assert!(
-            ctrl_matches
-                .iter()
-                .any(|b| b.action().name().ends_with("ShowSqlCompletions")),
-            "ctrl-space must bind ShowSqlCompletions; got {:?}",
-            ctrl_matches
-                .iter()
-                .map(|b| b.action().name())
-                .collect::<Vec<_>>()
+            !ctrl_matches.is_empty(),
+            "ctrl-space must bind ShowSqlCompletions"
         );
         for b in &ctrl_matches {
-            if b.action().name().ends_with("ShowSqlCompletions") {
-                let pred = b.predicate().map(|p| p.to_string()).unwrap_or_default();
-                assert!(
-                    pred.contains("SqlEditor"),
-                    "ctrl-space autocomplete must be SqlEditor-scoped; predicate={pred:?}"
-                );
-            }
+            assert!(
+                b.action().name().ends_with("ShowSqlCompletions"),
+                "every ctrl-space binding must be ShowSqlCompletions; got {}",
+                b.action().name()
+            );
+            let pred = b.predicate().map(|p| p.to_string()).unwrap_or_default();
+            assert_eq!(
+                pred, "SqlEditor",
+                "ctrl-space autocomplete must be exactly SqlEditor-scoped; predicate={pred:?}"
+            );
         }
 
         let _ = ToggleQuickOpen;

@@ -721,15 +721,6 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_maybe_refresh_schema_after_sql(
-        &mut self,
-        sql: &str,
-        cx: &mut Context<Self>,
-    ) {
-        self.maybe_refresh_schema_after_sql(sql, cx);
-    }
-
     /// Inject a ready catalog snapshot (AU-09 / AU-10 / AU-12 geometry fixtures).
     #[cfg(test)]
     pub(crate) fn test_set_schema_cache(
@@ -745,6 +736,63 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) fn test_set_schema_cache_loading(&self, dialect: sela_core::Dialect) {
         self.schema_cache.set_loading(dialect);
+    }
+
+    /// Start a schema-cache reload and return the generation (for race tests).
+    #[cfg(test)]
+    pub(crate) fn test_begin_schema_reload(&self) -> u64 {
+        let dialect = self
+            .session
+            .as_ref()
+            .map(|s| s.dialect())
+            .unwrap_or(sela_core::Dialect::Sqlite);
+        self.schema_cache.begin_reload(dialect)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_active_schema(&self, schema: Option<String>) {
+        self.schema_cache.set_active_schema(schema);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_schema(&self) -> Option<String> {
+        self.schema_cache.active_schema()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_apply_schema_snapshot(
+        &self,
+        generation: u64,
+        snapshot: sela_core::SchemaSnapshot,
+    ) -> bool {
+        let dialect = self
+            .session
+            .as_ref()
+            .map(|s| s.dialect())
+            .unwrap_or(sela_core::Dialect::Sqlite);
+        let connection_id = self.schema_cache.connection_id();
+        self.schema_cache.apply_snapshot_if_current(
+            generation,
+            connection_id.as_deref(),
+            dialect,
+            snapshot,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_schema_cache_has_table(&self, name: &str) -> bool {
+        match self.schema_cache.status() {
+            sela_core::CatalogStatus::Ready(snap) => snap
+                .schemas
+                .iter()
+                .any(|s| s.tables.iter().any(|t| t.name.eq_ignore_ascii_case(name))),
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_run_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_editor(window, cx);
     }
 
     #[cfg(test)]

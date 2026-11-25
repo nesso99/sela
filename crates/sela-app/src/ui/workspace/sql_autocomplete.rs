@@ -36,7 +36,8 @@ struct SchemaCacheState {
     active_schema: Option<String>,
     /// Connection id the cache belongs to (`None` when disconnected).
     connection_id: Option<String>,
-    /// Bumped on every load start / apply / clear / connection change.
+    /// Bumped only for load start / clear / connection change — not for
+    /// `active_schema` updates (sidebar clicks must not discard an in-flight load).
     generation: u64,
 }
 
@@ -91,20 +92,23 @@ impl SchemaCacheHandle {
     }
 
     /// Apply a finished load only when `generation` and `connection_id` still match.
+    /// Keeps the current `active_schema` (sidebar may have changed during the load);
+    /// fills from the snapshot only when unset.
     pub fn apply_snapshot_if_current(
         &self,
         generation: u64,
         connection_id: Option<&str>,
         dialect: Dialect,
         snapshot: SchemaSnapshot,
-        active_schema: Option<String>,
     ) -> bool {
         let mut g = self.inner.borrow_mut();
         if g.generation != generation || g.connection_id.as_deref() != connection_id {
             return false;
         }
         g.dialect = dialect;
-        g.active_schema = active_schema;
+        if g.active_schema.is_none() {
+            g.active_schema = snapshot.schemas.first().map(|s| s.name.clone());
+        }
         g.status = if snapshot.schemas.is_empty()
             || snapshot.schemas.iter().all(|s| s.tables.is_empty())
         {
@@ -161,10 +165,9 @@ impl SchemaCacheHandle {
 
     pub fn set_active_schema(&self, schema: Option<String>) {
         let mut g = self.inner.borrow_mut();
-        if g.active_schema != schema {
-            g.active_schema = schema;
-            g.generation = g.generation.wrapping_add(1);
-        }
+        // Do not bump load generation — a sidebar schema click during reload
+        // must not discard the in-flight snapshot.
+        g.active_schema = schema;
     }
 
     pub fn dialect(&self) -> Dialect {
@@ -237,8 +240,17 @@ fn is_trigger_ident(dialect: Dialect, ch: char) -> bool {
 
 fn to_lsp_item(text: &Rope, caret: usize, item: sela_core::CompletionSuggestion) -> CompletionItem {
     let replace_start = caret.saturating_sub(item.replace_len);
+    // Editor auto-close inserts a matching quote after the caret (`"Od"`).
+    // Extend the replace range over that closer so accept yields `"Odd Name"`,
+    // not `"Odd Name""` (AU-09d).
+    let mut replace_end = caret;
+    if let Some(opener) = text.char_at(replace_start) {
+        if matches!(opener, '"' | '`') && text.char_at(caret) == Some(opener) {
+            replace_end = caret + opener.len_utf8();
+        }
+    }
     let start = text.offset_to_position(replace_start);
-    let end = text.offset_to_position(caret);
+    let end = text.offset_to_position(replace_end);
     let kind = match item.kind {
         CompletionKind::Keyword => CompletionItemKind::KEYWORD,
         CompletionKind::Schema => CompletionItemKind::MODULE,
@@ -285,11 +297,14 @@ impl Workspace {
         let dialect = session.dialect();
         let connection_id = self.active_id.clone();
         self.schema_cache.set_connection_id(connection_id.clone());
+        // If active_schema is still unset (fresh connect), seed from the sidebar
+        // catalog so unqualified completions have a scope before the load returns.
+        if self.schema_cache.active_schema().is_none() {
+            if let Some(schema) = self.catalog.first().map(|s| s.name.clone()) {
+                self.schema_cache.set_active_schema(Some(schema));
+            }
+        }
         let generation = self.schema_cache.begin_reload(dialect);
-        let active_schema = self
-            .schema_cache
-            .active_schema()
-            .or_else(|| self.catalog.first().map(|s| s.name.clone()));
         let cache = self.schema_cache.clone();
         // Do not mark the tab busy — catalog refresh for autocomplete must not
         // look like a user query (and must not log SQL text).
@@ -297,17 +312,12 @@ impl Workspace {
             let result = drive(async move { load_schema_snapshot(session.as_ref()).await }).await;
             this.update(async_cx, |this, cx| {
                 let applied = match result {
-                    Ok(snapshot) => {
-                        let active = active_schema
-                            .or_else(|| snapshot.schemas.first().map(|s| s.name.clone()));
-                        cache.apply_snapshot_if_current(
-                            generation,
-                            connection_id.as_deref(),
-                            dialect,
-                            snapshot,
-                            active,
-                        )
-                    }
+                    Ok(snapshot) => cache.apply_snapshot_if_current(
+                        generation,
+                        connection_id.as_deref(),
+                        dialect,
+                        snapshot,
+                    ),
                     Err(_) => {
                         cache.apply_empty_if_current(generation, connection_id.as_deref(), dialect)
                     }
@@ -437,7 +447,6 @@ mod tests {
             Some("a"),
             Dialect::Postgres,
             sample_snapshot("stale"),
-            Some("public".into()),
         ));
         assert!(matches!(cache.status(), CatalogStatus::Loading));
         assert!(cache.apply_snapshot_if_current(
@@ -445,7 +454,6 @@ mod tests {
             Some("a"),
             Dialect::Postgres,
             sample_snapshot("fresh"),
-            Some("public".into()),
         ));
         match cache.status() {
             CatalogStatus::Ready(snap) => {
@@ -469,8 +477,30 @@ mod tests {
             Some("a"),
             Dialect::Postgres,
             sample_snapshot("from-a"),
-            Some("public".into()),
         ));
+    }
+
+    #[test]
+    fn active_schema_change_does_not_discard_in_flight_load() {
+        // Mutation: bumping generation in set_active_schema would drop the load.
+        let cache = SchemaCacheHandle::new();
+        cache.set_connection_id(Some("a".into()));
+        cache.set_active_schema(Some("public".into()));
+        let gen = cache.begin_reload(Dialect::Postgres);
+        cache.set_active_schema(Some("other".into()));
+        assert_eq!(
+            cache.generation(),
+            gen,
+            "sidebar schema must not bump load gen"
+        );
+        assert!(cache.apply_snapshot_if_current(
+            gen,
+            Some("a"),
+            Dialect::Postgres,
+            sample_snapshot("fresh"),
+        ));
+        assert_eq!(cache.active_schema().as_deref(), Some("other"));
+        assert!(matches!(cache.status(), CatalogStatus::Ready(_)));
     }
 
     #[test]

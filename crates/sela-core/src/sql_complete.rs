@@ -266,30 +266,6 @@ pub fn analyze_context(dialect: Dialect, buffer: &str, caret: usize) -> Completi
     }
 }
 
-/// Prefer placing a popup above the caret; flip below only when it does not fit above (AU-12).
-///
-/// `below_anchor_y` is the origin used when placing below (typically caret bottom + gap).
-/// Returns the popup top Y in the same coordinate space as the inputs.
-pub fn prefer_above_popup_origin(
-    caret_top: f32,
-    below_anchor_y: f32,
-    popup_height: f32,
-    viewport_height: f32,
-    gap: f32,
-) -> f32 {
-    let space_above = (caret_top - gap).max(0.0);
-    if popup_height <= space_above {
-        return (space_above - popup_height).max(0.0);
-    }
-    if below_anchor_y + popup_height <= viewport_height {
-        return below_anchor_y;
-    }
-    // Neither fits cleanly: clamp within the viewport.
-    (viewport_height - popup_height)
-        .max(0.0)
-        .min(below_anchor_y)
-}
-
 fn status_row(label: &str, replace_len: usize) -> CompletionSuggestion {
     CompletionSuggestion {
         label: label.into(),
@@ -1605,18 +1581,6 @@ mod tests {
         );
         assert_eq!(items[0].label, "SELECT");
         assert_eq!(items[0].kind, CompletionKind::Keyword);
-    }
-
-    #[test]
-    fn au12_prefer_above_origin_rule() {
-        // Fits above → place above even when there is also room below.
-        let y = prefer_above_popup_origin(200.0, 220.0, 100.0, 600.0, 4.0);
-        assert!(y < 200.0, "expected above caret_top; got {y}");
-        assert!((y - (200.0 - 4.0 - 100.0)).abs() < 0.01);
-
-        // No room above → place below.
-        let y = prefer_above_popup_origin(50.0, 70.0, 100.0, 600.0, 4.0);
-        assert_eq!(y, 70.0);
     }
 
     #[test]

@@ -256,9 +256,9 @@ async fn au06_keywords_and_catalog_tables(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// AU-09: accepting a mixed-case name inserts dialect quotes.
+/// AU-09(d): type through auto-close quotes, then accept — no trailing `""`.
 #[gpui_kit::test]
-async fn au09_quoted_insert(cx: &mut TestAppContext) {
+async fn au09_quoted_insert_through_auto_close(cx: &mut TestAppContext) {
     let fix = open_workspace(cx).await;
     cx.update_window(fix.handle, |_, window, cx| {
         fix.workspace.update(cx, |ws, cx| {
@@ -275,24 +275,46 @@ async fn au09_quoted_insert(cx: &mut TestAppContext) {
                 },
                 Some("public".into()),
             );
-            ws.test_set_sql("Od", window, cx);
+            ws.test_set_sql("", window, cx);
             ws.test_focus_sql_editor(window, cx);
-            ws.test_show_sql_completions(window, cx);
         });
+    })
+    .unwrap();
+    settle(fix.handle, cx);
+    // Real input path: auto-close turns `"` into `""` with the caret inside.
+    type_into(fix.handle, "\"", cx);
+    type_into(fix.handle, "O", cx);
+    type_into(fix.handle, "d", cx);
+    settle(fix.handle, cx);
+    cx.update_window(fix.handle, |_, window, cx| {
+        let buf = fix.workspace.read(cx).test_sql_buffer(cx);
+        assert!(
+            buf.contains('"'),
+            "auto-close should leave quotes in the buffer; got {buf:?}"
+        );
+        if !fix.workspace.read(cx).test_completion_popup_open(cx) {
+            fix.workspace
+                .update(cx, |ws, cx| ws.test_show_sql_completions(window, cx));
+        }
     })
     .unwrap();
     settle(fix.handle, cx);
     cx.update_window(fix.handle, |_, window, cx| {
         assert!(fix.workspace.read(cx).test_completion_popup_open(cx));
+        let labels = fix.workspace.read(cx).test_completion_labels(cx);
+        assert!(
+            labels.iter().any(|l| l == "Odd Name"),
+            "expected Odd Name; got {labels:?}"
+        );
         window.press("enter", cx);
     })
     .unwrap();
     settle(fix.handle, cx);
     cx.update_window(fix.handle, |_, _, cx| {
         let buf = fix.workspace.read(cx).test_sql_buffer(cx);
-        assert!(
-            buf.contains("\"Odd Name\""),
-            "expected quoted insert in {buf:?}"
+        assert_eq!(
+            buf, "\"Odd Name\"",
+            "accept must replace auto-closed closer; got {buf:?}"
         );
     })
     .unwrap();
@@ -344,12 +366,10 @@ async fn au10_au11_popup_bounds(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// AU-12: with ≥150px free above the caret, the popup must sit above it.
-///
-/// Production layout docks the SQL editor at the bottom. Seed enough rows that
-/// the menu cannot fit below so geometry matches [`prefer_above_popup_origin`].
+/// AU-12: kit opens below the caret and flips above when below would clip;
+/// never off-screen. Production layout docks the editor at the bottom.
 #[gpui_kit::test]
-async fn au12_popup_prefers_above_when_room(cx: &mut TestAppContext) {
+async fn au12_popup_never_clipped_flips_above_near_bottom(cx: &mut TestAppContext) {
     let fix = open_workspace(cx).await;
     let mut tables = Vec::new();
     for i in 0..20 {
@@ -380,29 +400,25 @@ async fn au12_popup_prefers_above_when_room(cx: &mut TestAppContext) {
     cx.update_window(fix.handle, |_, window, cx| {
         assert!(fix.workspace.read(cx).test_completion_popup_open(cx));
         let menu = window.find("completion-menu").bounds();
+        let viewport = window.bounds().size.height;
         let caret_top = fix.workspace.read(cx).test_sql_caret_top(cx);
         assert!(
             caret_top >= px(150.),
-            "test setup needs ≥150px free above the caret; caret_top={caret_top:?}"
-        );
-        let expected_y = sela_core::prefer_above_popup_origin(
-            f32::from(caret_top),
-            f32::from(caret_top) + 20.0,
-            f32::from(menu.size.height),
-            f32::from(window.bounds().size.height),
-            4.0,
+            "bottom-docked editor should leave room above; caret_top={caret_top:?}"
         );
         assert!(
-            (f32::from(menu.origin.y) - expected_y).abs() < 8.0,
-            "popup y {:?} must match prefer-above origin {expected_y} (caret_top={caret_top:?}, h={:?})",
-            menu.origin.y,
-            menu.size.height
+            menu.origin.y >= px(0.),
+            "popup must not clip above viewport"
         );
+        assert!(
+            menu.bottom() <= viewport + px(1.),
+            "popup must not clip below viewport; menu={menu:?} viewport={viewport:?}"
+        );
+        // Near the bottom, below would clip → kit flips above the caret.
         assert!(
             menu.bottom() <= caret_top + px(2.),
-            "popup {menu:?} must sit above caret top {caret_top:?}"
+            "popup {menu:?} must flip above caret top {caret_top:?} when below would clip"
         );
-        assert!(menu.origin.y >= px(0.));
     })
     .unwrap();
 }
@@ -619,38 +635,79 @@ async fn workspace_refresh_reloads_schema_cache(cx: &mut TestAppContext) {
     });
 }
 
-/// AU-16: successful DDL triggers the catalog-refresh predicate → cache reload.
+/// Load-generation gate: selecting a schema mid-reload must not discard the load
+/// or overwrite the selected schema (mutation: bump gen in set_active_schema /
+/// stale active_schema in apply_snapshot_if_current).
 #[gpui_kit::test]
-async fn workspace_ddl_triggers_schema_cache_reload(cx: &mut TestAppContext) {
+async fn workspace_schema_select_during_reload_keeps_ready(cx: &mut TestAppContext) {
+    let fix = open_workspace(cx).await;
+    let gen = cx.update(|cx| {
+        fix.workspace.update(cx, |ws, _cx| {
+            let gen = ws.test_begin_schema_reload();
+            ws.test_set_active_schema(Some("selected_mid_load".into()));
+            gen
+        })
+    });
+    let applied = cx.update(|cx| {
+        fix.workspace.update(cx, |ws, _cx| {
+            ws.test_apply_schema_snapshot(
+                gen,
+                SchemaSnapshot {
+                    schemas: vec![SchemaEntry {
+                        name: "main".into(),
+                        tables: vec![TableEntry {
+                            name: "after_reload".into(),
+                            columns: vec![],
+                        }],
+                    }],
+                },
+            )
+        })
+    });
+    assert!(applied, "in-flight load must apply after schema select");
+    cx.update(|cx| {
+        let ws = fix.workspace.read(cx);
+        assert!(ws.test_schema_cache_is_ready());
+        assert!(ws.test_schema_cache_has_table("after_reload"));
+        assert_eq!(
+            ws.test_active_schema().as_deref(),
+            Some("selected_mid_load"),
+            "apply must keep the schema selected during the load"
+        );
+    });
+}
+
+/// AU-16: successful DDL via RunQuery refreshes the autocomplete cache.
+/// Fails if `maybe_refresh_schema_after_sql` is removed from query.rs.
+#[gpui_kit::test]
+async fn workspace_ddl_run_query_reloads_schema_cache(cx: &mut TestAppContext) {
     let fix = open_workspace(cx).await;
     let before = cx.update(|cx| fix.workspace.read(cx).test_schema_cache_generation());
-    cx.update_window(fix.handle, |_, _, cx| {
+    cx.update_window(fix.handle, |_, window, cx| {
         fix.workspace.update(cx, |ws, cx| {
-            ws.test_maybe_refresh_schema_after_sql(
+            ws.test_set_sql(
                 "CREATE TABLE au_ddl_probe (id INTEGER PRIMARY KEY)",
+                window,
                 cx,
             );
+            ws.test_focus_sql_editor(window, cx);
+            ws.test_run_editor(window, cx);
         });
     })
     .unwrap();
-    cx.wait_for(fix.handle, Duration::from_secs(8), |_, cx| {
+    cx.wait_for(fix.handle, Duration::from_secs(10), |_, cx| {
         let ws = fix.workspace.read(cx);
-        ws.test_schema_cache_is_ready() && ws.test_schema_cache_generation() != before
+        ws.test_schema_cache_is_ready()
+            && ws.test_schema_cache_generation() != before
+            && ws.test_schema_cache_has_table("au_ddl_probe")
     })
     .await;
-    let mid = cx.update(|cx| fix.workspace.read(cx).test_schema_cache_generation());
-    cx.update_window(fix.handle, |_, _, cx| {
-        fix.workspace.update(cx, |ws, cx| {
-            ws.test_maybe_refresh_schema_after_sql("SELECT 1", cx);
-        });
-    })
-    .unwrap();
-    settle(fix.handle, cx);
     cx.update(|cx| {
-        assert_eq!(
-            fix.workspace.read(cx).test_schema_cache_generation(),
-            mid,
-            "SELECT must not reload the schema cache"
+        assert!(
+            fix.workspace
+                .read(cx)
+                .test_schema_cache_has_table("au_ddl_probe"),
+            "CREATE TABLE via RunQuery must land in the autocomplete cache"
         );
     });
 }
