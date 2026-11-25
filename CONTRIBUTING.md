@@ -50,6 +50,7 @@ Use the same items as [`.github/pull_request_template.md`](./.github/pull_reques
 - [ ] **Boundaries** — paging / streaming / page caps still bounded; no unbounded materialization on hot paths.
 - [ ] **SQL safety** — identifiers quoted; values bound (no string-concat of user data into SQL).
 - [ ] **Errors** — never silently become NULL, empty, or success; preserve `DbError` variant and sqlstate / vendor code where applicable.
+- [ ] **Changed meaning** — if this PR changes the meaning of a value (row index, NULL/unset, status, id), grep every use of it and list the call sites you checked in the PR description.
 - [ ] **Memory / perf** — no large clones on hot paths; caches bounded; if grid/result code changed, note `grid_bench` numbers.
 - [ ] **Engines** — all 3 engines covered, or the limitation documented.
 - [ ] **Tests** — observable behavior covered; one regression test per bug fixed.
