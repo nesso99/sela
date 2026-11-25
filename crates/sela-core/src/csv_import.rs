@@ -20,19 +20,23 @@ use crate::safe_mode::{decide_grid_commit_gate, GridCommitGate};
 use crate::schema_source::{SchemaSourceError, TableSchemaSource};
 use crate::types::{ColumnMeta, Value};
 
-/// How CSV NULL cells are recognized on import (must match export `null_repr`).
+/// How CSV NULL cells are recognized on import (must match export NULL encoding).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CsvImportOptions {
     pub delimiter: u8,
-    /// First row is column headers (default true).
+    /// First row is column headers (default true; IM-03).
     pub has_header: bool,
-    /// Field texts treated as SQL NULL (default: `"NULL"` only).
+    /// When true (default), an **unquoted** empty field is SQL NULL (IM-02 / UX).
+    /// A quoted empty field (`""`) stays `''`. Additional sentinels (e.g. `\N`) go in
+    /// [`Self::null_reprs`].
+    pub empty_field_is_null: bool,
+    /// Extra field texts treated as SQL NULL (e.g. `"\\N"` when export used that encoding).
     pub null_reprs: Vec<String>,
     /// How binary columns are decoded from CSV text.
     pub binary: BinaryEncoding,
-    /// When true, every header must map to a table column (default true).
+    /// When true, unknown headers error. Default **false**: unmatched → Skip (IM-03).
     pub reject_unknown_headers: bool,
-    /// Table columns that must appear in the CSV (e.g. NOT NULL without default).
+    /// Required table columns that must be mapped (NOT NULL, no default, not generated).
     pub required_columns: Vec<String>,
 }
 
@@ -41,27 +45,40 @@ impl Default for CsvImportOptions {
         Self {
             delimiter: b',',
             has_header: true,
-            // Match default CSV export: `\N` = SQL NULL (EX-08 / IM-02).
-            null_reprs: vec!["\\N".into()],
+            empty_field_is_null: true,
+            null_reprs: Vec::new(),
             binary: BinaryEncoding::Hex,
-            reject_unknown_headers: true,
+            reject_unknown_headers: false,
             required_columns: Vec::new(),
         }
     }
 }
 
 impl CsvImportOptions {
-    /// Options that round-trip with the default CSV exporter.
+    /// Options that round-trip with a CSV exporter configuration.
     pub fn matching_export(export: &CsvExportOptions) -> Self {
+        use crate::export::CsvNullEncoding;
+        let (empty_field_is_null, null_reprs) = match export.null_encoding {
+            CsvNullEncoding::EmptyField => (true, Vec::new()),
+            CsvNullEncoding::LiteralBackslashN => (false, vec!["\\N".into()]),
+        };
         Self {
             delimiter: export.delimiter,
             has_header: export.include_header,
-            null_reprs: vec![export.null_repr.clone()],
+            empty_field_is_null,
+            null_reprs,
             binary: export.binary,
-            reject_unknown_headers: true,
+            reject_unknown_headers: false,
             required_columns: Vec::new(),
         }
     }
+}
+
+/// One CSV field with quote awareness (so empty ≠ `""` for NULL round-trip).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CsvField {
+    pub text: String,
+    pub quoted: bool,
 }
 
 /// One successfully mapped import row ready for [`ChangeSet::insert_row`].
@@ -94,7 +111,7 @@ impl ImportRowError {
 pub enum ImportError {
     #[error("{0}")]
     Io(String),
-    #[error("import cancelled")]
+    #[error("Import cancelled.")]
     Cancelled,
     #[error("{0}")]
     Schema(String),
@@ -102,7 +119,7 @@ pub enum ImportError {
     Mapping(String),
     #[error("line {line}: {message}")]
     Row { line: u64, message: String },
-    #[error("import refused: connection is read-only")]
+    #[error("Import is disabled in Read-only mode.")]
     RefuseReadOnly,
     #[error("import requires confirmation (safe mode)")]
     NeedsConfirm,
@@ -158,6 +175,32 @@ pub fn ensure_import_allowed(mode: SafeMode, confirmed: bool) -> Result<(), Impo
     }
 }
 
+/// Status copy when import is refused in Read-only mode (IM-05).
+pub const IMPORT_REFUSED_READ_ONLY_STATUS: &str = "Import is disabled in Read-only mode.";
+
+/// Status copy when import is cancelled (IM-04).
+pub const IMPORT_CANCELLED_STATUS: &str = "Import cancelled.";
+
+/// Pre-scan data-row count for Confirm copy / progress `{total}` (IM-05 / IM-07).
+///
+/// Counts every row after the header when `has_header` is on, otherwise every
+/// row. Keeps a counter only — does not materialize cells. Fails on I/O or
+/// malformed CSV the same way import would before the first mapped row.
+pub fn count_csv_data_rows<R: Read>(
+    mut reader: R,
+    options: &CsvImportOptions,
+) -> Result<u64, ImportError> {
+    let mut buf = Vec::new();
+    let mut count = 0u64;
+    if options.has_header && read_csv_record(&mut reader, options.delimiter, &mut buf)?.is_none() {
+        return Ok(0);
+    }
+    while read_csv_record(&mut reader, options.delimiter, &mut buf)?.is_some() {
+        count += 1;
+    }
+    Ok(count)
+}
+
 /// Maps CSV fields onto table columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnMapping {
@@ -166,34 +209,40 @@ pub struct ColumnMapping {
 }
 
 impl ColumnMapping {
-    /// Build a mapping by matching CSV headers to table column names (exact).
+    /// Build a mapping by matching CSV headers to table column names.
+    ///
+    /// Matching is **case-insensitive** (IM-03). Prefer an exact-case match when
+    /// several table columns collide on case. Unmatched headers become Skip unless
+    /// [`CsvImportOptions::reject_unknown_headers`] is set.
     pub fn from_headers(
         headers: &[String],
         table_columns: &[ColumnMeta],
         options: &CsvImportOptions,
     ) -> Result<Self, ImportError> {
-        let table_names: BTreeSet<&str> = table_columns.iter().map(|c| c.name.as_str()).collect();
         let mut targets = Vec::with_capacity(headers.len());
-        let mut seen = BTreeSet::new();
+        let mut seen_table: BTreeSet<String> = BTreeSet::new();
         for h in headers {
-            if table_names.contains(h.as_str()) {
-                if !seen.insert(h.clone()) {
-                    return Err(ImportError::Mapping(format!("duplicate CSV header `{h}`")));
+            if let Some(col) = match_header_to_column(h, table_columns) {
+                if !seen_table.insert(col.clone()) {
+                    return Err(ImportError::Mapping(format!(
+                        "duplicate CSV header mapping onto `{col}`"
+                    )));
                 }
-                targets.push(Some(h.clone()));
+                targets.push(Some(col));
             } else if options.reject_unknown_headers {
                 return Err(ImportError::Mapping(format!(
                     "unknown CSV header `{h}` is not a column of the target table"
                 )));
             } else {
-                targets.push(None);
+                targets.push(None); // Skip (IM-03)
             }
         }
         for req in &options.required_columns {
-            if !seen.contains(req) {
-                return Err(ImportError::Mapping(format!(
-                    "required column `{req}` is missing from the CSV header"
-                )));
+            let mapped = seen_table.iter().any(|c| c.eq_ignore_ascii_case(req));
+            if !mapped {
+                return Err(ImportError::Mapping(
+                    "Map every required column or cancel.".into(),
+                ));
             }
         }
         Ok(Self { targets })
@@ -264,14 +313,50 @@ impl ImportRowSink for TransactionalImportSink {
     }
 }
 
+fn match_header_to_column(header: &str, table_columns: &[ColumnMeta]) -> Option<String> {
+    let mut insensitive: Option<&str> = None;
+    for col in table_columns {
+        if col.name == header {
+            return Some(col.name.clone());
+        }
+        if col.name.eq_ignore_ascii_case(header) {
+            insensitive.get_or_insert(col.name.as_str());
+        }
+    }
+    insensitive.map(str::to_string)
+}
+
 /// Parse a CSV field into a typed [`Value`] using column kind + null sentinels.
 pub fn parse_import_field(
     raw: &str,
     type_name: &str,
     options: &CsvImportOptions,
 ) -> Result<Value, String> {
+    parse_import_field_ex(
+        &CsvField {
+            text: raw.to_string(),
+            quoted: false,
+        },
+        type_name,
+        options,
+    )
+}
+
+/// Like [`parse_import_field`], honouring whether the field was quoted (IM-02).
+pub fn parse_import_field_ex(
+    field: &CsvField,
+    type_name: &str,
+    options: &CsvImportOptions,
+) -> Result<Value, String> {
+    let raw = field.text.as_str();
     if options.null_reprs.iter().any(|n| n == raw) {
         return Ok(Value::Null);
+    }
+    if raw.is_empty() {
+        if options.empty_field_is_null && !field.quoted {
+            return Ok(Value::Null);
+        }
+        return Ok(Value::text(""));
     }
     let kind = ColumnKind::from_type_name(type_name);
     match kind {
@@ -361,6 +446,24 @@ pub fn map_record(
     type_by_name: &HashMap<String, String>,
     options: &CsvImportOptions,
 ) -> Result<ImportRow, ImportRowError> {
+    let tagged: Vec<CsvField> = fields
+        .iter()
+        .map(|t| CsvField {
+            text: t.clone(),
+            quoted: false,
+        })
+        .collect();
+    map_record_fields(line, &tagged, mapping, type_by_name, options)
+}
+
+/// Map quote-aware fields into an [`ImportRow`].
+pub fn map_record_fields(
+    line: u64,
+    fields: &[CsvField],
+    mapping: &ColumnMapping,
+    type_by_name: &HashMap<String, String>,
+    options: &CsvImportOptions,
+) -> Result<ImportRow, ImportRowError> {
     if fields.len() != mapping.targets.len() {
         return Err(ImportRowError::new(
             line,
@@ -377,21 +480,199 @@ pub fn map_record(
             continue;
         };
         let type_name = type_by_name.get(col).map(|s| s.as_str()).unwrap_or("");
-        let value = parse_import_field(field, type_name, options)
+        let value = parse_import_field_ex(field, type_name, options)
             .map_err(|message| ImportRowError::new(line, format!("column `{col}`: {message}")))?;
         values.insert(col.clone(), value);
     }
     Ok(ImportRow { line, values })
 }
 
+/// RFC 4180 record reader that tracks whether each field was quoted (IM-02).
+fn read_csv_record<R: Read>(
+    reader: &mut R,
+    delim: u8,
+    buf: &mut Vec<u8>,
+) -> Result<Option<(Vec<CsvField>, u64)>, ImportError> {
+    buf.clear();
+    let mut lines_consumed = 0u64;
+    let mut in_quotes = false;
+    let mut saw_any = false;
+    let mut tmp = [0u8; 1];
+    loop {
+        match reader.read(&mut tmp)? {
+            0 => {
+                if !saw_any {
+                    return Ok(None);
+                }
+                if in_quotes {
+                    return Err(ImportError::Io("unterminated quoted CSV field".into()));
+                }
+                break;
+            }
+            1 => {
+                saw_any = true;
+                let b = tmp[0];
+                if b == b'"' {
+                    buf.push(b);
+                    if in_quotes {
+                        // Look ahead for escaped quote.
+                        let mut next = [0u8; 1];
+                        match reader.read(&mut next)? {
+                            1 if next[0] == b'"' => {
+                                buf.push(b'"');
+                            }
+                            1 => {
+                                in_quotes = false;
+                                // Push the peeked byte through the same rules.
+                                if next[0] == b'\n' {
+                                    lines_consumed += 1;
+                                    break;
+                                }
+                                if next[0] == b'\r' {
+                                    let mut n2 = [0u8; 1];
+                                    match reader.read(&mut n2)? {
+                                        1 if n2[0] == b'\n' => {
+                                            lines_consumed += 1;
+                                            break;
+                                        }
+                                        1 => {
+                                            buf.push(b'\r');
+                                            if n2[0] == b'"' {
+                                                in_quotes = true;
+                                            }
+                                            buf.push(n2[0]);
+                                        }
+                                        _ => {
+                                            lines_consumed += 1;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    buf.push(next[0]);
+                                }
+                            }
+                            _ => break,
+                        }
+                    } else {
+                        in_quotes = true;
+                    }
+                } else if (b == b'\n' || b == b'\r') && !in_quotes {
+                    if b == b'\r' {
+                        let mut next = [0u8; 1];
+                        if reader.read(&mut next)? == 1 && next[0] != b'\n' {
+                            // Lone CR inside record (rare); keep it.
+                            buf.push(b'\r');
+                            if next[0] == b'"' {
+                                in_quotes = true;
+                            }
+                            buf.push(next[0]);
+                            continue;
+                        }
+                    }
+                    lines_consumed += 1;
+                    break;
+                } else {
+                    if b == b'\n' {
+                        lines_consumed += 1;
+                    }
+                    buf.push(b);
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    if lines_consumed == 0 {
+        lines_consumed = 1;
+    }
+    let fields = parse_csv_fields(buf, delim)?;
+    Ok(Some((fields, lines_consumed)))
+}
+
+fn parse_csv_fields(raw: &[u8], delim: u8) -> Result<Vec<CsvField>, ImportError> {
+    let mut fields = Vec::new();
+    let mut i = 0;
+    let bytes = raw;
+    if bytes.is_empty() {
+        return Ok(vec![CsvField {
+            text: String::new(),
+            quoted: false,
+        }]);
+    }
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let mut out = String::new();
+            i += 1;
+            loop {
+                if i >= bytes.len() {
+                    return Err(ImportError::Io("unterminated quoted CSV field".into()));
+                }
+                if bytes[i] == b'"' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                        out.push('"');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                out.push(char::from(bytes[i]));
+                i += 1;
+            }
+            fields.push(CsvField {
+                text: out,
+                quoted: true,
+            });
+            if i < bytes.len() {
+                if bytes[i] != delim {
+                    return Err(ImportError::Io(
+                        "unexpected characters after quoted CSV field".into(),
+                    ));
+                }
+                i += 1;
+                if i == bytes.len() {
+                    // Trailing delimiter → empty field.
+                    fields.push(CsvField {
+                        text: String::new(),
+                        quoted: false,
+                    });
+                }
+            }
+        } else {
+            let start = i;
+            while i < bytes.len() && bytes[i] != delim {
+                i += 1;
+            }
+            let text = std::str::from_utf8(&bytes[start..i])
+                .map_err(|_| ImportError::InvalidUtf8)?
+                .to_string();
+            fields.push(CsvField {
+                text,
+                quoted: false,
+            });
+            if i < bytes.len() {
+                i += 1; // skip delim
+                if i == bytes.len() {
+                    fields.push(CsvField {
+                        text: String::new(),
+                        quoted: false,
+                    });
+                }
+            }
+        }
+    }
+    Ok(fields)
+}
+
 /// Streaming CSV importer over any [`Read`] source.
 pub struct CsvImporter<R> {
-    reader: csv::Reader<R>,
+    reader: R,
     options: CsvImportOptions,
     mapping: ColumnMapping,
     type_by_name: HashMap<String, String>,
     line: u64,
     headers: Vec<String>,
+    buf: Vec<u8>,
+    eof: bool,
 }
 
 impl<R: Read> CsvImporter<R> {
@@ -409,26 +690,17 @@ impl<R: Read> CsvImporter<R> {
 
     /// Open with an already-fetched column list (tests / callers with metadata).
     pub fn open_with_columns(
-        reader: R,
+        mut reader: R,
         table_columns: &[ColumnMeta],
         options: CsvImportOptions,
     ) -> Result<Self, ImportError> {
-        let mut builder = csv::ReaderBuilder::new();
-        builder
-            .delimiter(options.delimiter)
-            .has_headers(false)
-            .flexible(false);
-        let mut csv_reader = builder.from_reader(reader);
-
+        let mut buf = Vec::new();
         let (headers, mapping, line) = if options.has_header {
-            let record = csv_reader
-                .records()
-                .next()
-                .ok_or_else(|| ImportError::Mapping("CSV is empty (missing header row)".into()))?
-                .map_err(|e| ImportError::Io(e.to_string()))?;
-            let headers: Vec<String> = record.iter().map(|s| s.to_string()).collect();
+            let (fields, lines) = read_csv_record(&mut reader, options.delimiter, &mut buf)?
+                .ok_or_else(|| ImportError::Mapping("CSV is empty (missing header row)".into()))?;
+            let headers: Vec<String> = fields.iter().map(|f| f.text.clone()).collect();
             let mapping = ColumnMapping::from_headers(&headers, table_columns, &options)?;
-            (headers, mapping, 1u64)
+            (headers, mapping, lines)
         } else {
             let mapping = ColumnMapping::positional(table_columns);
             let headers: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
@@ -436,12 +708,14 @@ impl<R: Read> CsvImporter<R> {
         };
 
         Ok(Self {
-            reader: csv_reader,
+            reader,
             options,
             mapping,
             type_by_name: type_lookup(table_columns),
             line,
             headers,
+            buf,
+            eof: false,
         })
     }
 
@@ -455,22 +729,30 @@ impl<R: Read> CsvImporter<R> {
 
     /// Next mapped row, or `None` at end of stream. Row errors include line numbers.
     pub fn next_row(&mut self) -> Option<Result<ImportRow, ImportRowError>> {
-        match self.reader.records().next() {
-            None => None,
-            Some(Err(err)) => {
-                self.line += 1;
-                Some(Err(ImportRowError::new(self.line, err.to_string())))
+        if self.eof {
+            return None;
+        }
+        match read_csv_record(&mut self.reader, self.options.delimiter, &mut self.buf) {
+            Ok(None) => {
+                self.eof = true;
+                None
             }
-            Some(Ok(record)) => {
-                self.line += 1;
-                let fields: Vec<String> = record.iter().map(|s| s.to_string()).collect();
-                Some(map_record(
+            Ok(Some((fields, lines))) => {
+                self.line += lines;
+                Some(map_record_fields(
                     self.line,
                     &fields,
                     &self.mapping,
                     &self.type_by_name,
                     &self.options,
                 ))
+            }
+            Err(ImportError::Row { line, message }) => {
+                Some(Err(ImportRowError::new(line, message)))
+            }
+            Err(err) => {
+                self.line += 1;
+                Some(Err(ImportRowError::new(self.line, err.to_string())))
             }
         }
     }
@@ -540,7 +822,7 @@ pub fn peek_utf8_bom<R: BufRead>(reader: &mut R) -> Result<bool, ImportError> {
 /// Encode a value back to CSV text using the same rules as the exporter (round-trip helpers).
 pub fn value_to_csv_field(value: &Value, options: &CsvExportOptions) -> String {
     match value {
-        Value::Null => options.null_repr.clone(),
+        Value::Null => options.null_repr().to_string(),
         Value::Bytes(b) => encode_binary(b, options.binary),
         other => other.display().into_owned(),
     }
@@ -587,21 +869,27 @@ mod tests {
     }
 
     #[test]
-    fn im03_header_mapping_and_unknown_header() {
+    fn im03_header_mapping_case_insensitive_and_skip_unknown() {
         let schema = books_schema();
         let cols = schema.columns("public", "books").unwrap();
         let ok = ColumnMapping::from_headers(
-            &["id".into(), "title".into()],
+            &["ID".into(), "Title".into(), "extra".into()],
             &cols,
             &CsvImportOptions::default(),
         )
         .unwrap();
-        assert_eq!(ok.targets, vec![Some("id".into()), Some("title".into())]);
+        assert_eq!(
+            ok.targets,
+            vec![Some("id".into()), Some("title".into()), None]
+        );
 
         let err = ColumnMapping::from_headers(
             &["id".into(), "nope".into()],
             &cols,
-            &CsvImportOptions::default(),
+            &CsvImportOptions {
+                reject_unknown_headers: true,
+                ..CsvImportOptions::default()
+            },
         )
         .unwrap_err();
         assert!(matches!(err, ImportError::Mapping(_)));
@@ -616,13 +904,14 @@ mod tests {
             ..CsvImportOptions::default()
         };
         let err = ColumnMapping::from_headers(&["title".into()], &cols, &opts).unwrap_err();
-        assert!(matches!(err, ImportError::Mapping(m) if m.contains("required")));
+        assert!(matches!(err, ImportError::Mapping(m) if m.contains("Map every required column")));
     }
 
     #[test]
     fn im01_im06_stream_rows_and_type_error_with_line() {
         let schema = books_schema();
-        let csv = "id,title,note\n1,Alpha,\\N\nx,Bad,\\N\n";
+        // Empty note field → NULL under default empty_field_is_null.
+        let csv = "id,title,note\n1,Alpha,\nx,Bad,\n";
         let mut sink = CollectingImportSink::default();
         let cancel = CancellationToken::new();
         let err = import_csv_into(
@@ -697,7 +986,7 @@ mod tests {
     #[test]
     fn im04_im07_cancel_rolls_back_transactional_sink() {
         let schema = books_schema();
-        let csv = "id,title,note\n1,a,\\N\n2,b,\\N\n3,c,\\N\n";
+        let csv = "id,title,note\n1,a,\n2,b,\n3,c,\n";
         let mut sink = TransactionalImportSink::default();
         sink.begin();
         let cancel = CancellationToken::new();
@@ -721,6 +1010,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, ImportError::Cancelled);
+        assert_eq!(err.to_string(), IMPORT_CANCELLED_STATUS);
         assert!(!sink.staging.is_empty() || progress.load(Ordering::Relaxed) >= 1);
         sink.rollback();
         assert!(sink.committed.is_empty());
@@ -745,10 +1035,26 @@ mod tests {
             ensure_import_allowed(SafeMode::Confirm, false).unwrap_err(),
             ImportError::NeedsConfirm
         );
-        assert_eq!(
-            ensure_import_allowed(SafeMode::ReadOnly, true).unwrap_err(),
-            ImportError::RefuseReadOnly
-        );
+        let refused = ensure_import_allowed(SafeMode::ReadOnly, true).unwrap_err();
+        assert_eq!(refused, ImportError::RefuseReadOnly);
+        assert_eq!(refused.to_string(), IMPORT_REFUSED_READ_ONLY_STATUS);
+        assert_eq!(IMPORT_CANCELLED_STATUS, "Import cancelled.");
+    }
+
+    #[test]
+    fn im05_im07_count_csv_data_rows_prescan() {
+        let csv = "id,title,note\n1,a,\n2,\"b\nline\",\n3,c,\n";
+        let n = count_csv_data_rows(cursor_from_str(csv), &CsvImportOptions::default()).unwrap();
+        assert_eq!(n, 3);
+        let n_no_header = count_csv_data_rows(
+            cursor_from_str("1,a,\n2,b,\n"),
+            &CsvImportOptions {
+                has_header: false,
+                ..CsvImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(n_no_header, 2);
     }
 
     #[test]
@@ -761,7 +1067,7 @@ mod tests {
 
     #[test]
     fn im08_utf8_and_bom_ok() {
-        let with_bom = "\u{feff}id,title,note\n1,a,\\N\n";
+        let with_bom = "\u{feff}id,title,note\n1,a,\n";
         let stripped = strip_utf8_bom(with_bom);
         let schema = books_schema();
         let mut sink = CollectingImportSink::default();
@@ -783,7 +1089,7 @@ mod tests {
     fn feeds_changeset_insert_path() {
         use crate::change_set::{ChangeSet, TableRef};
         let schema = books_schema();
-        let csv = "id,title,note\n1,Hello,\\N\n";
+        let csv = "id,title,note\n1,Hello,\n";
         let mut cs = ChangeSet::try_new(
             TableRef::new("public", "books"),
             vec!["id".into()],

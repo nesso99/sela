@@ -345,14 +345,14 @@ Safe mode per connection: Off / Confirm writes / Read-only (`safe_mode` on `Save
 | M1-7 Selection / copy / themes | Grid selection + TSV/CSV/JSON/INSERT; light/dark/system themes; result-strip a11y | Done (#24) |
 | M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done (#15) |
 | M1-9 PG text-cast fallback | `pg_decode` strategies | Done (#13) |
-| M3-3 Export / CSV import | Streaming CSV/JSON/INSERT writers + CSV import (`sela-core`); injectable `Write`/`Read` + `TableSchemaSource`; UI pending UX spec | Core done; UI not started |
+| M3-3 Export / CSV import | Streaming CSV/JSON/INSERT writers + CSV import (`sela-core`); injectable `Write`/`Read` + `TableSchemaSource`; UX [11](./ux/11-export-import.md) | Core done; UI not started |
 
 ### M3-3 export / import (core)
 
-- Writers: `CsvExporter` / `JsonExporter` / `SqlInsertExporter` and `export_rows` / `export_query` take `std::io::Write` and a `CancellationToken`; progress is rows written. Never buffer the whole result.
-- CSV NULL default `\N` (provisional; configurable). JSON: array or NDJSON with keys in column order. SQL INSERT: dialect quoting; flush at 100 rows or ~1 MiB of statement text (whichever first); full binary literals.
-- Import: `CsvImporter` / `import_csv_into` take `std::io::Read`; column mapping via `TableSchemaSource`; rows feed `ImportRowSink` (`ChangeSet` or test sinks). Safe mode via `decide_import_gate`.
-- Clipboard copy (US-14) remains in `copy_format` and is unchanged.
+- Writers: `CsvExporter` / `JsonExporter` / `SqlInsertExporter` and `export_rows` / `export_query` take `std::io::Write` and a `CancellationToken`; progress is rows written. Never buffer the whole result. Cancel → `discard_export_partial` for path destinations.
+- CSV NULL default **empty field** (optional `\N`); optional UTF-8 BOM off. JSON: array or NDJSON with keys in column order. SQL INSERT: dialect quoting; flush at 100 rows or ~1 MiB (EX-12); SQL-result placeholder `table` + `-- replace table name`.
+- Import: `CsvImporter` / `import_csv_into` take `std::io::Read`; case-insensitive header map via `TableSchemaSource` (unmatched → Skip); empty field = NULL by default (quote-aware); rows feed `ImportRowSink`. Safe mode via `decide_import_gate`.
+- UX: [11-export-import.md](./ux/11-export-import.md). Clipboard copy (US-14) remains in `copy_format`.
 
 ---
 

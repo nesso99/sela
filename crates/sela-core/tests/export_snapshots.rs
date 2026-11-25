@@ -131,14 +131,25 @@ fn ex03_sql_insert_golden_all_dialects() {
             table: "public.books".into(),
             batch_size: 2,
             batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
+            replace_table_comment: false,
         }));
         assert_snapshot(name, &text);
     }
 }
 
-/// EX-03: flush at the row cap (100 by default) even when under the byte budget.
+/// EX-03: SQL-result placeholder target + replace comment.
 #[test]
-fn ex03_sql_insert_flushes_at_row_cap() {
+fn ex03_sql_insert_placeholder_replace_comment() {
+    let text = export_to_string(ExportFormat::SqlInsert(
+        SqlInsertExportOptions::placeholder(Dialect::Postgres),
+    ));
+    assert!(text.contains("INSERT INTO \"table\""));
+    assert!(text.contains("-- replace table name"));
+}
+
+/// EX-12: flush at the row cap (100 by default) even when under the byte budget.
+#[test]
+fn ex12_sql_insert_flushes_at_row_cap() {
     let cols = vec!["id".into()];
     let rows: Vec<Vec<Value>> = (1..=SQL_INSERT_DEFAULT_BATCH_ROWS + 3)
         .map(|i| vec![Value::Int(i as i64)])
@@ -153,6 +164,7 @@ fn ex03_sql_insert_flushes_at_row_cap() {
             table: "t".into(),
             batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
             batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
+            replace_table_comment: false,
         }),
         &CancellationToken::new(),
         |_| {},
@@ -166,9 +178,9 @@ fn ex03_sql_insert_flushes_at_row_cap() {
     assert_eq!(first.matches("\n(").count(), SQL_INSERT_DEFAULT_BATCH_ROWS);
 }
 
-/// EX-03: flush when the pending statement would exceed ~1 MiB, even under the row cap.
+/// EX-12: flush when the pending statement would exceed ~1 MiB, even under the row cap.
 #[test]
-fn ex03_sql_insert_flushes_at_byte_cap() {
+fn ex12_sql_insert_flushes_at_byte_cap() {
     // Wide text so a handful of rows exceed a small byte budget.
     let wide = "x".repeat(200);
     let cols = vec!["id".into(), "payload".into()];
@@ -186,6 +198,7 @@ fn ex03_sql_insert_flushes_at_byte_cap() {
             batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
             // Tight budget: prefix + two wide rows fits; a third forces a flush.
             batch_max_bytes: 500,
+            replace_table_comment: false,
         }),
         &CancellationToken::new(),
         |_| {},

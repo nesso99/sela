@@ -27,20 +27,41 @@ pub enum BinaryEncoding {
     Base64,
 }
 
-/// CSV export options (RFC 4180 quoting; configurable delimiter / header / NULL).
+/// CSV NULL encoding for export (UX [11-export-import.md](../../../../docs/design/ux/11-export-import.md)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CsvNullEncoding {
+    /// Unquoted empty field (default). Distinct from `''`, which is written as `""`.
+    #[default]
+    EmptyField,
+    /// Literal `\N` (MySQL-style sentinel).
+    LiteralBackslashN,
+}
+
+impl CsvNullEncoding {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptyField => "",
+            Self::LiteralBackslashN => "\\N",
+        }
+    }
+}
+
+/// CSV export options (RFC 4180 quoting; configurable delimiter / header / NULL / BOM).
 ///
-/// Default NULL encoding is `\N` (provisional per v0.3 EX-08). That stays distinct
-/// from `''` (empty field / `""`) and from the four-character text `NULL`. An empty
-/// [`Self::null_repr`] writes an unquoted empty field; configure the importer to match.
-/// Clipboard copy still uses the keyword `NULL` via [`crate::copy_format`].
+/// Default NULL encoding is an **empty field** (EX-08 / UX Decision 2). Empty
+/// strings are always written as `""` so NULL ≠ `''`. Optional `\N` via
+/// [`CsvNullEncoding::LiteralBackslashN`]. Clipboard copy still uses the keyword
+/// `NULL` via [`crate::copy_format`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CsvExportOptions {
-    /// Field delimiter (default `,`).
+    /// Field delimiter (default `,`; UI also offers `;` and tab).
     pub delimiter: u8,
-    /// Write a header line of column names first.
+    /// Write a header line of column names first (default on).
     pub include_header: bool,
-    /// Text written for SQL NULL (default `"\\N"`).
-    pub null_repr: String,
+    /// How SQL NULL is written (default [`CsvNullEncoding::EmptyField`]).
+    pub null_encoding: CsvNullEncoding,
+    /// Write a UTF-8 BOM before the first byte (default off; EX-09).
+    pub utf8_bom: bool,
     pub binary: BinaryEncoding,
 }
 
@@ -49,9 +70,17 @@ impl Default for CsvExportOptions {
         Self {
             delimiter: b',',
             include_header: true,
-            null_repr: "\\N".into(),
+            null_encoding: CsvNullEncoding::EmptyField,
+            utf8_bom: false,
             binary: BinaryEncoding::Hex,
         }
+    }
+}
+
+impl CsvExportOptions {
+    /// Text written for a SQL NULL cell under the current encoding.
+    pub fn null_repr(&self) -> &str {
+        self.null_encoding.as_str()
     }
 }
 
@@ -102,6 +131,8 @@ pub struct SqlInsertExportOptions {
     /// Max bytes of statement text (prefix + VALUES) before flushing
     /// (default [`SQL_INSERT_DEFAULT_BATCH_BYTES`]).
     pub batch_max_bytes: usize,
+    /// When true, append `-- replace table name` after the statements (SQL result tab).
+    pub replace_table_comment: bool,
 }
 
 impl SqlInsertExportOptions {
@@ -111,6 +142,18 @@ impl SqlInsertExportOptions {
             table: table.into(),
             batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
             batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
+            replace_table_comment: false,
+        }
+    }
+
+    /// SQL-result tab: placeholder target `table` plus `-- replace table name` (EX-03).
+    pub fn placeholder(dialect: Dialect) -> Self {
+        Self {
+            dialect,
+            table: "table".into(),
+            batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
+            batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
+            replace_table_comment: true,
         }
     }
 }
@@ -348,13 +391,16 @@ pub struct CsvExporter<W: Write> {
 }
 
 impl<W: Write> CsvExporter<W> {
-    pub fn new(writer: W, options: CsvExportOptions) -> Self {
-        Self {
+    pub fn new(mut writer: W, options: CsvExportOptions) -> Result<Self, ExportError> {
+        if options.utf8_bom {
+            writer.write_all(&[0xEF, 0xBB, 0xBF])?;
+        }
+        Ok(Self {
             writer,
             options,
             rows_written: 0,
             header_done: false,
-        }
+        })
     }
 
     pub fn rows_written(&self) -> u64 {
@@ -379,13 +425,13 @@ impl<W: Write> CsvExporter<W> {
 
     fn write_line<'a>(&mut self, fields: impl Iterator<Item = &'a str>) -> Result<(), ExportError> {
         let delim = self.options.delimiter as char;
+        let null_empty = matches!(self.options.null_encoding, CsvNullEncoding::EmptyField);
         for (i, field) in fields.enumerate() {
             if i > 0 {
                 write!(self.writer, "{delim}")?;
             }
-            // Empty null_repr must stay an unquoted empty field (EX-08), so do not
-            // force-quote empty strings when they are the NULL sentinel itself.
-            if field.is_empty() && self.options.null_repr.is_empty() {
+            // Empty NULL encoding must stay an unquoted empty field (EX-08).
+            if field.is_empty() && null_empty {
                 // write nothing between delimiters
             } else {
                 write!(
@@ -401,19 +447,20 @@ impl<W: Write> CsvExporter<W> {
 
     fn write_value_row(&mut self, row: &[Value]) -> Result<(), ExportError> {
         let delim = self.options.delimiter as char;
+        let null_repr = self.options.null_repr();
         for (i, value) in row.iter().enumerate() {
             if i > 0 {
                 write!(self.writer, "{delim}")?;
             }
             match value {
-                Value::Null if self.options.null_repr.is_empty() => {
+                Value::Null if null_repr.is_empty() => {
                     // Unquoted empty field.
                 }
                 Value::Null => {
                     write!(
                         self.writer,
                         "{}",
-                        escape_csv_field_delim(&self.options.null_repr, self.options.delimiter)
+                        escape_csv_field_delim(null_repr, self.options.delimiter)
                     )?;
                 }
                 Value::Bytes(bytes) => {
@@ -440,6 +487,22 @@ impl<W: Write> CsvExporter<W> {
 
     pub fn into_inner(self) -> W {
         self.writer
+    }
+}
+
+/// Status copy when an export is cancelled (EX-06).
+pub const EXPORT_CANCELLED_STATUS: &str = "Export cancelled.";
+
+/// Delete a partial export destination after cancel (EX-06).
+///
+/// Callers that write through a real path should invoke this when export returns
+/// [`ExportError::Cancelled`] (or any failure after a visible partial was created).
+/// Missing files are ignored so temp+rename layouts stay safe.
+pub fn discard_export_partial(path: &std::path::Path) -> Result<(), ExportError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(ExportError::Io(err.to_string())),
     }
 }
 
@@ -664,7 +727,11 @@ impl<W: Write> SqlInsertExporter<W> {
     }
 
     pub fn finish(&mut self) -> Result<(), ExportError> {
-        self.flush_batch()
+        self.flush_batch()?;
+        if self.options.replace_table_comment {
+            self.writer.write_all(b"-- replace table name\n")?;
+        }
+        Ok(())
     }
 
     pub fn into_inner(mut self) -> Result<W, ExportError> {
@@ -701,7 +768,7 @@ where
     check_cancel(cancel)?;
     match format {
         ExportFormat::Csv(opts) => {
-            let mut exp = CsvExporter::new(writer, opts.clone());
+            let mut exp = CsvExporter::new(writer, opts.clone())?;
             exp.write_header(columns)?;
             for row in rows {
                 check_cancel(cancel)?;
@@ -788,7 +855,7 @@ where
             if !header_written && !columns.is_empty() {
                 active = Some(match format {
                     ExportFormat::Csv(opts) => {
-                        let mut exp = CsvExporter::new(&mut *writer, opts.clone());
+                        let mut exp = CsvExporter::new(&mut *writer, opts.clone())?;
                         exp.write_header(&columns)?;
                         Active::Csv(exp)
                     }
@@ -921,7 +988,8 @@ mod tests {
         let opts = CsvExportOptions {
             delimiter: b';',
             include_header: false,
-            null_repr: String::new(),
+            null_encoding: CsvNullEncoding::EmptyField,
+            utf8_bom: false,
             binary: BinaryEncoding::Hex,
         };
         export_rows(
@@ -1003,6 +1071,7 @@ mod tests {
                 table: "public.items".into(),
                 batch_size: 2,
                 batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
+                replace_table_comment: false,
             }),
             &cancel,
             |_| {},
@@ -1126,8 +1195,8 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        // NULL → `\N`; '' → quoted empty `""`.
-        assert_eq!(String::from_utf8(csv).unwrap(), "n\n\\N\n\"\"\n");
+        // NULL → empty field; '' → quoted empty `""`.
+        assert_eq!(String::from_utf8(csv).unwrap(), "n\n\n\"\"\n");
 
         let mut json = Vec::new();
         export_rows(
@@ -1158,7 +1227,7 @@ mod tests {
         assert!(s.contains("('')"));
     }
 
-    /// EX-09: UTF-8 write (provisional default).
+    /// EX-09: UTF-8 write (BOM off by default).
     #[test]
     fn ex09_utf8_write() {
         let cancel = CancellationToken::new();
@@ -1172,8 +1241,81 @@ mod tests {
             |_| {},
         )
         .unwrap();
+        assert!(String::from_utf8_lossy(&out).contains("café 日本語"));
+        assert!(!out.starts_with(&[0xEF, 0xBB, 0xBF]));
+    }
+
+    #[test]
+    fn ex09_optional_utf8_bom() {
+        let cancel = CancellationToken::new();
+        let mut out = Vec::new();
+        export_rows(
+            &mut out,
+            &["t".into()],
+            vec![vec![Value::text("a")]],
+            &ExportFormat::Csv(CsvExportOptions {
+                utf8_bom: true,
+                ..CsvExportOptions::default()
+            }),
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(&out[..3], &[0xEF, 0xBB, 0xBF]);
+    }
+
+    #[test]
+    fn ex06_discard_export_partial_deletes_file() {
+        let dir = std::env::temp_dir().join(format!("sela-ex06-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("partial.csv");
+        std::fs::write(&path, b"partial").unwrap();
+        discard_export_partial(&path).unwrap();
+        assert!(!path.exists());
+        // Missing file is ok.
+        discard_export_partial(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(EXPORT_CANCELLED_STATUS, "Export cancelled.");
+    }
+
+    #[test]
+    fn ex03_sql_insert_placeholder() {
+        let cancel = CancellationToken::new();
+        let mut out = Vec::new();
+        export_rows(
+            &mut out,
+            &["id".into()],
+            vec![vec![Value::Int(1)]],
+            &ExportFormat::SqlInsert(SqlInsertExportOptions::placeholder(Dialect::Mysql)),
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("café 日本語"));
+        assert!(text.contains("INSERT INTO `table`"));
+        assert!(text.contains("-- replace table name"));
+    }
+
+    #[test]
+    fn ex07_delimiter_semicolon_and_tab() {
+        let cancel = CancellationToken::new();
+        for &delim in b";\t" {
+            let mut out = Vec::new();
+            export_rows(
+                &mut out,
+                &["a".into(), "b".into()],
+                vec![vec![Value::Int(1), Value::text("x")]],
+                &ExportFormat::Csv(CsvExportOptions {
+                    delimiter: delim,
+                    ..CsvExportOptions::default()
+                }),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.contains(delim as char));
+        }
     }
 
     /// EX-11: INSERT refuses decode; CSV/JSON keep display text (not NULL).

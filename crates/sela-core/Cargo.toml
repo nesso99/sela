@@ -12,8 +12,6 @@ async-channel = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.22"
 chrono = { workspace = true }
-# MIT/Unlicense — CSV parse for M3-3 import (RFC 4180). Must stay on cargo-deny allow-list.
-csv = "1.3"
 percent-encoding = "2"
 rust_decimal = { workspace = true }
 serde = { workspace = true }

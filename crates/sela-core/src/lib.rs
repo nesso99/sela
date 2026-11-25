@@ -41,18 +41,21 @@ pub use copy_format::{
     value_to_copy_cell, CopyCell, CopyError, CopyFormat, CopyScalarKind,
 };
 pub use csv_import::{
-    buf_reader_from_str, cursor_from_str, decide_import_gate, ensure_import_allowed,
-    import_csv_into, map_record, parse_import_field, peek_utf8_bom, read_utf8_source, require_utf8,
-    strip_utf8_bom, value_to_csv_field, CollectingImportSink, ColumnMapping, CsvImportOptions,
+    buf_reader_from_str, count_csv_data_rows, cursor_from_str, decide_import_gate,
+    ensure_import_allowed, import_csv_into, map_record, map_record_fields, parse_import_field,
+    parse_import_field_ex, peek_utf8_bom, read_utf8_source, require_utf8, strip_utf8_bom,
+    value_to_csv_field, CollectingImportSink, ColumnMapping, CsvField, CsvImportOptions,
     CsvImporter, ImportError, ImportRow, ImportRowError, ImportRowSink, TransactionalImportSink,
+    IMPORT_CANCELLED_STATUS, IMPORT_REFUSED_READ_ONLY_STATUS,
 };
 pub use error::DbError;
 pub use export::{
-    encode_binary, escape_csv_field_delim, export_query, export_rows,
+    discard_export_partial, encode_binary, escape_csv_field_delim, export_query, export_rows,
     export_rows_with_progress_counter, format_csv_cell, format_json_cell,
-    value_to_export_sql_literal, BinaryEncoding, CsvExportOptions, CsvExporter, ExportError,
-    ExportFormat, JsonExportMode, JsonExportOptions, JsonExporter, SqlInsertExportOptions,
-    SqlInsertExporter, SQL_INSERT_DEFAULT_BATCH_BYTES, SQL_INSERT_DEFAULT_BATCH_ROWS,
+    value_to_export_sql_literal, BinaryEncoding, CsvExportOptions, CsvExporter, CsvNullEncoding,
+    ExportError, ExportFormat, JsonExportMode, JsonExportOptions, JsonExporter,
+    SqlInsertExportOptions, SqlInsertExporter, EXPORT_CANCELLED_STATUS,
+    SQL_INSERT_DEFAULT_BATCH_BYTES, SQL_INSERT_DEFAULT_BATCH_ROWS,
 };
 pub use filter::{
     bool_filter_menu_index, bool_filter_menu_value, build_table_count, build_table_page,
