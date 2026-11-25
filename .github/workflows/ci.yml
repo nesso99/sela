@@ -3,12 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ['**/*.md', 'docs/**']
   pull_request:
-    paths-ignore: ['**/*.md', 'docs/**']
   workflow_dispatch:
   schedule:
-    # Weekly Windows coverage without paying for it on every PR.
+    # Weekly full coverage (including Windows) as a safety net.
     - cron: "0 2 * * 1"
 
 concurrency:
@@ -19,8 +17,60 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect non-docs changes
+        id: filter
+        run: |
+          set -euo pipefail
+          # Push to main, schedule, and manual dispatch always run the full suite.
+          if [ "${{ github.event_name }}" = "schedule" ] \
+            || [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+            || { [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; }; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "Treating all code as changed (event=${{ github.event_name }})"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+          fi
+
+          echo "Diffing $BASE...$HEAD"
+          mapfile -t files < <(git diff --name-only "$BASE"..."$HEAD" || true)
+
+          code=false
+          for file in "${files[@]+"${files[@]}"}"; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              *.md|docs|docs/*) ;;
+              *)
+                code=true
+                echo "Non-docs change: $file"
+                break
+                ;;
+            esac
+          done
+
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code=$code"
+
   check:
     name: check
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +100,8 @@ jobs:
 
   deny:
     name: cargo-deny
-    needs: check
+    needs: [changes, check]
+    if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +114,8 @@ jobs:
 
   docs:
     name: docs
-    needs: check
+    needs: [changes, check]
+    if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,12 +138,13 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
-    needs: check
+    needs: [changes, check]
+    if: needs.changes.outputs.code == 'true' && success()
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -117,30 +170,10 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
-  # Windows is 2× billed minutes; skip on pull_request, run on main/push,
-  # manual dispatch, and the weekly schedule above.
-  test-windows:
-    name: test (windows-latest)
-    needs: check
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: cargo build
-        run: cargo build --workspace
-
-      - name: cargo test
-        run: cargo test --workspace
-
   db-integration:
     name: db-integration
-    needs: check
+    needs: [changes, check]
+    if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -197,7 +230,8 @@ jobs:
   # Postgres with SSL: throwaway certs generated in the job (never committed).
   db-tls-postgres:
     name: db-tls-postgres
-    needs: check
+    needs: [changes, check]
+    if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -250,3 +284,56 @@ jobs:
 
       - name: cargo test (Postgres TLS)
         run: cargo test -p sela-drivers postgres_tls -- --nocapture
+
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs:
+      - changes
+      - check
+      - deny
+      - docs
+      - test
+      - db-integration
+      - db-tls-postgres
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate gate
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS_JSON"
+
+          code="$(python3 -c 'import json,os; print(json.loads(os.environ["NEEDS_JSON"])["changes"]["outputs"].get("code",""))')"
+          echo "changes.outputs.code=$code"
+
+          # Fail if any needed job failed or was cancelled.
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          bad = []
+          for name, info in needs.items():
+              result = info.get("result")
+              if result in ("failure", "cancelled"):
+                  bad.append(f"{name}={result}")
+          if bad:
+              print("ci-gate failed: jobs in failure/cancelled:", ", ".join(bad))
+              sys.exit(1)
+
+          code = needs["changes"]["outputs"].get("code", "")
+          heavy = ["check", "deny", "docs", "test", "db-integration", "db-tls-postgres"]
+          if code == "true":
+              not_ok = []
+              for name in heavy:
+                  result = needs[name].get("result")
+                  if result != "success":
+                      not_ok.append(f"{name}={result}")
+              if not_ok:
+                  print("ci-gate failed: code changed but heavy jobs not all success:", ", ".join(not_ok))
+                  sys.exit(1)
+          else:
+              print("docs-only (or no code changes): heavy jobs may be skipped")
+
+          print("ci-gate passed")
+          PY
