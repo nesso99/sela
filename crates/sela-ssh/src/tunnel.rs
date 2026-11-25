@@ -1,5 +1,6 @@
 //! Local port-forward tunnel over SSH (`direct-tcpip`).
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,10 +21,12 @@ use crate::host_key::{fingerprint_sha256, learn_host_key, HostKeyCheck, HostKeyG
 use crate::paths::SshPaths;
 use sela_core::{SshAuthMethod, SshSettings};
 
-const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+/// Must stay strictly below the drivers' outer `CONNECT_TIMEOUT` so a slow
+/// bastion surfaces as [`SshError`], not a DB [`sela_core::DbError::Timeout`].
+pub const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Parameters to open a tunnel to a database reachable from the bastion.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TunnelRequest {
     pub ssh: SshSettings,
     /// Database host as seen from the bastion (often a Docker service name).
@@ -31,6 +34,18 @@ pub struct TunnelRequest {
     pub remote_db_port: u16,
     pub secrets: SshAuthSecrets,
     pub paths: SshPaths,
+}
+
+impl fmt::Debug for TunnelRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TunnelRequest")
+            .field("ssh", &self.ssh)
+            .field("remote_db_host", &self.remote_db_host)
+            .field("remote_db_port", &self.remote_db_port)
+            .field("secrets", &self.secrets)
+            .field("paths", &self.paths)
+            .finish()
+    }
 }
 
 /// Result of [`open_tunnel`]: connected, or a first-seen host key to confirm.
@@ -143,8 +158,7 @@ pub async fn open_tunnel(request: TunnelRequest) -> Result<TunnelOpen, SshError>
         host: request.ssh.host.clone(),
         port: request.ssh.port,
         user: request.ssh.user.clone(),
-        identity_file: request.ssh.identity_file.clone(),
-        use_ssh_config: request.ssh.use_ssh_config,
+        private_key_path: request.ssh.private_key_path.clone(),
     };
     let target = resolve_endpoint(&input, &request.paths)?;
     let auth = auth_method_for(&request.ssh, &target)?;
@@ -202,11 +216,10 @@ fn auth_method_for(ssh: &SshSettings, target: &ResolvedSshTarget) -> Result<Auth
     match ssh.auth {
         SshAuthMethod::Password => Ok(AuthMethod::Password),
         SshAuthMethod::PrivateKey => {
-            let path = target.identity_file.clone().ok_or_else(|| {
-                SshError::config(
-                    "SSH identity file is required for private-key auth (set IdentityFile or the connection field)",
-                )
-            })?;
+            let path = target
+                .private_key_path
+                .clone()
+                .ok_or_else(|| SshError::config("Private key path is required."))?;
             Ok(AuthMethod::PrivateKey { path })
         }
         SshAuthMethod::Agent => Ok(AuthMethod::Agent),
@@ -249,24 +262,25 @@ async fn try_open(
             return map_connect_failure(err, &gate, &target);
         }
         Err(_) => {
-            return Err(SshError::connection(format!(
-                "timed out after {}s connecting to the SSH bastion",
-                SSH_CONNECT_TIMEOUT.as_secs()
-            )));
+            return Err(SshError::could_not_reach(&target.host, target.port));
         }
     };
 
     // Prefer gated host-key outcome if the handler recorded one.
     if let Some(check) = gate.take_last() {
         match check {
-            HostKeyCheck::Mismatch { line } => {
+            HostKeyCheck::Mismatch {
+                expected,
+                presented,
+            } => {
                 let _ = session
                     .disconnect(Disconnect::ByApplication, "", "en")
                     .await;
                 return Err(SshError::HostKeyMismatch {
                     host: target.host,
                     port: target.port,
-                    line,
+                    expected,
+                    presented,
                 });
             }
             HostKeyCheck::Unknown { fingerprint, key } => {
@@ -324,11 +338,15 @@ fn map_connect_failure(
 ) -> Result<OpenAttempt, SshError> {
     if let Some(check) = gate.take_last() {
         match check {
-            HostKeyCheck::Mismatch { line } => {
+            HostKeyCheck::Mismatch {
+                expected,
+                presented,
+            } => {
                 return Err(SshError::HostKeyMismatch {
                     host: target.host.clone(),
                     port: target.port,
-                    line,
+                    expected,
+                    presented,
                 });
             }
             HostKeyCheck::Unknown { fingerprint, key } => {
@@ -342,10 +360,16 @@ fn map_connect_failure(
             HostKeyCheck::Match => {}
         }
     }
-    // Never include credentials; russh messages are host/transport only.
-    Err(SshError::connection(format!(
-        "could not connect to SSH bastion: {err}"
-    )))
+    // Prefer the SSH-08 unreachable copy; keep the underlying detail only when
+    // it is already an Auth / HostKey / Config variant.
+    match err {
+        SshError::Auth(_)
+        | SshError::HostKeyMismatch { .. }
+        | SshError::UnknownHostKey { .. }
+        | SshError::Config(_)
+        | SshError::Unsupported(_) => Err(err),
+        _ => Err(SshError::could_not_reach(&target.host, target.port)),
+    }
 }
 
 async fn forward_loop(
@@ -453,5 +477,44 @@ impl client::Handler for ClientHandler {
 impl From<russh::Error> for SshError {
     fn from(err: russh::Error) -> Self {
         SshError::connection(format!("SSH protocol error: {err}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sela_core::SshAuthMethod;
+
+    #[test]
+    fn tunnel_request_debug_redacts_secrets() {
+        let request = TunnelRequest {
+            ssh: SshSettings {
+                enabled: true,
+                host: "bastion".into(),
+                port: 22,
+                user: "tunnel".into(),
+                auth: SshAuthMethod::Password,
+                private_key_path: String::new(),
+            },
+            remote_db_host: "postgres".into(),
+            remote_db_port: 5432,
+            secrets: SshAuthSecrets {
+                password: Some("bastion-secret".into()),
+                passphrase: Some("key-secret".into()),
+            },
+            paths: SshPaths::from_home(std::path::Path::new("/tmp")),
+        };
+        let debug = format!("{request:?}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(!debug.contains("bastion-secret"), "{debug}");
+        assert!(!debug.contains("key-secret"), "{debug}");
+    }
+
+    #[test]
+    fn ssh_timeout_is_shorter_than_driver_connect_timeout() {
+        // Mirrored constant in sela-drivers (12s). Keep this assertion so a
+        // slow bastion cannot race the outer DbError::Timeout.
+        const DRIVER_CONNECT_TIMEOUT_SECS: u64 = 12;
+        assert!(SSH_CONNECT_TIMEOUT.as_secs() < DRIVER_CONNECT_TIMEOUT_SECS);
     }
 }

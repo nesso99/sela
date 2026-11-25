@@ -92,16 +92,27 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn is_true(value: &bool) -> bool {
-    *value
-}
-
 fn default_ssh_port() -> u16 {
     22
 }
 
 fn is_default_ssh_port(port: &u16) -> bool {
     *port == 0 || *port == 22
+}
+
+/// Expand a leading `~/` using `$HOME` / `USERPROFILE`. Other paths are unchanged.
+fn expand_tilde_path(path: &str) -> std::path::PathBuf {
+    if path == "~" {
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            return std::path::PathBuf::from(home);
+        }
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            return std::path::PathBuf::from(home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
 }
 
 /// How the SSH bastion authenticates the client.
@@ -112,9 +123,10 @@ fn is_default_ssh_port(port: &u16) -> bool {
 #[serde(rename_all = "kebab-case")]
 pub enum SshAuthMethod {
     /// SSH password (secret store account `{id}:ssh-password`).
-    #[default]
     Password,
     /// Private key file; optional passphrase in the secret store (`{id}:ssh-passphrase`).
+    /// Default for new SSH rows (UX 10-ssh-tunnel).
+    #[default]
     PrivateKey,
     /// Keys from `ssh-agent` (`SSH_AUTH_SOCK` / Pageant).
     Agent,
@@ -124,32 +136,36 @@ pub enum SshAuthMethod {
 ///
 /// No `schema_version` bump: serde defaults keep v0.2 files loadable (ADR 0006).
 /// SSH passwords and key passphrases are never written here.
+///
+/// Saved JSON stores **resolved** Host/Port/User/key path after an explicit
+/// Import from `~/.ssh/config` — connect does not re-read the config file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshSettings {
     /// When false, the driver connects directly (no tunnel).
     #[serde(default, skip_serializing_if = "is_false")]
     pub enabled: bool,
-    /// Bastion host or `~/.ssh/config` `Host` alias.
+    /// Bastion host (resolved `HostName`, or the alias when none was set).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
-    /// Bastion port. `0` or `22` omit on save; resolution uses 22 after config merge.
+    /// Bastion port. `0` or `22` omit on save; connect treats omitted as 22.
     #[serde(
         default = "default_ssh_port",
         skip_serializing_if = "is_default_ssh_port"
     )]
     pub port: u16,
-    /// Bastion user. Empty → fill from `~/.ssh/config` `User` when config is read.
+    /// Bastion user.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub user: String,
     #[serde(default)]
     pub auth: SshAuthMethod,
-    /// Private key path (for [`SshAuthMethod::PrivateKey`]). May be empty when
-    /// `IdentityFile` comes from `~/.ssh/config`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub identity_file: String,
-    /// When true (default), honour `~/.ssh/config` for Host/HostName/User/Port/IdentityFile.
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
-    pub use_ssh_config: bool,
+    /// Private key path (for [`SshAuthMethod::PrivateKey`]). `~` is expanded at connect.
+    /// Accepts legacy JSON key `identity_file`.
+    #[serde(
+        default,
+        alias = "identity_file",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub private_key_path: String,
 }
 
 impl Default for SshSettings {
@@ -159,9 +175,8 @@ impl Default for SshSettings {
             host: String::new(),
             port: 22,
             user: String::new(),
-            auth: SshAuthMethod::Password,
-            identity_file: String::new(),
-            use_ssh_config: true,
+            auth: SshAuthMethod::PrivateKey,
+            private_key_path: String::new(),
         }
     }
 }
@@ -441,19 +456,23 @@ impl SavedConnection {
                 }
                 if self.ssh.enabled {
                     if self.ssh.host.trim().is_empty() {
-                        return Err("SSH host is required when the tunnel is enabled.".into());
+                        return Err("SSH host is required.".into());
                     }
                     if self.ssh.port == 0 {
-                        return Err("SSH port must be between 1 and 65535.".into());
+                        return Err("SSH port must be a number from 1 to 65535.".into());
                     }
-                    if self.ssh.auth == SshAuthMethod::PrivateKey
-                        && self.ssh.identity_file.trim().is_empty()
-                        && !self.ssh.use_ssh_config
-                    {
-                        return Err(
-                            "SSH identity file is required for private-key auth when ssh config is off."
-                                .into(),
-                        );
+                    if self.ssh.user.trim().is_empty() {
+                        return Err("SSH user is required.".into());
+                    }
+                    if self.ssh.auth == SshAuthMethod::PrivateKey {
+                        let path = self.ssh.private_key_path.trim();
+                        if path.is_empty() {
+                            return Err("Private key path is required.".into());
+                        }
+                        let expanded = expand_tilde_path(path);
+                        if !expanded.is_file() {
+                            return Err("Private key was not found.".into());
+                        }
                     }
                 }
             }
@@ -862,7 +881,7 @@ mod tests {
         }"#;
         let conn: SavedConnection = serde_json::from_str(raw).unwrap();
         assert!(!conn.ssh.enabled);
-        assert!(conn.ssh.use_ssh_config);
+        assert_eq!(conn.ssh.auth, SshAuthMethod::PrivateKey);
         let text = serde_json::to_string(&conn).unwrap();
         assert!(
             !text.contains("\"ssh\""),
@@ -886,16 +905,63 @@ mod tests {
             port: 2222,
             user: "tunnel".into(),
             auth: SshAuthMethod::PrivateKey,
-            identity_file: "~/.ssh/id_ed25519".into(),
-            use_ssh_config: false,
+            private_key_path: "~/.ssh/id_ed25519".into(),
         };
         let text = serde_json::to_string(&conn).unwrap();
         assert!(text.contains("\"enabled\":true"));
         assert!(text.contains("\"auth\":\"private-key\""));
+        assert!(text.contains("\"private_key_path\""));
+        assert!(!text.contains("identity_file"));
         assert!(!text.to_ascii_lowercase().contains("passphrase"));
         assert!(!text.to_ascii_lowercase().contains("\"password\""));
         let back: SavedConnection = serde_json::from_str(&text).unwrap();
         assert_eq!(back.ssh, conn.ssh);
+    }
+
+    #[test]
+    // SSH-20 unit: duplicate keeps SSH host settings; secrets are not on the type.
+    fn ssh20_duplicate_copies_ssh_host_settings_not_secrets() {
+        use crate::duplicate_connection;
+        let mut source = SavedConnection::new(Engine::Postgres);
+        source.name = "Prod".into();
+        source.username = "sela".into();
+        source.database = "sample".into();
+        source.ssh = SshSettings {
+            enabled: true,
+            host: "bastion.example".into(),
+            port: 2222,
+            user: "tunnel".into(),
+            auth: SshAuthMethod::Password,
+            private_key_path: String::new(),
+        };
+        let copy = duplicate_connection(&source, ["Prod"]);
+        assert_ne!(copy.id, source.id);
+        assert_eq!(copy.ssh, source.ssh);
+        let text = serde_json::to_string(&copy).unwrap();
+        assert!(!text.to_ascii_lowercase().contains("passphrase"));
+        assert!(!text.contains("ssh-password"));
+    }
+
+    #[test]
+    fn legacy_identity_file_json_loads_as_private_key_path() {
+        let raw = r#"{
+            "id": "c1",
+            "name": "Local",
+            "engine": "postgres",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "username": "sela",
+            "database": "sample",
+            "ssh": {
+                "enabled": true,
+                "host": "jump",
+                "user": "tunnel",
+                "auth": "private-key",
+                "identity_file": "~/.ssh/id_ed25519"
+            }
+        }"#;
+        let conn: SavedConnection = serde_json::from_str(raw).unwrap();
+        assert_eq!(conn.ssh.private_key_path, "~/.ssh/id_ed25519");
     }
 
     #[test]
@@ -912,17 +978,19 @@ mod tests {
     }
 
     #[test]
-    fn ssh_enabled_requires_host() {
+    fn ssh_enabled_requires_host_user_and_key_when_private_key() {
         let mut c = SavedConnection::new(Engine::Postgres);
         c.name = "Remote".into();
         c.username = "sela".into();
         c.database = "sample".into();
         c.ssh.enabled = true;
-        assert_eq!(
-            c.validate().unwrap_err(),
-            "SSH host is required when the tunnel is enabled."
-        );
+        assert_eq!(c.validate().unwrap_err(), "SSH host is required.");
         c.ssh.host = "bastion".into();
+        assert_eq!(c.validate().unwrap_err(), "SSH user is required.");
+        c.ssh.user = "tunnel".into();
+        c.ssh.auth = SshAuthMethod::PrivateKey;
+        assert_eq!(c.validate().unwrap_err(), "Private key path is required.");
+        c.ssh.auth = SshAuthMethod::Password;
         assert!(c.validate().is_ok());
     }
 }

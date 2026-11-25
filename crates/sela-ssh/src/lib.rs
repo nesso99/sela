@@ -28,8 +28,13 @@ mod paths;
 mod tunnel;
 
 pub use auth::SshAuthSecrets;
-pub use config::{resolve_endpoint, ResolvedSshTarget, SshConfigFile, SshEndpointInput};
+pub use config::{
+    import_host_alias, list_host_aliases, resolve_endpoint, ImportedSshFields, ResolvedSshTarget,
+    SshConfigFile, SshEndpointInput,
+};
 pub use error::{expand_user_path, SshError};
 pub use host_key::{check_host_key, fingerprint_sha256, learn_host_key, HostKeyCheck};
 pub use paths::SshPaths;
-pub use tunnel::{open_tunnel, SshTunnel, TunnelOpen, TunnelRequest, UnknownHostKey};
+pub use tunnel::{
+    open_tunnel, SshTunnel, TunnelOpen, TunnelRequest, UnknownHostKey, SSH_CONNECT_TIMEOUT,
+};

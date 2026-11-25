@@ -1,7 +1,8 @@
 //! Minimal OpenSSH client config parser.
 //!
 //! Honours `Host`, `HostName`, `User`, `Port`, and `IdentityFile` (SSH-05).
-//! `ProxyJump` / `ProxyCommand` on a matching host are unsupported (clear error).
+//! `Include` under the user’s home is followed one level. `ProxyJump` /
+//! `ProxyCommand` on a matching host are unsupported (clear error).
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -10,25 +11,32 @@ use std::path::{Path, PathBuf};
 use crate::error::{expand_user_path, SshError};
 use crate::paths::SshPaths;
 
-/// Resolved bastion endpoint after applying `~/.ssh/config`.
+/// Resolved bastion endpoint after expanding `~` on saved fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedSshTarget {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub identity_file: Option<PathBuf>,
+    pub private_key_path: Option<PathBuf>,
 }
 
-/// Values taken from a saved connection before config merge.
+/// Values taken from a saved connection (already resolved — no auto config read).
 #[derive(Debug, Clone)]
 pub struct SshEndpointInput {
-    /// Host or `Host` alias from the connection form.
     pub host: String,
-    /// `0` means unset (use config or 22).
+    /// `0` means unset → 22.
     pub port: u16,
     pub user: String,
-    pub identity_file: String,
-    pub use_ssh_config: bool,
+    pub private_key_path: String,
+}
+
+/// Fields filled by an explicit Import from `~/.ssh/config` (SSH-05).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedSshFields {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub private_key_path: String,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -55,8 +63,18 @@ pub struct SshConfigFile {
 
 impl SshConfigFile {
     pub fn parse_str(text: &str) -> Result<Self, SshError> {
+        Self::parse_str_with_includes(text, None, 0)
+    }
+
+    fn parse_str_with_includes(
+        text: &str,
+        include_base: Option<&Path>,
+        depth: u8,
+    ) -> Result<Self, SshError> {
         let mut hosts = Vec::new();
         let mut current: Option<HostBlock> = None;
+        // Global Include lines (before any Host) are collected and merged after.
+        let mut included = Vec::new();
 
         for (idx, raw_line) in text.lines().enumerate() {
             let line_no = idx + 1;
@@ -67,6 +85,24 @@ impl SshConfigFile {
             let (key, value) = split_key_value(line)
                 .ok_or_else(|| SshError::config(format!("invalid ssh config at line {line_no}")))?;
             let key_lower = key.to_ascii_lowercase();
+            if key_lower == "include" {
+                if depth >= 1 {
+                    // One level only (SSH-05).
+                    continue;
+                }
+                if let Some(base) = include_base {
+                    for pattern in value.split_whitespace() {
+                        let path = expand_include_path(pattern, base)?;
+                        if path.is_file() {
+                            let nested = read_file_text(&path)?;
+                            let nested_file =
+                                Self::parse_str_with_includes(&nested, Some(base), depth + 1)?;
+                            included.extend(nested_file.hosts);
+                        }
+                    }
+                }
+                continue;
+            }
             if key_lower == "host" {
                 if let Some(block) = current.take() {
                     hosts.push(block);
@@ -103,41 +139,44 @@ impl SshConfigFile {
                 "identityfile" => block.params.identity_file = Some(value.to_string()),
                 "proxyjump" => block.params.proxy_jump = Some(value.to_string()),
                 "proxycommand" => block.params.proxy_command = Some(value.to_string()),
-                _ => {
-                    // Ignore other keywords (KeepAlive, etc.).
-                }
+                _ => {}
             }
         }
         if let Some(block) = current {
             hosts.push(block);
         }
+        // Included Host blocks are searched after the primary file (OpenSSH:
+        // first obtained value wins; primary file is read first).
+        hosts.extend(included);
         Ok(Self { hosts })
     }
 
     pub fn parse_path(path: &Path) -> Result<Self, SshError> {
-        let file = File::open(path).map_err(|err| {
-            SshError::config(format!(
-                "could not read ssh config {}: {err}",
-                path.display()
-            ))
-        })?;
-        let mut text = String::new();
-        for line in BufReader::new(file).lines() {
-            let line = line.map_err(|err| {
-                SshError::config(format!(
-                    "could not read ssh config {}: {err}",
-                    path.display()
-                ))
-            })?;
-            text.push_str(&line);
-            text.push('\n');
+        let text = read_file_text(path)?;
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        Self::parse_str_with_includes(&text, Some(base), 0)
+    }
+
+    /// Non-wildcard Host alias names for an Import picker (SSH-05).
+    pub fn list_aliases(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for block in &self.hosts {
+            for pattern in &block.patterns {
+                if pattern.contains('*') || pattern.contains('?') || pattern.contains('!') {
+                    continue;
+                }
+                if !out.iter().any(|a| a == pattern) {
+                    out.push(pattern.clone());
+                }
+            }
         }
-        Self::parse_str(&text)
+        out
     }
 
     /// Merge matching Host blocks (first-match wins per OpenSSH for most keywords).
     fn query(&self, alias: &str) -> Result<HostParams, SshError> {
         let mut merged = HostParams::default();
+        let mut matched = false;
         for block in &self.hosts {
             if !block
                 .patterns
@@ -146,7 +185,7 @@ impl SshConfigFile {
             {
                 continue;
             }
-            // First match wins for each field (OpenSSH: first obtained value used).
+            matched = true;
             if merged.hostname.is_none() {
                 merged.hostname = block.params.hostname.clone();
             }
@@ -166,7 +205,14 @@ impl SshConfigFile {
                 merged.proxy_command = block.params.proxy_command.clone();
             }
         }
-        if merged.proxy_jump.is_some() {
+        if !matched {
+            return Err(SshError::config(format!(
+                "No Host '{alias}' in ~/.ssh/config."
+            )));
+        }
+        if let Some(pj) = &merged.proxy_jump {
+            // `ProxyJump none` is still rejected in v0.3 (tracked on #72).
+            let _ = pj;
             return Err(SshError::unsupported(
                 "ProxyJump in ~/.ssh/config is not supported. Use a single bastion host.",
             ));
@@ -180,75 +226,101 @@ impl SshConfigFile {
     }
 }
 
-/// Resolve bastion host/port/user/identity using optional ssh config (SSH-05).
+fn read_file_text(path: &Path) -> Result<String, SshError> {
+    let file = File::open(path).map_err(|_| SshError::config("Could not read ~/.ssh/config."))?;
+    let mut text = String::new();
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|_| SshError::config("Could not read ~/.ssh/config."))?;
+        text.push_str(&line);
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+fn expand_include_path(pattern: &str, base: &Path) -> Result<PathBuf, SshError> {
+    let expanded = if pattern.starts_with('~') {
+        // Include is restricted to under the user’s home (SSH-05).
+        let home = base
+            .parent()
+            .ok_or_else(|| SshError::config("Could not read ~/.ssh/config."))?;
+        expand_user_path(pattern, Some(home))?
+    } else if Path::new(pattern).is_absolute() {
+        PathBuf::from(pattern)
+    } else {
+        base.join(pattern)
+    };
+    Ok(expanded)
+}
+
+/// Resolve saved Host/Port/User/key for connect (no auto `ssh_config` read).
 pub fn resolve_endpoint(
     input: &SshEndpointInput,
     paths: &SshPaths,
 ) -> Result<ResolvedSshTarget, SshError> {
-    let alias = input.host.trim();
-    if alias.is_empty() {
-        return Err(SshError::config("SSH host is empty"));
+    let host = input.host.trim();
+    if host.is_empty() {
+        return Err(SshError::config("SSH host is required."));
     }
-
-    let mut hostname = alias.to_string();
-    let mut user = input.user.trim().to_string();
-    let mut port = if input.port == 0 { 22 } else { input.port };
-    let mut identity = input.identity_file.trim().to_string();
-
-    if input.use_ssh_config {
-        if let Some(config_path) = &paths.config {
-            if config_path.is_file() {
-                let file = SshConfigFile::parse_path(config_path)?;
-                let params = file.query(alias)?;
-                if let Some(h) = params.hostname {
-                    hostname = h;
-                }
-                if user.is_empty() {
-                    if let Some(u) = params.user {
-                        user = u;
-                    }
-                }
-                // Connection port 22 (default) may still be overridden by config
-                // when the form left the OpenSSH default; treat 0 as unset only.
-                // Explicit non-22 always wins. When form says 22 and config has
-                // another Port, prefer config (OpenSSH: command-line Port wins;
-                // we treat "22" as the unset default so aliases work).
-                if input.port == 0 || input.port == 22 {
-                    if let Some(p) = params.port {
-                        port = p;
-                    }
-                }
-                if identity.is_empty() {
-                    if let Some(id) = params.identity_file {
-                        identity = id;
-                    }
-                }
-            }
-        }
-    }
-
+    let user = input.user.trim();
     if user.is_empty() {
-        return Err(SshError::config(
-            "SSH user is empty (set User on the connection or in ~/.ssh/config)",
-        ));
+        return Err(SshError::config("SSH user is required."));
     }
-
-    let identity_file = if identity.is_empty() {
+    let port = if input.port == 0 { 22 } else { input.port };
+    let private_key_path = if input.private_key_path.trim().is_empty() {
         None
     } else {
-        Some(expand_user_path(&identity, Some(&paths.home))?)
+        Some(expand_user_path(
+            input.private_key_path.trim(),
+            Some(&paths.home),
+        )?)
     };
-
     Ok(ResolvedSshTarget {
-        host: hostname,
+        host: host.to_string(),
+        port,
+        user: user.to_string(),
+        private_key_path,
+    })
+}
+
+/// List `Host` aliases from the injectable config path (SSH-05 picker).
+pub fn list_host_aliases(paths: &SshPaths) -> Result<Vec<String>, SshError> {
+    let Some(config_path) = &paths.config else {
+        return Ok(Vec::new());
+    };
+    if !config_path.is_file() {
+        return Err(SshError::config("Could not read ~/.ssh/config."));
+    }
+    let file = SshConfigFile::parse_path(config_path)?;
+    Ok(file.list_aliases())
+}
+
+/// Fill resolved SSH fields from a Host alias (explicit Import; SSH-05).
+pub fn import_host_alias(alias: &str, paths: &SshPaths) -> Result<ImportedSshFields, SshError> {
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return Err(SshError::config("No Host '' in ~/.ssh/config."));
+    }
+    let Some(config_path) = &paths.config else {
+        return Err(SshError::config("Could not read ~/.ssh/config."));
+    };
+    if !config_path.is_file() {
+        return Err(SshError::config("Could not read ~/.ssh/config."));
+    }
+    let file = SshConfigFile::parse_path(config_path)?;
+    let params = file.query(alias)?;
+    let host = params.hostname.unwrap_or_else(|| alias.to_string());
+    let port = params.port.unwrap_or(22);
+    let user = params.user.unwrap_or_default();
+    let private_key_path = params.identity_file.unwrap_or_default();
+    Ok(ImportedSshFields {
+        host,
         port,
         user,
-        identity_file,
+        private_key_path,
     })
 }
 
 fn strip_comment(line: &str) -> &str {
-    // OpenSSH: `#` starts a comment unless inside quotes (we ignore quoted #).
     match line.find('#') {
         Some(i) => &line[..i],
         None => line,
@@ -271,7 +343,6 @@ fn split_key_value(line: &str) -> Option<(&str, &str)> {
     if rest.is_empty() {
         return None;
     }
-    // Rejoin so values with spaces (ProxyCommand) stay intact.
     let start = line.find(k)? + k.len();
     let v = line[start..].trim();
     if v.is_empty() {
@@ -285,7 +356,6 @@ fn host_pattern_matches(pattern: &str, host: &str) -> bool {
     if pattern == host {
         return true;
     }
-    // Simple glob: `*` and `?` only (enough for common Host aliases).
     let pattern = pattern.as_bytes();
     let host = host.as_bytes();
     match_glob(pattern, host)
@@ -338,53 +408,67 @@ mod tests {
         )
         .unwrap();
         let paths = SshPaths::from_home(home);
+        let imported = import_host_alias("jump", &paths).unwrap();
+        assert_eq!(imported.host, "10.0.0.5");
+        assert_eq!(imported.port, 2222);
+        assert_eq!(imported.user, "tunnel");
+        assert_eq!(imported.private_key_path, "~/.ssh/id_ed25519");
+        let aliases = list_host_aliases(&paths).unwrap();
+        assert!(aliases.iter().any(|a| a == "jump"));
+    }
+
+    #[test]
+    // SSH-05: Include under home followed one level.
+    fn ssh05_include_one_level() {
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        let ssh_dir = home.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let mut included = File::create(ssh_dir.join("extra")).unwrap();
+        writeln!(
+            included,
+            "Host jump\n  HostName 10.0.0.5\n  User tunnel\n  Port 2222\n"
+        )
+        .unwrap();
+        let mut f = File::create(ssh_dir.join("config")).unwrap();
+        writeln!(f, "Include ~/.ssh/extra\n").unwrap();
+        let paths = SshPaths::from_home(home);
+        let imported = import_host_alias("jump", &paths).unwrap();
+        assert_eq!(imported.host, "10.0.0.5");
+        assert_eq!(imported.user, "tunnel");
+    }
+
+    #[test]
+    fn resolve_endpoint_expands_tilde_without_config() {
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        let paths = SshPaths::from_home(home);
         let resolved = resolve_endpoint(
             &SshEndpointInput {
-                host: "jump".into(),
-                port: 22,
-                user: String::new(),
-                identity_file: String::new(),
-                use_ssh_config: true,
+                host: "10.0.0.5".into(),
+                port: 2222,
+                user: "tunnel".into(),
+                private_key_path: "~/.ssh/id_ed25519".into(),
             },
             &paths,
         )
         .unwrap();
-        assert_eq!(resolved.host, "10.0.0.5");
-        assert_eq!(resolved.port, 2222);
-        assert_eq!(resolved.user, "tunnel");
         assert_eq!(
-            resolved.identity_file.as_deref(),
+            resolved.private_key_path.as_deref(),
             Some(home.join(".ssh/id_ed25519").as_path())
         );
     }
 
     #[test]
-    fn connection_fields_override_config_user_and_nondefault_port() {
+    fn missing_alias_is_clear_error() {
         let dir = tempdir().unwrap();
         let home = dir.path();
         let ssh_dir = home.join(".ssh");
         std::fs::create_dir_all(&ssh_dir).unwrap();
-        let mut f = File::create(ssh_dir.join("config")).unwrap();
-        writeln!(
-            f,
-            "Host jump\n  HostName 10.0.0.5\n  User tunnel\n  Port 2222\n"
-        )
-        .unwrap();
+        File::create(ssh_dir.join("config")).unwrap();
         let paths = SshPaths::from_home(home);
-        let resolved = resolve_endpoint(
-            &SshEndpointInput {
-                host: "jump".into(),
-                port: 2200,
-                user: "explicit".into(),
-                identity_file: String::new(),
-                use_ssh_config: true,
-            },
-            &paths,
-        )
-        .unwrap();
-        assert_eq!(resolved.host, "10.0.0.5");
-        assert_eq!(resolved.port, 2200);
-        assert_eq!(resolved.user, "explicit");
+        let err = import_host_alias("nope", &paths).unwrap_err();
+        assert!(err.to_string().contains("No Host 'nope'"));
     }
 
     #[test]

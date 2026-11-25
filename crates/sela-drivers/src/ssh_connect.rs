@@ -1,17 +1,37 @@
 //! Open an SSH tunnel before dialing Postgres/MySQL (M3-1).
 
+use std::fmt;
+use std::net::SocketAddr;
+
 use sela_core::{DbError, Engine, SavedConnection};
 use sela_ssh::{
     open_tunnel, SshAuthSecrets, SshPaths, SshTunnel, TunnelOpen, TunnelRequest, UnknownHostKey,
 };
 
 /// Auth material for [`crate::connect`] / [`crate::connect_with_auth`].
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ConnectAuth {
     pub db_password: String,
     pub ssh: SshAuthSecrets,
     /// When `None`, uses [`SshPaths::system_default`]. Tests inject a temp tree.
     pub ssh_paths: Option<SshPaths>,
+}
+
+impl fmt::Debug for ConnectAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectAuth")
+            .field(
+                "db_password",
+                &if self.db_password.is_empty() {
+                    ""
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("ssh", &self.ssh)
+            .field("ssh_paths", &self.ssh_paths)
+            .finish()
+    }
 }
 
 /// Result of connect when SSH may present a first-seen host key (SSH-18).
@@ -106,33 +126,46 @@ pub(crate) async fn maybe_open_tunnel(
     Ok(Some(open))
 }
 
+/// Prepare a connection for dialing through an SSH local forward.
+///
+/// Keeps the logical DB [`SavedConnection::host`] for TLS SNI / verify-full and
+/// only disables nested SSH. The dial address is the tunnel's loopback listener.
+pub(crate) fn prepare_tunneled_connection(
+    connection: &SavedConnection,
+    local: SocketAddr,
+) -> (SavedConnection, SocketAddr) {
+    let mut via = connection.clone();
+    via.ssh.enabled = false;
+    (via, local)
+}
+
 pub(crate) async fn finish_with_tunnel(
     connection: SavedConnection,
     db_password: &str,
     tunnel: SshTunnel,
 ) -> Result<Box<dyn sela_core::DatabaseSession>, DbError> {
     let local = tunnel.local_addr();
-    let mut via_tunnel = connection.clone();
-    // SSH-09: driver always dials the ephemeral loopback listener.
-    via_tunnel.host = local.ip().to_string();
-    via_tunnel.port = local.port();
-    // Do not recurse into SSH on the rewritten endpoint.
-    via_tunnel.ssh.enabled = false;
+    let (via_tunnel, dial) = prepare_tunneled_connection(&connection, local);
 
     match connection.engine {
         Engine::Postgres => {
             let session = crate::postgres::PostgresSession::connect_with_tunnel(
                 &via_tunnel,
                 db_password,
+                Some(dial),
                 tunnel,
             )
             .await?;
             Ok(Box::new(session))
         }
         Engine::Mysql => {
-            let session =
-                crate::mysql::MysqlSession::connect_with_tunnel(&via_tunnel, db_password, tunnel)
-                    .await?;
+            let session = crate::mysql::MysqlSession::connect_with_tunnel(
+                &via_tunnel,
+                db_password,
+                Some(dial),
+                tunnel,
+            )
+            .await?;
             Ok(Box::new(session))
         }
         Engine::Sqlite => Err(DbError::config("SSH tunnel is not used with SQLite.")),
@@ -151,5 +184,58 @@ pub(crate) fn challenge_from_unknown(
         pending: *unknown,
         connection,
         auth,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sela_core::{SshAuthMethod, SshSettings, TlsMode, TlsSettings};
+
+    #[test]
+    fn connect_auth_debug_redacts_db_and_ssh_secrets() {
+        let auth = ConnectAuth {
+            db_password: "db-secret-value".into(),
+            ssh: SshAuthSecrets {
+                password: Some("ssh-secret-value".into()),
+                passphrase: Some("pp-secret-value".into()),
+            },
+            ssh_paths: None,
+        };
+        let debug = format!("{auth:?}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(!debug.contains("db-secret-value"), "{debug}");
+        assert!(!debug.contains("ssh-secret-value"), "{debug}");
+        assert!(!debug.contains("pp-secret-value"), "{debug}");
+    }
+
+    #[test]
+    // SSH-21: TLS settings and logical host survive the tunnel rewrite; dial is loopback.
+    fn ssh21_tls_settings_forwarded_after_tunnel() {
+        let mut connection = SavedConnection::new(Engine::Postgres);
+        connection.host = "db.example.com".into();
+        connection.port = 5432;
+        connection.tls = TlsSettings {
+            mode: TlsMode::VerifyFull,
+            ca_path: "/tmp/ca.crt".into(),
+            ..TlsSettings::default()
+        };
+        connection.ssh = SshSettings {
+            enabled: true,
+            host: "bastion".into(),
+            port: 22,
+            user: "tunnel".into(),
+            auth: SshAuthMethod::Password,
+            private_key_path: String::new(),
+        };
+        let local: SocketAddr = "127.0.0.1:45678".parse().unwrap();
+        let (via, dial) = prepare_tunneled_connection(&connection, local);
+        assert_eq!(via.host, "db.example.com");
+        assert_eq!(via.port, 5432);
+        assert_eq!(via.tls.mode, TlsMode::VerifyFull);
+        assert_eq!(via.tls.ca_path, "/tmp/ca.crt");
+        assert!(!via.ssh.enabled);
+        assert_eq!(dial.ip().to_string(), "127.0.0.1");
+        assert_eq!(dial.port(), 45678);
     }
 }

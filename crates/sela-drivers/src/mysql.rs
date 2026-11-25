@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,15 +23,18 @@ pub struct MysqlSession {
 
 impl MysqlSession {
     pub async fn connect(connection: &SavedConnection, password: &str) -> Result<Self, DbError> {
-        Self::connect_with_tunnel(connection, password, None).await
+        Self::connect_with_tunnel(connection, password, None, None).await
     }
 
+    /// When `dial` is set (SSH tunnel), TCP goes to loopback while
+    /// [`SavedConnection::host`] is used for TLS SNI / hostname verification.
     pub(crate) async fn connect_with_tunnel(
         connection: &SavedConnection,
         password: &str,
+        dial: Option<SocketAddr>,
         ssh_tunnel: impl Into<Option<sela_ssh::SshTunnel>>,
     ) -> Result<Self, DbError> {
-        let options = MySqlConnectOptions::new()
+        let mut options = MySqlConnectOptions::new()
             .host(connection.host.trim())
             .port(connection.port)
             .username(connection.username.trim())
@@ -43,6 +47,13 @@ impl MysqlSession {
             // true). Required so same-value UPDATE still reports 1 for the
             // change-plan exact-1-row guard — see change_exec.rs.
             .found_rows(true);
+        if let Some(addr) = dial {
+            let logical_host = connection.host.trim().to_string();
+            options = options
+                .host(&addr.ip().to_string())
+                .port(addr.port())
+                .tls_sni_servername(&logical_host);
+        }
         let options = crate::tls::apply_mysql_tls(options, &connection.tls)?;
         let pool = Self::pool_with_safe_mode(options, connection.safe_mode).await?;
         Ok(Self {

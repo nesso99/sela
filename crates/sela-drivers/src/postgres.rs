@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,12 +23,15 @@ pub struct PostgresSession {
 
 impl PostgresSession {
     pub async fn connect(connection: &SavedConnection, password: &str) -> Result<Self, DbError> {
-        Self::connect_with_tunnel(connection, password, None).await
+        Self::connect_with_tunnel(connection, password, None, None).await
     }
 
+    /// When `dial` is set (SSH tunnel), connect to that loopback address while
+    /// keeping [`SavedConnection::host`] for TLS SNI / verify-full (via `hostaddr`).
     pub(crate) async fn connect_with_tunnel(
         connection: &SavedConnection,
         password: &str,
+        dial: Option<SocketAddr>,
         ssh_tunnel: impl Into<Option<sela_ssh::SshTunnel>>,
     ) -> Result<Self, DbError> {
         let mut options = PgConnectOptions::new()
@@ -36,6 +40,9 @@ impl PostgresSession {
             .username(connection.username.trim())
             .password(password)
             .database(connection.database.trim());
+        if let Some(addr) = dial {
+            options = options.hostaddr(addr.ip()).port(addr.port());
+        }
         if connection.safe_mode == SafeMode::ReadOnly {
             // Server-side guard for M2-4 Read-only (blocks nextval, DML, etc.).
             options = options.options([("default_transaction_read_only", "on")]);

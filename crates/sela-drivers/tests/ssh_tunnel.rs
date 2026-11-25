@@ -111,8 +111,7 @@ fn password_ssh(env: &SshEnv) -> SshSettings {
         port: env.port,
         user: env.user.clone(),
         auth: SshAuthMethod::Password,
-        identity_file: String::new(),
-        use_ssh_config: false,
+        private_key_path: String::new(),
     }
 }
 
@@ -123,12 +122,11 @@ fn key_ssh(env: &SshEnv, encrypted: bool) -> SshSettings {
         port: env.port,
         user: env.user.clone(),
         auth: SshAuthMethod::PrivateKey,
-        identity_file: if encrypted {
+        private_key_path: if encrypted {
             env.key_encrypted.display().to_string()
         } else {
             env.key.display().to_string()
         },
-        use_ssh_config: false,
     }
 }
 
@@ -201,10 +199,17 @@ async fn ssh03_private_key_with_passphrase() {
     // Wrong passphrase → SSH auth, not DB auth.
     let bad = connect_with_auth(&conn, auth_key(&env, Some("wrong-passphrase".into()))).await;
     match bad {
-        Err(err) => assert!(
-            matches!(err, DbError::Ssh { .. }),
-            "wrong passphrase must be DbError::Ssh, got {err:?}"
-        ),
+        Err(err) => {
+            assert!(
+                matches!(err, DbError::Ssh { .. }),
+                "wrong passphrase must be DbError::Ssh, got {err:?}"
+            );
+            assert!(
+                err.to_string()
+                    .contains("SSH: could not unlock the private key."),
+                "SSH-03 copy, got {err}"
+            );
+        }
         Ok(_) => panic!("wrong passphrase must fail"),
     }
 
@@ -252,7 +257,7 @@ async fn ssh05_ssh_config_host_alias() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
-    // Write a temp config under the injectable home (already used for known_hosts).
+    // Explicit Import fills resolved fields into saved JSON (final SSH-05).
     let ssh_dir = env.home.join(".ssh");
     std::fs::create_dir_all(&ssh_dir).ok();
     let config_path = ssh_dir.join("config");
@@ -269,22 +274,22 @@ async fn ssh05_ssh_config_host_alias() {
     .unwrap();
     let mut paths = SshPaths::from_home(&env.home).with_known_hosts(env.known_hosts.clone());
     paths.config = Some(config_path);
-
+    let imported = sela_ssh::import_host_alias("jump", &paths).expect("import Host jump");
     let ssh = SshSettings {
         enabled: true,
-        host: "jump".into(),
+        host: imported.host,
+        port: imported.port,
+        user: imported.user,
         auth: SshAuthMethod::PrivateKey,
-        use_ssh_config: true,
-        ..SshSettings::default()
+        private_key_path: imported.private_key_path,
     };
-    // Port/user/identity left empty → filled from config.
     let conn = pg_connection(&env, ssh);
     let outcome = connect_with_auth(
         &conn,
         ConnectAuth {
             db_password: env.db_password.clone(),
             ssh: SshAuthSecrets::default(),
-            ssh_paths: Some(paths),
+            ssh_paths: Some(paths.without_config()),
         },
     )
     .await
@@ -358,6 +363,10 @@ async fn ssh08_ssh_errors_distinct_from_db_auth() {
         .await
         .expect_err("bad SSH password");
     assert!(matches!(err, DbError::Ssh { .. }), "got {err:?}");
+    assert!(
+        err.to_string().contains("SSH: authentication failed."),
+        "SSH-08 copy, got {err}"
+    );
 
     // Good tunnel + bad DB password → Auth (or Connection), not Ssh.
     let mut bad_db = auth_password(&env);

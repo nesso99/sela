@@ -12,11 +12,14 @@ pub enum SshError {
     #[error("{0}")]
     Connection(String),
     /// Recorded host key does not match the server (no override).
-    #[error("SSH host key for {host}:{port} does not match known_hosts (line {line}). Connection refused.")]
+    #[error(
+        "SSH host key for {host}:{port} does not match known_hosts. Expected: {expected}. Presented: {presented}."
+    )]
     HostKeyMismatch {
         host: String,
         port: u16,
-        line: usize,
+        expected: String,
+        presented: String,
     },
     /// First-seen host: caller must confirm before the key is written.
     ///
@@ -56,6 +59,11 @@ impl SshError {
         Self::Io(message.into())
     }
 
+    /// Unreachable / timed-out bastion (SSH-08).
+    pub fn could_not_reach(host: &str, port: u16) -> Self {
+        Self::Connection(format!("SSH: could not reach {host}:{port}."))
+    }
+
     /// Map into [`sela_core::DbError::Ssh`] (US-02: distinct from DB auth/connection).
     pub fn into_db_error(self) -> sela_core::DbError {
         sela_core::DbError::ssh(self.to_string())
@@ -85,4 +93,18 @@ pub fn expand_user_path(path: &str, home: Option<&std::path::Path>) -> Result<Pa
         return Ok(home.join(rest));
     }
     Ok(PathBuf::from(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    // SSH-02: `~` in a key path expands against the injectable home.
+    fn expand_tilde_uses_home() {
+        let dir = tempdir().unwrap();
+        let path = expand_user_path("~/.ssh/id_ed25519", Some(dir.path())).unwrap();
+        assert_eq!(path, dir.path().join(".ssh/id_ed25519"));
+    }
 }

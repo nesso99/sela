@@ -1,5 +1,6 @@
 //! SSH authentication: password, private key (+ passphrase), ssh-agent.
 
+use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,12 +13,24 @@ use crate::error::SshError;
 use crate::tunnel::ClientHandler;
 
 /// Secrets supplied by the caller (from the OS keychain). Never logged.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SshAuthSecrets {
     /// Bastion password when [`sela_core::SshAuthMethod::Password`].
     pub password: Option<String>,
     /// Private-key passphrase when the key file is encrypted.
     pub passphrase: Option<String>,
+}
+
+impl fmt::Debug for SshAuthSecrets {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SshAuthSecrets")
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// Which auth method to attempt.
@@ -42,7 +55,7 @@ pub(crate) async fn authenticate(
                 .await
                 .map_err(map_auth_transport)?;
             if !result.success() {
-                return Err(SshError::auth("SSH password authentication failed"));
+                return Err(SshError::auth("SSH: authentication failed."));
             }
             Ok(())
         }
@@ -60,22 +73,19 @@ async fn authenticate_private_key(
     passphrase: Option<&str>,
 ) -> Result<(), SshError> {
     if !path.is_file() {
-        return Err(SshError::auth(format!(
-            "SSH identity file not found: {}",
-            path.display()
-        )));
+        return Err(SshError::auth("SSH: could not read the private key."));
     }
     let key = load_secret_key(path, passphrase).map_err(|err| {
-        // Wrong passphrase and unreadable key both surface as auth/config — never
+        // Wrong passphrase and unreadable key both surface as auth — never
         // echo the passphrase.
         let msg = err.to_string();
         if msg.to_ascii_lowercase().contains("password")
             || msg.to_ascii_lowercase().contains("passphrase")
             || msg.to_ascii_lowercase().contains("decrypt")
         {
-            SshError::auth("SSH private key passphrase is wrong or the key could not be decrypted")
+            SshError::auth("SSH: could not unlock the private key.")
         } else {
-            SshError::auth(format!("could not load SSH identity file: {err}"))
+            SshError::auth("SSH: could not read the private key.")
         }
     })?;
     let hash = session
@@ -88,7 +98,7 @@ async fn authenticate_private_key(
         .await
         .map_err(map_auth_transport)?;
     if !result.success() {
-        return Err(SshError::auth("SSH public-key authentication failed"));
+        return Err(SshError::auth("SSH: authentication failed."));
     }
     Ok(())
 }
@@ -99,16 +109,15 @@ async fn authenticate_agent(
 ) -> Result<(), SshError> {
     #[cfg(unix)]
     {
-        let mut agent = AgentClient::connect_env().await.map_err(|err| {
-            SshError::auth(format!(
-                "could not connect to ssh-agent (is SSH_AUTH_SOCK set?): {err}"
-            ))
-        })?;
-        let identities: Vec<PublicKey> = agent.request_identities().await.map_err(|err| {
-            SshError::auth(format!("ssh-agent refused to list identities: {err}"))
-        })?;
+        let mut agent = AgentClient::connect_env()
+            .await
+            .map_err(|_| SshError::auth("SSH: SSH agent is not available."))?;
+        let identities: Vec<PublicKey> = agent
+            .request_identities()
+            .await
+            .map_err(|_| SshError::auth("SSH: SSH agent is not available."))?;
         if identities.is_empty() {
-            return Err(SshError::auth("ssh-agent has no identities"));
+            return Err(SshError::auth("SSH: SSH agent has no identities."));
         }
         let hash: Option<HashAlg> = session
             .best_supported_rsa_hash()
@@ -119,14 +128,12 @@ async fn authenticate_agent(
             let result = session
                 .authenticate_publickey_with(user, identity, hash, &mut agent)
                 .await
-                .map_err(|err| SshError::auth(format!("ssh-agent authentication failed: {err}")))?;
+                .map_err(|_| SshError::auth("SSH: authentication failed."))?;
             if result.success() {
                 return Ok(());
             }
         }
-        Err(SshError::auth(
-            "ssh-agent authentication failed for all identities",
-        ))
+        Err(SshError::auth("SSH: authentication failed."))
     }
     #[cfg(windows)]
     {
@@ -134,9 +141,9 @@ async fn authenticate_agent(
         let identities: Vec<PublicKey> = agent
             .request_identities()
             .await
-            .map_err(|err| SshError::auth(format!("Pageant refused to list identities: {err}")))?;
+            .map_err(|_| SshError::auth("SSH: SSH agent is not available."))?;
         if identities.is_empty() {
-            return Err(SshError::auth("Pageant has no identities"));
+            return Err(SshError::auth("SSH: SSH agent has no identities."));
         }
         let hash: Option<HashAlg> = session
             .best_supported_rsa_hash()
@@ -147,14 +154,12 @@ async fn authenticate_agent(
             let result = session
                 .authenticate_publickey_with(user, identity, hash, &mut agent)
                 .await
-                .map_err(|err| SshError::auth(format!("Pageant authentication failed: {err}")))?;
+                .map_err(|_| SshError::auth("SSH: authentication failed."))?;
             if result.success() {
                 return Ok(());
             }
         }
-        Err(SshError::auth(
-            "Pageant authentication failed for all identities",
-        ))
+        Err(SshError::auth("SSH: authentication failed."))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -166,5 +171,24 @@ async fn authenticate_agent(
 }
 
 fn map_auth_transport(err: russh::Error) -> SshError {
-    SshError::connection(format!("SSH transport error during authentication: {err}"))
+    SshError::connection(format!(
+        "SSH: could not reach bastion during authentication ({err})."
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssh_auth_secrets_debug_redacts_values() {
+        let secrets = SshAuthSecrets {
+            password: Some("super-secret-pw".into()),
+            passphrase: Some("key-passphrase-xyz".into()),
+        };
+        let debug = format!("{secrets:?}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(!debug.contains("super-secret-pw"), "{debug}");
+        assert!(!debug.contains("key-passphrase-xyz"), "{debug}");
+    }
 }
