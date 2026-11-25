@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use sela_core::{
     value_to_copy_cell, CellPos, CellView, CopyCell, QueryPage, ResultWindow, RowState,
-    SelectionRect, SortDirection, SortSpec,
+    SelectionRect, SortDirection, SortSpec, Value,
 };
 
 use super::theme::SelaPalette;
@@ -57,7 +57,8 @@ pub struct OverlayPaintRow {
     #[allow(dead_code)]
     pub insert_id: u64,
     pub marker: RowMarker,
-    pub values: BTreeMap<String, String>,
+    /// Typed pending values (not display strings). Absent key = unset.
+    pub raw: BTreeMap<String, Value>,
     /// `Some(server_row)` → paint under that server row; `None` → after the page.
     pub after_server_row: Option<usize>,
     pub required_unset: Vec<String>,
@@ -117,6 +118,10 @@ impl GridDelegate {
 
     /// Copy cells for a visual (screen) row index — resolves overlays via
     /// [`Self::visual_rows`] so mid-page duplicates do not shift server rows.
+    ///
+    /// Overlay cells use typed [`Value`]s via [`value_to_copy_cell`]. An unset
+    /// insert column (absent from [`OverlayPaintRow::raw`]) is
+    /// [`CopyCell::NotLoaded`] so formats refuse inventing NULL/`''`.
     pub(crate) fn copy_row_cells(&self, visual_row: usize) -> Option<Vec<CopyCell>> {
         let col_count = self.result.columns().len().max(1);
         match self.visual_rows().get(visual_row).copied()? {
@@ -130,22 +135,9 @@ impl GridDelegate {
                     self.result
                         .columns()
                         .iter()
-                        .map(|col| match overlay.values.get(&col.name) {
-                            // Unset insert cells are absent from the overlay map.
-                            None => CopyCell::Null,
-                            Some(display) => {
-                                if display.is_empty() {
-                                    // Distinguish '' from NULL via paint? Display of
-                                    // Null is typically empty too — treat stored
-                                    // empty display as text '' for TSV copy.
-                                    CopyCell::Value(String::new(), sela_core::CopyScalarKind::Text)
-                                } else {
-                                    CopyCell::Value(
-                                        display.clone(),
-                                        sela_core::CopyScalarKind::Text,
-                                    )
-                                }
-                            }
+                        .map(|col| match overlay.raw.get(&col.name) {
+                            None => CopyCell::NotLoaded,
+                            Some(value) => value_to_copy_cell(value),
                         })
                         .collect(),
                 )
@@ -164,16 +156,15 @@ impl GridDelegate {
     ) -> impl IntoElement {
         let overlay = self.edit_paint.overlays.get(overlay_ix);
         let marker = overlay.map(|o| o.marker).unwrap_or(RowMarker::Inserted);
-        let display = overlay.and_then(|o| o.values.get(col_name).cloned());
+        let value = overlay.and_then(|o| o.raw.get(col_name));
         let required = overlay.is_some_and(|o| o.required_unset.iter().any(|c| c == col_name));
         let generated = overlay.is_some_and(|o| o.generated.iter().any(|c| c == col_name));
         let (nullish, text) = if generated {
             (true, SharedString::from("Filled on commit."))
-        } else if required && display.is_none() {
+        } else if required && value.is_none() {
             (true, SharedString::from("Required"))
-        } else if let Some(d) = display {
-            let is_null = d == "NULL";
-            (is_null, SharedString::from(d))
+        } else if let Some(v) = value {
+            (v.is_null(), SharedString::from(v.display().into_owned()))
         } else {
             (true, SharedString::from(""))
         };
@@ -890,7 +881,8 @@ impl TableDelegate for GridDelegate {
                 self.edit_paint
                     .overlays
                     .get(overlay_ix)
-                    .and_then(|o| o.values.get(col_name).cloned())
+                    .and_then(|o| o.raw.get(col_name))
+                    .map(|v| v.display().into_owned())
                     .unwrap_or_default()
             }
             VisualRowRef::Server { row_ix: server_row } => match self.result.row(server_row) {
@@ -973,7 +965,9 @@ pub(crate) fn cell_in_selection(
 mod tests {
     use std::time::Duration;
 
-    use sela_core::{ColumnMeta, QueryPage, Value};
+    use sela_core::{
+        format_selection, ColumnMeta, CopyError, CopyFormat, Dialect, QueryPage, Value,
+    };
 
     use super::*;
 
@@ -1198,13 +1192,12 @@ mod tests {
         // not server row 2 (#79 regression from page-index copy).
         let mut grid = GridDelegate::empty();
         grid.show_page(multi_page());
-        let mut values = BTreeMap::new();
-        values.insert("id".into(), String::new());
-        values.insert("title".into(), "b".into());
+        let mut raw = BTreeMap::new();
+        raw.insert("title".into(), Value::Text("b".into()));
         grid.edit_paint.overlays.push(OverlayPaintRow {
             insert_id: 1,
             marker: RowMarker::Duplicated,
-            values,
+            raw,
             after_server_row: Some(1),
             required_unset: vec!["id".into()],
             generated: Vec::new(),
@@ -1215,12 +1208,154 @@ mod tests {
         // Title column matches the duplicated source (server row 1 → "b").
         assert_eq!(screen_2[1], server_1[1]);
         assert_eq!(screen_2[1], value_to_copy_cell(&Value::Text("b".into())));
+        // Unset PK is NotLoaded, not NULL / ''.
+        assert!(matches!(screen_2[0], CopyCell::NotLoaded));
         // Screen row 3 is still server row 2 ("c"), not shifted off the page.
         let screen_3 = grid.copy_row_cells(3).expect("last server");
         assert_eq!(screen_3[1], value_to_copy_cell(&Value::Text("c".into())));
         // Select-all / copy_rect clamp to visual count (includes the overlay).
         grid.select_all_cells();
         assert_eq!(grid.selection_rect.expect("all").normalized(), (0, 3, 0, 1));
+    }
+
+    fn books_overlay_page() -> QueryPage {
+        QueryPage {
+            columns: vec![
+                ColumnMeta {
+                    name: "id".into(),
+                    type_name: "INTEGER".into(),
+                },
+                ColumnMeta {
+                    name: "note".into(),
+                    type_name: "TEXT".into(),
+                },
+                ColumnMeta {
+                    name: "pages".into(),
+                    type_name: "INTEGER".into(),
+                },
+            ],
+            rows: vec![vec![Value::Int(1), Value::Null, Value::Int(310)]],
+            duration: Duration::from_millis(0),
+        }
+    }
+
+    #[test]
+    fn copy_overlay_null_and_int_keep_types_in_insert_and_json() {
+        // Display-string copy turned NULL→'NULL' and 310→'310' (#91 review).
+        let mut grid = GridDelegate::empty();
+        grid.show_page(books_overlay_page());
+        let mut raw = BTreeMap::new();
+        raw.insert("note".into(), Value::Null);
+        raw.insert("pages".into(), Value::Int(310));
+        grid.edit_paint.overlays.push(OverlayPaintRow {
+            insert_id: 1,
+            marker: RowMarker::Duplicated,
+            raw,
+            after_server_row: Some(0),
+            required_unset: vec!["id".into()],
+            generated: Vec::new(),
+        });
+        // Visual: [server0, dup] — copy only the duplicate (screen row 1).
+        let cells = grid.copy_row_cells(1).expect("dup");
+        assert_eq!(cells[1], CopyCell::Null);
+        assert_eq!(cells[2], value_to_copy_cell(&Value::Int(310)));
+        // Skip unset id so INSERT can succeed (NotLoaded refuses the whole format).
+        let body = vec![vec![cells[1].clone(), cells[2].clone()]];
+        let cols = vec!["note".to_string(), "pages".to_string()];
+        let insert = format_selection(
+            &cols,
+            &body,
+            CopyFormat::Insert,
+            Some("public.books"),
+            Dialect::Postgres,
+        )
+        .expect("insert");
+        assert!(
+            insert.contains("NULL") && !insert.contains("'NULL'"),
+            "NULL must be unquoted: {insert}"
+        );
+        assert!(
+            insert.contains("310") && !insert.contains("'310'"),
+            "Int must be unquoted: {insert}"
+        );
+        let json = format_selection(&cols, &body, CopyFormat::Json, None, Dialect::Postgres)
+            .expect("json");
+        assert!(json.contains("null"), "JSON null: {json}");
+        assert!(json.contains("310"), "JSON number: {json}");
+        assert!(
+            !json.contains("\"NULL\""),
+            "must not stringify NULL: {json}"
+        );
+    }
+
+    #[test]
+    fn copy_overlay_empty_string_distinct_from_null() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(books_overlay_page());
+        let mut raw = BTreeMap::new();
+        raw.insert("note".into(), Value::text(""));
+        raw.insert("pages".into(), Value::Int(1));
+        grid.edit_paint.overlays.push(OverlayPaintRow {
+            insert_id: 1,
+            marker: RowMarker::Duplicated,
+            raw,
+            after_server_row: Some(0),
+            required_unset: Vec::new(),
+            generated: Vec::new(),
+        });
+        let cells = grid.copy_row_cells(1).expect("dup");
+        assert_ne!(cells[1], CopyCell::Null);
+        assert_eq!(cells[1], value_to_copy_cell(&Value::text("")));
+        let body = vec![vec![cells[1].clone()]];
+        let cols = vec!["note".to_string()];
+        let insert = format_selection(
+            &cols,
+            &body,
+            CopyFormat::Insert,
+            Some("public.books"),
+            Dialect::Postgres,
+        )
+        .expect("insert");
+        assert!(
+            insert.contains("''"),
+            "empty string must be quoted SQL '': {insert}"
+        );
+        assert!(
+            !insert.contains("NULL"),
+            "'' must not become NULL: {insert}"
+        );
+    }
+
+    #[test]
+    fn copy_overlay_unset_cell_is_not_loaded() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(books_overlay_page());
+        // Blank insert: every column unset.
+        grid.edit_paint.overlays.push(OverlayPaintRow {
+            insert_id: 1,
+            marker: RowMarker::Inserted,
+            raw: BTreeMap::new(),
+            after_server_row: None,
+            required_unset: vec!["id".into()],
+            generated: Vec::new(),
+        });
+        let cells = grid.copy_row_cells(1).expect("insert overlay");
+        assert!(cells.iter().all(|c| matches!(c, CopyCell::NotLoaded)));
+        let headers: Vec<String> = grid
+            .result
+            .columns()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let err = format_selection(
+            &headers,
+            &[cells],
+            CopyFormat::Insert,
+            Some("public.books"),
+            Dialect::Postgres,
+        )
+        .expect_err("unset must refuse INSERT");
+        assert!(matches!(err, CopyError::NotLoaded { .. }));
     }
 
     #[test]

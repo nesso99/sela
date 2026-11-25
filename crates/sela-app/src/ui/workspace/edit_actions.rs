@@ -861,13 +861,13 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
     let overlay_anchors = resolve_overlay_anchors(&edit.overlay, &page_pks);
     for (overlay, after_server_row) in edit.overlay.iter().zip(overlay_anchors) {
         let marker = edit.row_marker_for_overlay(overlay.insert_id);
-        let mut values = BTreeMap::new();
+        let mut raw = BTreeMap::new();
         if let Some(cs) = &edit.changeset {
             for change in cs.changes() {
                 if let sela_core::RowChange::Insert { id, values: vals } = change {
                     if *id == overlay.insert_id {
                         for (k, v) in vals {
-                            values.insert(k.clone(), v.display().into_owned());
+                            raw.insert(k.clone(), v.clone());
                         }
                     }
                 }
@@ -876,7 +876,7 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
         paint.overlays.push(OverlayPaintRow {
             insert_id: overlay.insert_id,
             marker,
-            values,
+            raw,
             after_server_row,
             required_unset: edit
                 .changeset

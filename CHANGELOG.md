@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cell editor ghost NULL control at the right edge of the inline editor (#76).
 - Accepting an empty text editor opened on NULL stores `''` and marks the cell dirty; empty accept on an unset insert cell leaves the column out so DEFAULT applies (#77).
 - Space opens the cell inspect popover (column, type, full `Value::display()`); Space inside the cell editor inserts a space character (`NoAction` in the `CellEditor` context) (#78).
-- Duplicate overlay inserts directly under the source row, keyed by source primary key so paging/filtering never drops it; copy/select/touch use visual row indices (#79).
+- Duplicate overlay inserts directly under the source row, keyed by source primary key so paging/filtering never drops it; copy/select/touch use visual row indices (#79). Overlay copy keeps typed `Value`s (NULL/Int/`''`/unset) instead of display strings, so Copy as INSERT/JSON stay correct.
 - Dirty-triangle and gutter-mark tooltips (`Edited · was …`, `Edited row`, `New row`, `Duplicated row`, `Deleted row`) (#80).
 - Commit success status `Committed · N statements · … ms` is kept after the post-commit page reload; the reload flag clears on cancel, Executed, `Ok(None)`, and a new load (#81).
 - Inspect popover closes on selection change, edit, reload, commit, or pane switch; unset cells show `Unset` instead of `…`.
