@@ -62,6 +62,13 @@ impl Engine {
             Self::Sqlite => Dialect::Sqlite,
         }
     }
+
+    /// True when the connection dialog has a password field for this engine.
+    ///
+    /// SQLite has no password; Duplicate must not set `needs_password` for it.
+    pub fn uses_password(self) -> bool {
+        matches!(self, Self::Postgres | Self::Mysql)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

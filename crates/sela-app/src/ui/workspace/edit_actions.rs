@@ -485,20 +485,60 @@ impl Workspace {
                 (value, None)
             }
         };
+        let row_h = f32::from(sela_config::content_row_height(self.font_size));
+        let (anchor_left, anchor_top) = {
+            let table = view.grid.read(cx);
+            let mut widths = Vec::with_capacity(col);
+            for c in 0..col {
+                let w = table.col_width(c).map(|p| p.as_f32()).unwrap_or(140.0);
+                widths.push(w);
+            }
+            let scroll_x = table.horizontal_scroll_handle.offset().x.as_f32();
+            let scroll_y = table
+                .vertical_scroll_handle
+                .0
+                .borrow()
+                .base_handle
+                .offset()
+                .y
+                .as_f32();
+            // DataTable row header is `w_3()` (0.75rem ≈ 12px); header band is one row.
+            cell_inspect_anchor(
+                row,
+                col,
+                &widths,
+                CellInspectLayout {
+                    row_height: row_h,
+                    header_height: row_h,
+                    row_header_width: 12.0,
+                    scroll_x,
+                    scroll_y,
+                },
+            )
+        };
         let inspect = match dirty_display {
             Some(display) => CellInspect {
                 column,
                 type_name,
                 body: display,
                 decode_error: false,
+                anchor_left,
+                anchor_top,
             },
             None => match value.as_ref() {
-                Some(v) => cell_inspect_for_value(&column, &type_name, v),
+                Some(v) => {
+                    let mut inspect = cell_inspect_for_value(&column, &type_name, v);
+                    inspect.anchor_left = anchor_left;
+                    inspect.anchor_top = anchor_top;
+                    inspect
+                }
                 None => CellInspect {
                     column,
                     type_name,
                     body: inspect_body_for_absent_value().into(),
                     decode_error: false,
+                    anchor_left,
+                    anchor_top,
                 },
             },
         };
@@ -786,7 +826,35 @@ pub(crate) fn cell_inspect_for_value(column: &str, type_name: &str, value: &Valu
         type_name: type_name.to_string(),
         body: value.display().into_owned(),
         decode_error: value.is_decode_error(),
+        anchor_left: 8.0,
+        anchor_top: 8.0,
     }
+}
+
+/// Grid metrics used to place the Space inspect popover.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CellInspectLayout {
+    pub row_height: f32,
+    pub header_height: f32,
+    pub row_header_width: f32,
+    /// Table scroll offsets (negative when scrolled).
+    pub scroll_x: f32,
+    pub scroll_y: f32,
+}
+
+/// Local origin for the Space inspect popover relative to the results area.
+pub(crate) fn cell_inspect_anchor(
+    row: usize,
+    col: usize,
+    col_widths: &[f32],
+    layout: CellInspectLayout,
+) -> (f32, f32) {
+    let mut left = layout.row_header_width + layout.scroll_x;
+    for w in col_widths.iter().take(col) {
+        left += *w;
+    }
+    let top = layout.header_height + row as f32 * layout.row_height + layout.scroll_y;
+    (left.max(8.0), top.max(8.0))
 }
 
 fn extract_pk(
@@ -904,7 +972,7 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
 
 #[cfg(test)]
 mod tests {
-    use super::cell_inspect_for_value;
+    use super::{cell_inspect_anchor, cell_inspect_for_value, CellInspectLayout};
     use sela_core::Value;
 
     #[test]
@@ -930,5 +998,47 @@ mod tests {
         let inspect = cell_inspect_for_value("payload", "jsonb", &value);
         assert!(inspect.decode_error);
         assert!(inspect.body.contains("decode error"));
+    }
+
+    #[test]
+    fn inspect_anchor_follows_cell_not_grid_origin() {
+        let widths = [140.0_f32, 200.0, 160.0];
+        let base = CellInspectLayout {
+            row_height: 26.0,
+            header_height: 26.0,
+            row_header_width: 12.0,
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+        };
+        // Row 2, col 1: past row header + first column, below header + two rows.
+        let (left, top) = cell_inspect_anchor(2, 1, &widths, base);
+        assert!((left - (12.0 + 140.0)).abs() < f32::EPSILON);
+        assert!((top - (26.0 + 2.0 * 26.0)).abs() < f32::EPSILON);
+        // Scrolled down/right: offsets are negative.
+        let (left2, top2) = cell_inspect_anchor(
+            2,
+            1,
+            &widths,
+            CellInspectLayout {
+                scroll_x: -40.0,
+                scroll_y: -20.0,
+                ..base
+            },
+        );
+        assert!((left2 - (12.0 + 140.0 - 40.0)).abs() < f32::EPSILON);
+        assert!((top2 - (26.0 + 52.0 - 20.0)).abs() < f32::EPSILON);
+        // Clamp keeps a minimum inset when the cell is scrolled off the top-left.
+        let (left3, top3) = cell_inspect_anchor(
+            0,
+            0,
+            &widths,
+            CellInspectLayout {
+                scroll_x: -100.0,
+                scroll_y: -100.0,
+                ..base
+            },
+        );
+        assert!((left3 - 8.0).abs() < f32::EPSILON);
+        assert!((top3 - 8.0).abs() < f32::EPSILON);
     }
 }
