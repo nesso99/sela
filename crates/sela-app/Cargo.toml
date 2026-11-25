@@ -20,6 +20,7 @@ rust_decimal = { workspace = true }
 sela-config = { workspace = true }
 sela-core = { workspace = true }
 sela-drivers = { workspace = true }
+sela-ssh = { workspace = true }
 serde_json = { workspace = true }
 tokio-util = { workspace = true }
 uuid = { workspace = true }

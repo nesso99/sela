@@ -32,7 +32,10 @@ pub use config::{
     import_host_alias, list_host_aliases, resolve_endpoint, ImportedSshFields, ResolvedSshTarget,
     SshConfigFile, SshEndpointInput,
 };
-pub use error::{expand_user_path, SshError};
+pub use error::{
+    db_error_is_host_key_mismatch, expand_user_path, host_key_changed_body, host_key_changed_title,
+    unknown_host_key_body, unknown_host_key_title, SshError, HOST_KEY_MISMATCH_VENDOR,
+};
 pub use host_key::{check_host_key, fingerprint_sha256, learn_host_key, HostKeyCheck};
 pub use paths::SshPaths;
 pub use tunnel::{
