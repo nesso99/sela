@@ -22,6 +22,21 @@ cargo test -p sela-config
 
 OS prerequisites (C toolchain, Vulkan/Metal, SQLite headers): [installation.md](../user/installation.md).
 
+## Headless UI tests (#93)
+
+`sela-app` includes GPUI UI integration tests under `src/ui/ui_tests/`. They use
+`#[gpui_kit::test]` / `TestAppContext` (dev-dependency feature `gpui-kit/test-support`)
+and do not need a physical display.
+
+```bash
+./scripts/ui-tests.sh
+```
+
+Linux CI should install `xvfb` (script uses `xvfb-run -a` when available) plus the
+same GPUI packages as the `test` job. Optional: `mesa-vulkan-drivers` / lavapipe
+if a test paints. Do not put secrets or connection URLs in assertions that print
+on failure.
+
 ## Docker Compose databases
 
 ```bash

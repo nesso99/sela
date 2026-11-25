@@ -6,6 +6,9 @@ pub(crate) mod grid;
 mod theme;
 mod workspace;
 
+#[cfg(test)]
+mod ui_tests;
+
 use std::rc::Rc;
 
 use gpui_kit::prelude::*;
@@ -97,225 +100,7 @@ pub fn run() {
             gpui_kit::init(cx);
             // Themes are installed once the window exists (needs appearance for System).
             // Until then stay on the kit dark default so the first frame is never light-flashy.
-            cx.bind_keys([
-                KeyBinding::new("cmd-.", CancelQuery, None),
-                KeyBinding::new("ctrl-.", CancelQuery, None),
-                KeyBinding::new("cmd-t", NewQueryTab, None),
-                KeyBinding::new("ctrl-t", NewQueryTab, None),
-                KeyBinding::new("cmd-w", CloseTab, None),
-                KeyBinding::new("ctrl-w", CloseTab, None),
-                KeyBinding::new("cmd-1", ActivateTab(1), None),
-                KeyBinding::new("ctrl-1", ActivateTab(1), None),
-                KeyBinding::new("cmd-2", ActivateTab(2), None),
-                KeyBinding::new("ctrl-2", ActivateTab(2), None),
-                KeyBinding::new("cmd-3", ActivateTab(3), None),
-                KeyBinding::new("ctrl-3", ActivateTab(3), None),
-                KeyBinding::new("cmd-4", ActivateTab(4), None),
-                KeyBinding::new("ctrl-4", ActivateTab(4), None),
-                KeyBinding::new("cmd-5", ActivateTab(5), None),
-                KeyBinding::new("ctrl-5", ActivateTab(5), None),
-                KeyBinding::new("cmd-6", ActivateTab(6), None),
-                KeyBinding::new("ctrl-6", ActivateTab(6), None),
-                KeyBinding::new("cmd-7", ActivateTab(7), None),
-                KeyBinding::new("ctrl-7", ActivateTab(7), None),
-                KeyBinding::new("cmd-8", ActivateTab(8), None),
-                KeyBinding::new("ctrl-8", ActivateTab(8), None),
-                KeyBinding::new("cmd-9", ActivateTab(9), None),
-                KeyBinding::new("ctrl-9", ActivateTab(9), None),
-                // Data ↔ Structure for the open table tab (US-11 / M1-6).
-                KeyBinding::new("cmd-shift-[", ShowTableData, None),
-                KeyBinding::new("ctrl-shift-[", ShowTableData, None),
-                KeyBinding::new("cmd-shift-]", ShowTableStructure, None),
-                KeyBinding::new("ctrl-shift-]", ShowTableStructure, None),
-            ]);
-            // Quit: ⌘Q on macOS, Ctrl+Q elsewhere. Global so it works in the
-            // SQL editor and dialogs.
-            bind_secondary(cx, "secondary-q", Box::new(Quit), None);
-            // Font size (#39): global, including inside text fields.
-            // Spec: secondary-= and secondary-+ (secondary-shift-=).
-            bind_secondary(cx, "secondary-=", Box::new(IncreaseFontSize), None);
-            bind_secondary(cx, "secondary-+", Box::new(IncreaseFontSize), None);
-            bind_secondary(cx, "secondary-shift-=", Box::new(IncreaseFontSize), None);
-            bind_secondary(cx, "secondary--", Box::new(DecreaseFontSize), None);
-            bind_secondary(cx, "secondary-0", Box::new(ResetFontSize), None);
-            // Platform secondary modifier (⌘ on macOS, Ctrl elsewhere) — M1-3 filter bar.
-            bind_secondary(cx, "secondary-f", Box::new(ToggleFilterBar), None);
-            bind_secondary(cx, "secondary-enter", Box::new(RunQuery), Some("SqlEditor"));
-            bind_secondary(
-                cx,
-                "secondary-shift-enter",
-                Box::new(RunAllSql),
-                Some("SqlEditor"),
-            );
-            bind_secondary(cx, "secondary-f", Box::new(FindInSql), Some("SqlEditor"));
-            bind_secondary(cx, "secondary-g", Box::new(FindNext), Some("SqlEditor"));
-            bind_secondary(
-                cx,
-                "secondary-shift-g",
-                Box::new(FindPrevious),
-                Some("SqlEditor"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-shift-e",
-                Box::new(ToggleEditor),
-                Some("SqlEditor"),
-            );
-            // Filter-bar-only chords (UX §10). `FilterBar > Input` overrides the
-            // Input widget's cmd/ctrl-backspace so the row is removed instead.
-            bind_secondary(
-                cx,
-                "secondary-shift-enter",
-                Box::new(InsertFilterRow),
-                Some("FilterBar"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-backspace",
-                Box::new(RemoveFilterRow),
-                Some("FilterBar"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-backspace",
-                Box::new(RemoveFilterRow),
-                Some("FilterBar > Input"),
-            );
-            bind_secondary(cx, "escape", Box::new(EscapeFilterBar), Some("FilterBar"));
-            // Query history panel (M1-5). `secondary-h` stays free (Hide on macOS).
-            bind_secondary(cx, "secondary-shift-h", Box::new(ToggleHistory), None);
-            bind_secondary(
-                cx,
-                "secondary-f",
-                Box::new(FocusHistorySearch),
-                Some("HistoryPanel"),
-            );
-            bind_secondary(cx, "up", Box::new(HistorySelectUp), Some("HistoryPanel"));
-            bind_secondary(
-                cx,
-                "down",
-                Box::new(HistorySelectDown),
-                Some("HistoryPanel"),
-            );
-            bind_secondary(
-                cx,
-                "up",
-                Box::new(HistorySelectUp),
-                Some("HistoryPanel > Input"),
-            );
-            bind_secondary(
-                cx,
-                "down",
-                Box::new(HistorySelectDown),
-                Some("HistoryPanel > Input"),
-            );
-            bind_secondary(cx, "enter", Box::new(HistoryOpen), Some("HistoryPanel"));
-            bind_secondary(
-                cx,
-                "secondary-enter",
-                Box::new(HistoryInsert),
-                Some("HistoryPanel"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-c",
-                Box::new(HistoryCopy),
-                Some("HistoryPanel"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-shift-enter",
-                Box::new(HistoryRerun),
-                Some("HistoryPanel"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-backspace",
-                Box::new(HistoryDelete),
-                Some("HistoryPanel"),
-            );
-            bind_secondary(cx, "escape", Box::new(EscapeHistory), Some("HistoryPanel"));
-            bind_secondary(
-                cx,
-                "escape",
-                Box::new(EscapeHistory),
-                Some("HistoryPanel > Input"),
-            );
-            // Grid copy (US-14). Scoped to DataTable so text fields keep clipboard chords.
-            bind_secondary(
-                cx,
-                "secondary-c",
-                Box::new(CopySelection),
-                Some("DataTable"),
-            );
-            // Select all cells in the result grid (Ctrl/Cmd+A).
-            cx.bind_keys([
-                KeyBinding::new("cmd-a", SelectAllGrid, Some("DataTable")),
-                KeyBinding::new("ctrl-a", SelectAllGrid, Some("DataTable")),
-                // DataTable only binds plain arrows; Shift+arrow must be explicit
-                // or the keystroke never moves the cell / never extends the range.
-                KeyBinding::new("shift-up", ExtendGridSelectionUp, Some("DataTable")),
-                KeyBinding::new("shift-down", ExtendGridSelectionDown, Some("DataTable")),
-                KeyBinding::new("shift-left", ExtendGridSelectionLeft, Some("DataTable")),
-                KeyBinding::new("shift-right", ExtendGridSelectionRight, Some("DataTable")),
-            ]);
-            // Result strip Prev/Next when the strip itself is focused.
-            bind_secondary(cx, "left", Box::new(ResultStripPrev), Some("ResultStrip"));
-            bind_secondary(cx, "right", Box::new(ResultStripNext), Some("ResultStrip"));
-            // M2-1 / M2-3 grid editing (DataTable context; not SqlEditor).
-            bind_secondary(cx, "enter", Box::new(EditCell), Some("DataTable"));
-            // Space inspects; Enter edits (01-main-window.md / 07-grid-editing.md).
-            // CellEditor NoAction lets Space reach the Input as a character on
-            // Linux, where key bindings win over character input (#78).
-            cx.bind_keys([
-                KeyBinding::new("space", InspectCell, Some(DATA_TABLE_KEY_CONTEXT)),
-                KeyBinding::new("space", NoAction, Some(CELL_EDITOR_KEY_CONTEXT)),
-            ]);
-            bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("DataTable"));
-            bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("CellEditor"));
-            bind_secondary(cx, "enter", Box::new(AcceptCellEditor), Some("CellEditor"));
-            bind_secondary(
-                cx,
-                "secondary-enter",
-                Box::new(AcceptCellEditor),
-                Some("CellEditor"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-i",
-                Box::new(InsertEditRow),
-                Some("DataTable"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-d",
-                Box::new(DuplicateEditRow),
-                Some("DataTable"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-backspace",
-                Box::new(DeleteEditRow),
-                Some("DataTable"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-shift-p",
-                Box::new(PreviewChanges),
-                Some("DataTable"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-s",
-                Box::new(CommitChanges),
-                Some("DataTable"),
-            );
-            bind_secondary(
-                cx,
-                "secondary-shift-z",
-                Box::new(DiscardChanges),
-                Some("DataTable"),
-            );
+            install_sela_keybindings(cx);
             install_menus(cx);
             // Route Quit through the workspace (confirm + clean shutdown). With
             // no open window (macOS after the last close), quit immediately.
@@ -362,6 +147,229 @@ pub fn run() {
             .expect("failed to open the Sela window");
             cx.set_global(QuitWorkspace(workspace.downgrade()));
         });
+}
+
+/// Keymap used by the app window and by headless UI tests.
+pub(crate) fn install_sela_keybindings(cx: &mut gpui_kit::App) {
+    cx.bind_keys([
+        KeyBinding::new("cmd-.", CancelQuery, None),
+        KeyBinding::new("ctrl-.", CancelQuery, None),
+        KeyBinding::new("cmd-t", NewQueryTab, None),
+        KeyBinding::new("ctrl-t", NewQueryTab, None),
+        KeyBinding::new("cmd-w", CloseTab, None),
+        KeyBinding::new("ctrl-w", CloseTab, None),
+        KeyBinding::new("cmd-1", ActivateTab(1), None),
+        KeyBinding::new("ctrl-1", ActivateTab(1), None),
+        KeyBinding::new("cmd-2", ActivateTab(2), None),
+        KeyBinding::new("ctrl-2", ActivateTab(2), None),
+        KeyBinding::new("cmd-3", ActivateTab(3), None),
+        KeyBinding::new("ctrl-3", ActivateTab(3), None),
+        KeyBinding::new("cmd-4", ActivateTab(4), None),
+        KeyBinding::new("ctrl-4", ActivateTab(4), None),
+        KeyBinding::new("cmd-5", ActivateTab(5), None),
+        KeyBinding::new("ctrl-5", ActivateTab(5), None),
+        KeyBinding::new("cmd-6", ActivateTab(6), None),
+        KeyBinding::new("ctrl-6", ActivateTab(6), None),
+        KeyBinding::new("cmd-7", ActivateTab(7), None),
+        KeyBinding::new("ctrl-7", ActivateTab(7), None),
+        KeyBinding::new("cmd-8", ActivateTab(8), None),
+        KeyBinding::new("ctrl-8", ActivateTab(8), None),
+        KeyBinding::new("cmd-9", ActivateTab(9), None),
+        KeyBinding::new("ctrl-9", ActivateTab(9), None),
+        // Data ↔ Structure for the open table tab (US-11 / M1-6).
+        KeyBinding::new("cmd-shift-[", ShowTableData, None),
+        KeyBinding::new("ctrl-shift-[", ShowTableData, None),
+        KeyBinding::new("cmd-shift-]", ShowTableStructure, None),
+        KeyBinding::new("ctrl-shift-]", ShowTableStructure, None),
+    ]);
+    // Quit: ⌘Q on macOS, Ctrl+Q elsewhere. Global so it works in the
+    // SQL editor and dialogs.
+    bind_secondary(cx, "secondary-q", Box::new(Quit), None);
+    // Font size (#39): global, including inside text fields.
+    // Spec: secondary-= and secondary-+ (secondary-shift-=).
+    bind_secondary(cx, "secondary-=", Box::new(IncreaseFontSize), None);
+    bind_secondary(cx, "secondary-+", Box::new(IncreaseFontSize), None);
+    bind_secondary(cx, "secondary-shift-=", Box::new(IncreaseFontSize), None);
+    bind_secondary(cx, "secondary--", Box::new(DecreaseFontSize), None);
+    bind_secondary(cx, "secondary-0", Box::new(ResetFontSize), None);
+    // Platform secondary modifier (⌘ on macOS, Ctrl elsewhere) — M1-3 filter bar.
+    bind_secondary(cx, "secondary-f", Box::new(ToggleFilterBar), None);
+    bind_secondary(cx, "secondary-enter", Box::new(RunQuery), Some("SqlEditor"));
+    bind_secondary(
+        cx,
+        "secondary-shift-enter",
+        Box::new(RunAllSql),
+        Some("SqlEditor"),
+    );
+    bind_secondary(cx, "secondary-f", Box::new(FindInSql), Some("SqlEditor"));
+    bind_secondary(cx, "secondary-g", Box::new(FindNext), Some("SqlEditor"));
+    bind_secondary(
+        cx,
+        "secondary-shift-g",
+        Box::new(FindPrevious),
+        Some("SqlEditor"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-shift-e",
+        Box::new(ToggleEditor),
+        Some("SqlEditor"),
+    );
+    // Filter-bar-only chords (UX §10). `FilterBar > Input` overrides the
+    // Input widget's cmd/ctrl-backspace so the row is removed instead.
+    bind_secondary(
+        cx,
+        "secondary-shift-enter",
+        Box::new(InsertFilterRow),
+        Some("FilterBar"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-backspace",
+        Box::new(RemoveFilterRow),
+        Some("FilterBar"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-backspace",
+        Box::new(RemoveFilterRow),
+        Some("FilterBar > Input"),
+    );
+    bind_secondary(cx, "escape", Box::new(EscapeFilterBar), Some("FilterBar"));
+    // Query history panel (M1-5). `secondary-h` stays free (Hide on macOS).
+    bind_secondary(cx, "secondary-shift-h", Box::new(ToggleHistory), None);
+    bind_secondary(
+        cx,
+        "secondary-f",
+        Box::new(FocusHistorySearch),
+        Some("HistoryPanel"),
+    );
+    bind_secondary(cx, "up", Box::new(HistorySelectUp), Some("HistoryPanel"));
+    bind_secondary(
+        cx,
+        "down",
+        Box::new(HistorySelectDown),
+        Some("HistoryPanel"),
+    );
+    bind_secondary(
+        cx,
+        "up",
+        Box::new(HistorySelectUp),
+        Some("HistoryPanel > Input"),
+    );
+    bind_secondary(
+        cx,
+        "down",
+        Box::new(HistorySelectDown),
+        Some("HistoryPanel > Input"),
+    );
+    bind_secondary(cx, "enter", Box::new(HistoryOpen), Some("HistoryPanel"));
+    bind_secondary(
+        cx,
+        "secondary-enter",
+        Box::new(HistoryInsert),
+        Some("HistoryPanel"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-c",
+        Box::new(HistoryCopy),
+        Some("HistoryPanel"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-shift-enter",
+        Box::new(HistoryRerun),
+        Some("HistoryPanel"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-backspace",
+        Box::new(HistoryDelete),
+        Some("HistoryPanel"),
+    );
+    bind_secondary(cx, "escape", Box::new(EscapeHistory), Some("HistoryPanel"));
+    bind_secondary(
+        cx,
+        "escape",
+        Box::new(EscapeHistory),
+        Some("HistoryPanel > Input"),
+    );
+    // Grid copy (US-14). Scoped to DataTable so text fields keep clipboard chords.
+    bind_secondary(
+        cx,
+        "secondary-c",
+        Box::new(CopySelection),
+        Some("DataTable"),
+    );
+    // Select all cells in the result grid (Ctrl/Cmd+A).
+    cx.bind_keys([
+        KeyBinding::new("cmd-a", SelectAllGrid, Some("DataTable")),
+        KeyBinding::new("ctrl-a", SelectAllGrid, Some("DataTable")),
+        // DataTable only binds plain arrows; Shift+arrow must be explicit
+        // or the keystroke never moves the cell / never extends the range.
+        KeyBinding::new("shift-up", ExtendGridSelectionUp, Some("DataTable")),
+        KeyBinding::new("shift-down", ExtendGridSelectionDown, Some("DataTable")),
+        KeyBinding::new("shift-left", ExtendGridSelectionLeft, Some("DataTable")),
+        KeyBinding::new("shift-right", ExtendGridSelectionRight, Some("DataTable")),
+    ]);
+    // Result strip Prev/Next when the strip itself is focused.
+    bind_secondary(cx, "left", Box::new(ResultStripPrev), Some("ResultStrip"));
+    bind_secondary(cx, "right", Box::new(ResultStripNext), Some("ResultStrip"));
+    // M2-1 / M2-3 grid editing (DataTable context; not SqlEditor).
+    bind_secondary(cx, "enter", Box::new(EditCell), Some("DataTable"));
+    // Space inspects; Enter edits (01-main-window.md / 07-grid-editing.md).
+    // CellEditor NoAction lets Space reach the Input as a character on
+    // Linux, where key bindings win over character input (#78).
+    cx.bind_keys([
+        KeyBinding::new("space", InspectCell, Some(DATA_TABLE_KEY_CONTEXT)),
+        KeyBinding::new("space", NoAction, Some(CELL_EDITOR_KEY_CONTEXT)),
+    ]);
+    bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("DataTable"));
+    bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("CellEditor"));
+    bind_secondary(cx, "enter", Box::new(AcceptCellEditor), Some("CellEditor"));
+    bind_secondary(
+        cx,
+        "secondary-enter",
+        Box::new(AcceptCellEditor),
+        Some("CellEditor"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-i",
+        Box::new(InsertEditRow),
+        Some("DataTable"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-d",
+        Box::new(DuplicateEditRow),
+        Some("DataTable"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-backspace",
+        Box::new(DeleteEditRow),
+        Some("DataTable"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-shift-p",
+        Box::new(PreviewChanges),
+        Some("DataTable"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-s",
+        Box::new(CommitChanges),
+        Some("DataTable"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-shift-z",
+        Box::new(DiscardChanges),
+        Some("DataTable"),
+    );
 }
 
 fn install_menus(cx: &mut gpui_kit::App) {

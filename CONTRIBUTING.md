@@ -26,7 +26,21 @@ cargo test --workspace
 cargo deny check licenses bans sources
 ```
 
-More detail (Docker DBs, env vars, `grid_bench`): [building-and-testing.md](./docs/dev/building-and-testing.md).
+More detail (Docker DBs, env vars, `grid_bench`, headless UI tests): [building-and-testing.md](./docs/dev/building-and-testing.md).
+
+### Headless UI tests
+
+High-risk GPUI flows (connection dialog, cell editor, reconnect) use
+`gpui_kit::TestAppContext` so they run without a display:
+
+```bash
+./scripts/ui-tests.sh
+```
+
+On Linux CI, install `xvfb` (and optionally `mesa-vulkan-drivers`) in addition to
+the usual GPUI packages; the script wraps with `xvfb-run -a` when present.
+Write new cases under `crates/sela-app/src/ui/ui_tests/` with `#[gpui_kit::test]`,
+drive real key/mouse events via `TestWindowExt`, and never log URLs or passwords.
 
 ### Database integration tests
 

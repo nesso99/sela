@@ -343,6 +343,46 @@ impl ConnectionForm {
             password,
         })));
     }
+
+    /// Test helpers: read field values and mask state without logging secrets.
+    #[cfg(test)]
+    pub(crate) fn test_field(&self, name: &str, cx: &gpui_kit::App) -> String {
+        match name {
+            "import_url" => Self::value(&self.import_url, cx),
+            "name" => Self::value(&self.name, cx),
+            "host" => Self::value(&self.host, cx),
+            "port" => Self::value(&self.port, cx),
+            "username" => Self::value(&self.username, cx),
+            "database" => Self::value(&self.database, cx),
+            "password" => Self::value(&self.password, cx),
+            other => panic!("unknown form field: {other}"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_password_masked(&self, cx: &gpui_kit::App) -> bool {
+        self.password.read(cx).presentation().is_masked()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_import_note(&self) -> Option<&str> {
+        self.import_note.as_deref()
+    }
+
+    /// Fill the minimum valid Postgres fields so Save can succeed in UI tests.
+    /// Does not touch the password and never logs values.
+    #[cfg(test)]
+    pub(crate) fn test_seed_minimal_postgres(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        Self::set_value(&self.name, "ui-test", window, cx);
+        Self::set_value(&self.host, "127.0.0.1", window, cx);
+        Self::set_value(&self.port, "5432", window, cx);
+        Self::set_value(&self.username, "sela", window, cx);
+        Self::set_value(&self.database, "sample", window, cx);
+    }
 }
 
 impl Render for ConnectionForm {
@@ -360,7 +400,11 @@ impl Render for ConnectionForm {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.import_url)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.import_url).id("import-url-input")),
+                    )
                     .child({
                         let this = this.clone();
                         Button::new("import-url")
@@ -390,7 +434,7 @@ impl Render for ConnectionForm {
                 )),
             )
             .child(label("Name", cx))
-            .child(Input::new(&self.name))
+            .child(Input::new(&self.name).id("name-input"))
             .child(
                 h_flex()
                     .gap_3()
@@ -429,20 +473,20 @@ impl Render for ConnectionForm {
                             .flex_1()
                             .gap_1()
                             .child(label("Label", cx))
-                            .child(Input::new(&self.conn_label)),
+                            .child(Input::new(&self.conn_label).id("label-input")),
                     ),
             )
             .child(label("Group", cx))
-            .child(Input::new(&self.group))
+            .child(Input::new(&self.group).id("group-input"))
             .when(network, |form| {
                 form.child(label("Host", cx))
-                    .child(Input::new(&self.host))
+                    .child(Input::new(&self.host).id("host-input"))
                     .child(label("Port", cx))
-                    .child(Input::new(&self.port))
+                    .child(Input::new(&self.port).id("port-input"))
                     .child(label("User", cx))
-                    .child(Input::new(&self.username))
+                    .child(Input::new(&self.username).id("username-input"))
                     .child(label("Database", cx))
-                    .child(Input::new(&self.database))
+                    .child(Input::new(&self.database).id("database-input"))
                     .child(label("SSL mode", cx))
                     .child(h_flex().gap_1().children(
                         TlsMode::all()
@@ -474,6 +518,7 @@ impl Render for ConnectionForm {
             .when(network, |form| {
                 form.child(label("Password", cx)).child(
                     Input::new(&self.password)
+                        .id("password-input")
                         .content_type(InputContentType::Password)
                         .mask_toggle(),
                 )

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Headless GPUI UI tests for high-risk flows (#93): `gpui_kit::TestAppContext` harness in `crates/sela-app/src/ui/ui_tests/`, run with `./scripts/ui-tests.sh` (Xvfb optional on Linux). Covers connection-dialog Enter/Save/Cancel and password masking, cell-editor Space / empty accept / Duplicate+Copy as INSERT, and table-tab reload after SQL on Save/reconnect and on plain tab switch (#98).
+
 ### Fixed
 
 - After Save/reconnect, a table tab that last ran SQL reloads the table instead of keeping the stale SQL grid under the table title (#98). The same reload runs on every tab switch while the grid still holds a SQL result in a table tab, so that SQL result is dropped when leaving and returning to the tab.

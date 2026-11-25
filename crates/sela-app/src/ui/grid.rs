@@ -231,7 +231,7 @@ impl GridDelegate {
                             .items_center()
                             .gap_1()
                             .key_context(CELL_EDITOR_KEY_CONTEXT)
-                            .child(Input::new(input).h(px(22.)))
+                            .child(Input::new(input).id("cell-editor-input").h(px(22.)))
                             .child(
                                 Button::new(("ghost-null-ov", visual_row))
                                     .xsmall()
@@ -751,7 +751,7 @@ impl TableDelegate for GridDelegate {
                             .items_center()
                             .gap_1()
                             .key_context(CELL_EDITOR_KEY_CONTEXT)
-                            .child(Input::new(input).h(px(22.)))
+                            .child(Input::new(input).id("cell-editor-input").h(px(22.)))
                             .child(
                                 Button::new(("ghost-null", row_ix))
                                     .xsmall()
