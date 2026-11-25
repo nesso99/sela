@@ -142,6 +142,31 @@ fn unset_overlay_cells_copy_without_not_loaded() {
 }
 
 #[test]
+fn all_unset_insert_uses_dialect_default_row() {
+    // Blank insert overlay: every column Unset.
+    let headers = vec!["id".into(), "note".into()];
+    let rows = vec![vec![CopyCell::Unset, CopyCell::Unset]];
+    for (dialect, needle) in [
+        (Dialect::Postgres, "DEFAULT VALUES"),
+        (Dialect::Sqlite, "DEFAULT VALUES"),
+        (Dialect::Mysql, "() VALUES ()"),
+    ] {
+        let sql = format_selection(&headers, &rows, CopyFormat::Insert, Some("t"), dialect)
+            .expect("all-unset must copy");
+        assert!(
+            sql.contains(needle),
+            "{dialect:?} expected {needle:?} in {sql}"
+        );
+        if matches!(dialect, Dialect::Mysql) {
+            assert!(
+                !sql.contains("DEFAULT VALUES"),
+                "MySQL must not emit DEFAULT VALUES: {sql}"
+            );
+        }
+    }
+}
+
+#[test]
 fn insert_placeholder_adds_replace_comment() {
     let headers = vec!["id".into()];
     let rows = vec![vec![number("1")]];

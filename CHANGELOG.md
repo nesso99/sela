@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- After Save/reconnect, a table tab that last ran SQL reloads the table instead of keeping the stale SQL grid under the table title (#98).
+- After Save/reconnect, a table tab that last ran SQL reloads the table instead of keeping the stale SQL grid under the table title (#98). The same reload runs on every tab switch while the grid still holds a SQL result in a table tab, so that SQL result is dropped when leaving and returning to the tab.
 - Commit success status `Committed · N statements · … ms` survives the post-commit page reload: `load_source_for` no longer clears `post_commit_reload` or overwrites the line with `Running…` before the reload finishes (#81).
 - Status `ms` after Structure → Data (and other idle refreshes) uses the last completed query duration, not wall time since the load started (#95).
 - Copy of an Insert/Duplicate overlay row with unset cells (e.g. unset PK) succeeds and omits those cells; it no longer reports `rows not loaded yet` (#99).

@@ -371,7 +371,10 @@ fn format_insert(
     Ok(out)
 }
 
-/// One INSERT omitting [`CopyCell::Unset`] columns. All-unset → `DEFAULT VALUES`.
+/// One INSERT omitting [`CopyCell::Unset`] columns.
+///
+/// All-unset: Postgres/SQLite use `DEFAULT VALUES`; MySQL/MariaDB reject that
+/// form and need `() VALUES ()`.
 fn format_insert_one_row(
     headers: &[String],
     row: &[CopyCell],
@@ -392,7 +395,10 @@ fn format_insert_one_row(
     out.push_str("INSERT INTO ");
     out.push_str(quoted_table);
     if cols.is_empty() {
-        out.push_str(" DEFAULT VALUES;\n");
+        match dialect {
+            Dialect::Mysql => out.push_str(" () VALUES ();\n"),
+            Dialect::Postgres | Dialect::Sqlite => out.push_str(" DEFAULT VALUES;\n"),
+        }
         return Ok(out);
     }
     out.push_str(" (");
