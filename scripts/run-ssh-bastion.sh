@@ -113,7 +113,7 @@ if ! $mysql_up; then
   echo "MySQL failed to become ready within timeout" >&2
   exit 1
 fi
-# Prove Docker DNS + TCP forwarding from the bastion before handing off to tests.
+# Prove Docker DNS from a shell on the bastion (not the same as direct-tcpip).
 for i in $(seq 1 30); do
   if ssh -i "$WORKDIR/keys/id_ed25519" -o StrictHostKeyChecking=no \
        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p "$SSH_PORT" \
@@ -122,11 +122,59 @@ for i in $(seq 1 30); do
     break
   fi
   if [[ "$i" -eq 30 ]]; then
-    echo "Bastion cannot reach postgres:5432 / mysql:3306 (DNS or TCP forward)" >&2
+    echo "Bastion cannot reach postgres:5432 / mysql:3306 via Docker DNS" >&2
     exit 1
   fi
   sleep 1
 done
+
+# linuxserver/openssh-server may leave AllowTcpForwarding unset/no; russh needs
+# direct-tcpip. Force-enable on the live config and reload sshd.
+docker exec sela-ssh-bastion bash -c '
+  set -euo pipefail
+  for cfg in /config/sshd/sshd_config /etc/ssh/sshd_config; do
+    [ -f "$cfg" ] || continue
+    if grep -qE "^[#]?AllowTcpForwarding" "$cfg"; then
+      sed -i "s/^#\?AllowTcpForwarding.*/AllowTcpForwarding yes/" "$cfg"
+    else
+      printf "\nAllowTcpForwarding yes\n" >> "$cfg"
+    fi
+    echo "AllowTcpForwarding in $cfg:" >&2
+    grep -E "^AllowTcpForwarding" "$cfg" >&2 || true
+  done
+  # Reload sshd (s6 service name varies by image version).
+  if [ -d /run/service/svc-openssh-server ]; then
+    s6-svc -h /run/service/svc-openssh-server
+  elif [ -d /var/run/s6/services/svc-openssh-server ]; then
+    s6-svc -h /var/run/s6/services/svc-openssh-server
+  else
+    pkill -HUP sshd || true
+  fi
+' >&2
+
+# Prove actual SSH local port forwarding (direct-tcpip), same path russh uses.
+FWD_PORT=$((16000 + $$ % 1000))
+ssh -i "$WORKDIR/keys/id_ed25519" -o ExitOnForwardFailure=yes \
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  -o ConnectTimeout=5 -f -N \
+  -L "127.0.0.1:${FWD_PORT}:postgres:5432" \
+  -p "$SSH_PORT" "${USER_NAME}@127.0.0.1"
+forward_ok=false
+for i in $(seq 1 20); do
+  if nc -z 127.0.0.1 "$FWD_PORT" 2>/dev/null; then
+    forward_ok=true
+    break
+  fi
+  sleep 0.25
+done
+# Tear down the background ssh -L regardless of outcome.
+pkill -f "${FWD_PORT}:postgres:5432" >/dev/null 2>&1 || true
+if ! $forward_ok; then
+  echo "SSH LocalForward to postgres:5432 failed (AllowTcpForwarding?)" >&2
+  docker exec sela-ssh-bastion grep -RIn AllowTcpForwarding /config/sshd /etc/ssh 2>/dev/null >&2 || true
+  exit 1
+fi
+echo "SSH LocalForward to postgres:5432 ok (port ${FWD_PORT})" >&2
 
 # Capture the bastion host key into known_hosts (and a deliberately wrong one).
 ssh-keyscan -p "$SSH_PORT" 127.0.0.1 2>/dev/null > "$WORKDIR/home/.ssh/known_hosts" || true
