@@ -42,6 +42,10 @@ pub enum CopyCell {
     Decode(String),
     /// Row (or cell) not yet in the result window.
     NotLoaded,
+    /// Overlay insert/duplicate column the user has not set. Formats omit it
+    /// (INSERT leaves the column out; JSON omits the key; TSV/CSV empty field)
+    /// instead of inventing NULL/`''` or refusing as unloaded (#99).
+    Unset,
 }
 
 /// Why a copy was refused. The UI shows [`CopyError::status_message`].
@@ -191,8 +195,8 @@ fn cell_tsv_csv_text(cell: &CopyCell) -> &str {
     match cell {
         CopyCell::Null => "NULL",
         CopyCell::Value(text, _) | CopyCell::Decode(text) => text.as_str(),
-        // Callers refuse NotLoaded before reaching here.
-        CopyCell::NotLoaded => "",
+        // Callers refuse NotLoaded before reaching here. Unset → empty field.
+        CopyCell::NotLoaded | CopyCell::Unset => "",
     }
 }
 
@@ -221,15 +225,17 @@ fn format_json(headers: &[String], rows: &[Vec<CopyCell>]) -> String {
         let mut obj = serde_json::Map::new();
         for (i, key) in headers.iter().enumerate() {
             let cell = row.get(i).cloned().unwrap_or(CopyCell::Null);
-            obj.insert(key.clone(), cell_to_json(&cell));
+            if let Some(value) = cell_to_json(&cell) {
+                obj.insert(key.clone(), value);
+            }
         }
         arr.push(serde_json::Value::Object(obj));
     }
     serde_json::to_string_pretty(&serde_json::Value::Array(arr)).unwrap_or_else(|_| "[]".into())
 }
 
-fn cell_to_json(cell: &CopyCell) -> serde_json::Value {
-    match cell {
+fn cell_to_json(cell: &CopyCell) -> Option<serde_json::Value> {
+    Some(match cell {
         CopyCell::Null => serde_json::Value::Null,
         CopyCell::Value(text, CopyScalarKind::Bool) => {
             serde_json::Value::Bool(text.eq_ignore_ascii_case("true"))
@@ -240,8 +246,11 @@ fn cell_to_json(cell: &CopyCell) -> serde_json::Value {
         CopyCell::Value(text, CopyScalarKind::Text) | CopyCell::Decode(text) => {
             serde_json::Value::String(text.clone())
         }
+        // Defensive: NotLoaded is refused before format_json.
         CopyCell::NotLoaded => serde_json::Value::Null,
-    }
+        // Omit unset overlay columns from the object (#99).
+        CopyCell::Unset => return None,
+    })
 }
 
 fn parse_json_number(text: &str) -> Option<serde_json::Value> {
@@ -313,32 +322,90 @@ fn format_insert(
     let placeholder = table_name.is_none();
     let table = table_name.unwrap_or("table");
     let quoted_table = quote_table_ref(dialect, table)?;
-    let cols: Result<Vec<_>, _> = headers.iter().map(|h| quote_ident(dialect, h)).collect();
-    let cols = cols?;
+    // Unset overlay columns are omitted per row (same as preview insert) so a
+    // duplicated PK stays out of the statement (#99). When any row omits a
+    // column, emit one INSERT per row so column lists can differ.
+    let any_unset = rows
+        .iter()
+        .any(|row| row.iter().any(|c| matches!(c, CopyCell::Unset)));
     let mut out = String::new();
-    out.push_str("INSERT INTO ");
-    out.push_str(&quoted_table);
-    out.push_str(" (");
-    out.push_str(&cols.join(", "));
-    out.push_str(") VALUES\n");
-    for (ri, row) in rows.iter().enumerate() {
-        if ri > 0 {
-            out.push_str(",\n");
-        }
-        out.push('(');
-        for (ci, _) in headers.iter().enumerate() {
-            if ci > 0 {
-                out.push_str(", ");
+    if any_unset {
+        for (ri, row) in rows.iter().enumerate() {
+            if ri > 0 {
+                out.push('\n');
             }
-            let cell = row.get(ci).cloned().unwrap_or(CopyCell::Null);
-            out.push_str(&cell_to_sql_literal(&cell, dialect));
+            out.push_str(&format_insert_one_row(
+                headers,
+                row,
+                &quoted_table,
+                dialect,
+            )?);
         }
-        out.push(')');
+    } else {
+        let cols: Result<Vec<_>, _> = headers.iter().map(|h| quote_ident(dialect, h)).collect();
+        let cols = cols?;
+        out.push_str("INSERT INTO ");
+        out.push_str(&quoted_table);
+        out.push_str(" (");
+        out.push_str(&cols.join(", "));
+        out.push_str(") VALUES\n");
+        for (ri, row) in rows.iter().enumerate() {
+            if ri > 0 {
+                out.push_str(",\n");
+            }
+            out.push('(');
+            for (ci, _) in headers.iter().enumerate() {
+                if ci > 0 {
+                    out.push_str(", ");
+                }
+                let cell = row.get(ci).cloned().unwrap_or(CopyCell::Null);
+                out.push_str(&cell_to_sql_literal(&cell, dialect));
+            }
+            out.push(')');
+        }
+        out.push_str(";\n");
     }
-    out.push_str(";\n");
     if placeholder {
         out.push_str("-- replace table name\n");
     }
+    Ok(out)
+}
+
+/// One INSERT omitting [`CopyCell::Unset`] columns.
+///
+/// All-unset: Postgres/SQLite use `DEFAULT VALUES`; MySQL/MariaDB reject that
+/// form and need `() VALUES ()`.
+fn format_insert_one_row(
+    headers: &[String],
+    row: &[CopyCell],
+    quoted_table: &str,
+    dialect: Dialect,
+) -> Result<String, CopyError> {
+    let mut cols = Vec::new();
+    let mut literals = Vec::new();
+    for (ci, name) in headers.iter().enumerate() {
+        let cell = row.get(ci).cloned().unwrap_or(CopyCell::Null);
+        if matches!(cell, CopyCell::Unset) {
+            continue;
+        }
+        cols.push(quote_ident(dialect, name)?);
+        literals.push(cell_to_sql_literal(&cell, dialect));
+    }
+    let mut out = String::new();
+    out.push_str("INSERT INTO ");
+    out.push_str(quoted_table);
+    if cols.is_empty() {
+        match dialect {
+            Dialect::Mysql => out.push_str(" () VALUES ();\n"),
+            Dialect::Postgres | Dialect::Sqlite => out.push_str(" DEFAULT VALUES;\n"),
+        }
+        return Ok(out);
+    }
+    out.push_str(" (");
+    out.push_str(&cols.join(", "));
+    out.push_str(") VALUES (");
+    out.push_str(&literals.join(", "));
+    out.push_str(");\n");
     Ok(out)
 }
 
@@ -389,8 +456,8 @@ fn cell_to_sql_literal(cell: &CopyCell, dialect: Dialect) -> String {
         }
         CopyCell::Value(text, CopyScalarKind::Bool) => text.clone(),
         CopyCell::Value(text, CopyScalarKind::Text) => escape_sql_string(text, dialect),
-        // Refused earlier for INSERT; defensive fallback.
-        CopyCell::Decode(_) | CopyCell::NotLoaded => "NULL".into(),
+        // Refused earlier for INSERT; Unset is omitted by format_insert_one_row.
+        CopyCell::Decode(_) | CopyCell::NotLoaded | CopyCell::Unset => "NULL".into(),
     }
 }
 

@@ -1164,7 +1164,7 @@ fn param_display(value: &Value, dialect: Dialect) -> String {
         CopyCell::Value(text, CopyScalarKind::Number | CopyScalarKind::Bool) => text,
         CopyCell::Value(text, CopyScalarKind::Text) => escape_sql_string(&text, dialect),
         CopyCell::Decode(text) => escape_sql_string(&text, dialect),
-        CopyCell::NotLoaded => "NULL".into(),
+        CopyCell::NotLoaded | CopyCell::Unset => "NULL".into(),
     }
 }
 

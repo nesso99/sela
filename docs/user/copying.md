@@ -30,6 +30,6 @@ With the grid focused (`DataTable` key context):
 
 SQL NULL copies as the keyword `NULL` in TSV/CSV/INSERT (and as JSON `null`). A text value equal to `NULL` copies as ordinary text / a quoted string / a JSON string — it is never treated as SQL NULL. TSV and CSV keep the display text for non-finite floats (`NaN`, `inf`, `-inf`).
 
-If the selection includes rows that are not loaded yet, copy is refused and the status bar shows how many rows are missing (scroll or narrow the selection). INSERT is also refused when a selected cell is a decode error or unsupported type, or (on MySQL/SQLite) a non-finite number; the status bar names that column.
+If the selection includes rows that are not loaded yet, copy is refused and the status bar shows how many rows are missing (scroll or narrow the selection). Unset cells on an Insert or Duplicate overlay row are not “not loaded”: copy succeeds and leaves those columns out (INSERT omits them so a DEFAULT / identity can apply; JSON omits the key; TSV/CSV write an empty field). INSERT is also refused when a selected cell is a decode error or unsupported type, or (on MySQL/SQLite) a non-finite number; the status bar names that column.
 
 Copy uses rows already present in the result window. Full-table export remains a later milestone.

@@ -391,13 +391,17 @@ impl Workspace {
             self.connect_id(connection_id, window, cx);
             return;
         }
-        // Reload a restored table tab that has not fetched yet.
+        // Reload a restored table tab that has not fetched yet, or a table tab
+        // whose grid still holds a SQL result after reconnect (#98).
         if let TabKind::Table { schema, table } = kind {
+            let has_session = self.session.is_some();
             let needs_load = self.views.get(&tab_id).is_some_and(|view| {
-                view.page_len == 0
-                    && !view.busy
-                    && self.session.is_some()
-                    && matches!(&view.source, GridSource::Idle | GridSource::Table { .. })
+                table_tab_needs_load_on_activate(
+                    &view.source,
+                    view.page_len,
+                    view.busy,
+                    has_session,
+                )
             });
             let kind = self.relation_kind_for(&schema, &table);
             if let Some(view) = self.views.get_mut(&tab_id) {
@@ -530,5 +534,79 @@ impl Workspace {
             .text_sm()
             .text_color(cx.theme().muted_foreground)
             .child("Open a table from the sidebar, or press Ctrl+T / ⌘+T for a query tab.")
+    }
+}
+
+/// Whether activating a `TabKind::Table` should call `load_source_for`.
+///
+/// Restored empty tabs (`Idle` / `Table` with `page_len == 0`) need a first
+/// fetch. A table tab that last ran SQL still has `GridSource::Sql` and a
+/// non-empty grid; resetting the source to `Table` without reloading leaves a
+/// stale SQL result under the table title (#98).
+pub(crate) fn table_tab_needs_load_on_activate(
+    source: &GridSource,
+    page_len: usize,
+    busy: bool,
+    has_session: bool,
+) -> bool {
+    if busy || !has_session {
+        return false;
+    }
+    match source {
+        GridSource::Idle | GridSource::Table { .. } => page_len == 0,
+        GridSource::Sql(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{table_tab_needs_load_on_activate, GridSource};
+    use sela_core::RelationKind;
+
+    fn table_source() -> GridSource {
+        GridSource::Table {
+            schema: "public".into(),
+            table: "edit_pk".into(),
+            kind: RelationKind::Table,
+        }
+    }
+
+    #[test]
+    fn table_tab_reload_when_source_is_sql_after_reconnect() {
+        // #98: SELECT in a table tab → source Sql, page_len > 0; Save reconnect
+        // activates the tab and must reload, not only flip source back to Table.
+        assert!(table_tab_needs_load_on_activate(
+            &GridSource::Sql("SELECT 1".into()),
+            1,
+            false,
+            true,
+        ));
+        // Empty restored table still loads.
+        assert!(table_tab_needs_load_on_activate(
+            &table_source(),
+            0,
+            false,
+            true,
+        ));
+        // Already-loaded table with Table source does not reload.
+        assert!(!table_tab_needs_load_on_activate(
+            &table_source(),
+            5,
+            false,
+            true,
+        ));
+        // No session / busy → do not load.
+        assert!(!table_tab_needs_load_on_activate(
+            &GridSource::Sql("SELECT 1".into()),
+            1,
+            false,
+            false,
+        ));
+        assert!(!table_tab_needs_load_on_activate(
+            &GridSource::Sql("SELECT 1".into()),
+            1,
+            true,
+            true,
+        ));
     }
 }
