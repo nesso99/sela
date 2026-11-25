@@ -15,6 +15,9 @@ Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below a
 | Find in SQL | Cmd/Ctrl+F (SQL editor focused; table tabs use Filter) |
 | Find next / previous | Cmd/Ctrl+G / Cmd/Ctrl+Shift+G (SQL editor focused) |
 | Collapse SQL editor | Cmd/Ctrl+Shift+E (SQL editor focused) |
+| Manual SQL autocomplete | Control+Space (SQL editor focused; not Cmd/Ctrl+Space — see note below) |
+| Accept completion | Enter or Tab (while the autocomplete popup is open) |
+| Dismiss autocomplete | Escape |
 | Cancel query | Cmd/Ctrl+. |
 | New query tab | Cmd/Ctrl+T |
 | Close tab | Cmd/Ctrl+W |
@@ -50,6 +53,8 @@ Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below a
 | Quit | Cmd/Ctrl+Q (File ▸ Quit / Quit Sela; confirms while a query is running or pending edits exist) |
 
 Run (Cmd/Ctrl+Enter) runs the statement at the caret, the selected text split into statements, or the whole buffer when using Run all. It only fires when the SQL editor has focus; filter fields still use Enter / Cmd/Ctrl+Enter to apply. Cancel stops the running query for that tab (server-side cancel on Postgres/MySQL; SQLite drops the stream). Closing a tab cancels its in-flight work. Global Cmd/Ctrl+F toggles the filter bar on table tabs; with the SQL editor focused, the same chord opens find-in-SQL; with the history panel focused, it focuses the history search field.
+
+SQL autocomplete suggests keywords and catalog names from the connection schema cache. It opens automatically after a `.` or after two identifier characters, or manually with **Control+Space** while the SQL editor is focused. **Cmd+Space** (macOS Spotlight) and other OS chords that use the platform secondary modifier stay unbound. On macOS with multiple input sources, the OS may swallow Control+Space before Sela sees it — use the Input menu / Control+Option+Space (or your OS alternate) if the manual trigger does nothing; that is not a Sela defect. While the popup is open, **Enter** and **Tab** accept the selected row; **Escape** dismisses without changing the text. When the popup is closed, Tab inserts a tab/indent in the editor.
 
 In the filter bar: **Enter** Applies; **Cmd/Ctrl+Shift+Enter** inserts a row after the focused row; **Cmd/Ctrl+Backspace** removes the focused row when focus is on the row itself or an empty column/value field (clears the sole row in place). When a column or value field is non-empty, the same chord deletes to the start of the line instead (macOS ⌘⌫). **Escape** closes an open value menu first, otherwise moves focus to the grid and hides the bar when the draft is empty and nothing is applied.
 

@@ -12,6 +12,7 @@ mod quit;
 mod result_strip;
 mod safe_mode;
 mod sidebar;
+pub(crate) mod sql_autocomplete;
 mod sql_editor;
 mod sql_find;
 mod sql_gutter;
@@ -47,16 +48,16 @@ use sela_core::{
 };
 
 use super::{
-    AcceptCellEditor, ActivateTab, CancelCellEditor, CancelQuery, CloseTab, CommitChanges,
-    CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, DecreaseFontSize, DeleteEditRow,
-    DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory,
-    ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
+    AcceptCellEditor, AcceptCompletionOrIndent, ActivateTab, CancelCellEditor, CancelQuery,
+    CloseTab, CommitChanges, CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection,
+    DecreaseFontSize, DeleteEditRow, DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar,
+    EscapeHistory, ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
     ExtendGridSelectionUp, FindInSql, FindNext, FindPrevious, FocusHistorySearch, HistoryCopy,
     HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun, HistorySelectDown, HistorySelectUp,
     IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab, PreviewChanges,
     Quit, RemoveFilterRow, ResetFontSize, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery,
-    SelectAllGrid, SetCellNull, ShowTableData, ShowTableStructure, ToggleEditor, ToggleFilterBar,
-    ToggleHistory,
+    SelectAllGrid, SetCellNull, ShowSqlCompletions, ShowTableData, ShowTableStructure,
+    ToggleEditor, ToggleFilterBar, ToggleHistory,
 };
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
@@ -166,6 +167,9 @@ pub struct Workspace {
     /// True when the live session was opened through an SSH tunnel (SSH-11 banner).
     session_via_ssh: bool,
     catalog: Vec<LoadedSchema>,
+    /// Schema + column cache for SQL autocomplete (M3-2). Same refresh events
+    /// as the sidebar catalog; never logs query text.
+    schema_cache: sql_autocomplete::SchemaCacheHandle,
     expanded: HashSet<String>,
     tree: Entity<TreeState>,
     tabs: TabList,
@@ -318,6 +322,7 @@ impl Workspace {
             session: None,
             session_via_ssh: false,
             catalog: Vec::new(),
+            schema_cache: sql_autocomplete::SchemaCacheHandle::new(),
             expanded: HashSet::new(),
             tree,
             tabs: TabList::new(),
@@ -576,6 +581,24 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| {
                         if workspace.editor_field_focused(window, cx) {
                             workspace.run_all_editor(window, cx);
+                        }
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ShowSqlCompletions, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.show_sql_completions(window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &AcceptCompletionOrIndent, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if workspace.editor_field_focused(window, cx) {
+                            workspace.accept_completion_or_indent(window, cx);
                         }
                     });
                 }

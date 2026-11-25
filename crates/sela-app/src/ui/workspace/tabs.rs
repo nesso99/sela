@@ -295,6 +295,8 @@ impl Workspace {
     ) {
         let view = TabView::new(window, cx, sql_text);
         let grid = view.grid.clone();
+        let sql = view.sql.clone();
+        self.install_sql_completions(&sql, cx);
         self.views.insert(id, view);
         let subscription = cx.observe_in(&grid, window, move |this, grid, window, cx| {
             let pending_pages = !grid.read(cx).delegate().pending_pages.is_empty();
