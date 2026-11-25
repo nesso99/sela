@@ -61,7 +61,7 @@ CI job `db-integration` sets the same URLs against service containers.
 
 ### SSH tunnel (M3-1)
 
-Tests in `crates/sela-drivers/tests/ssh_tunnel.rs` and `sela-ssh` unit tests skip unless `SELA_SSH_HOST` (and related vars) are set. Keys and known_hosts are generated at runtime — never committed.
+Tests in `crates/sela-drivers/tests/ssh_tunnel.rs` and `sela-ssh` unit tests skip unless `SELA_SSH_HOST` (and related vars) are set. Keys and known_hosts are generated at runtime — never committed. Once `SELA_SSH_HOST` is set, missing required vars or an unreachable bastion **fail** the test (they do not skip). CI sets `SELA_SSH_REQUIRED=1` so a missing `SELA_SSH_HOST` also fails.
 
 ```bash
 eval "$(./scripts/run-ssh-bastion.sh)"
@@ -72,7 +72,7 @@ ssh-add "$SELA_SSH_KEY"
 cargo test -p sela-drivers --test ssh_tunnel ssh04 -- --nocapture
 ```
 
-Env vars (printed by the script): `SELA_SSH_HOST`, `SELA_SSH_PORT`, `SELA_SSH_USER`, `SELA_SSH_PASSWORD`, `SELA_SSH_KEY`, `SELA_SSH_KEY_PASSPHRASE`, `SELA_SSH_KEY_ENCRYPTED`, `SELA_SSH_KNOWN_HOSTS`, `SELA_SSH_KNOWN_HOSTS_BAD`, `SELA_SSH_DB_HOST`, `SELA_SSH_DB_PORT`, `SELA_SSH_MYSQL_HOST`, `SELA_SSH_MYSQL_PORT`. Proposed CI job: `ssh-integration` (Linux; see the M3-1 PR for the exact job YAML for DevOps).
+Env vars (printed by the script): `SELA_SSH_HOST`, `SELA_SSH_PORT`, `SELA_SSH_USER`, `SELA_SSH_PASSWORD`, `SELA_SSH_KEY`, `SELA_SSH_KEY_PASSPHRASE`, `SELA_SSH_KEY_ENCRYPTED`, `SELA_SSH_KNOWN_HOSTS`, `SELA_SSH_KNOWN_HOSTS_BAD`, `SELA_SSH_DB_HOST`, `SELA_SSH_DB_PORT`, `SELA_SSH_MYSQL_HOST`, `SELA_SSH_MYSQL_PORT`. CI job `ssh-integration` starts the bastion via `scripts/run-ssh-bastion.sh`, masks passwords/passphrases, exports those vars plus `SSH_AUTH_SOCK` and `SELA_SSH_REQUIRED=1`, and runs `cargo test -p sela-drivers --test ssh_tunnel`. The job is path-filtered (`changes.outputs.ssh`); docs-only PRs skip it.
 
 ### Postgres TLS (CI acceptance for M1-8)
 

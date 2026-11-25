@@ -39,18 +39,24 @@ chmod 600 "$WORKDIR/keys/id_ed25519" "$WORKDIR/keys/id_ed25519_enc" \
 docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
 docker rm -f sela-ssh-pg sela-ssh-mysql sela-ssh-bastion >/dev/null 2>&1 || true
 
+# Image digests pinned (resolved from :16 / :8.4 / :latest via registry API).
+PG_IMAGE="postgres@sha256:07abc3f43c9395b0bdbbab36bc25ddb0e8d83cd4fcafb5fb7d6abe14ff156dd8"
+MYSQL_IMAGE="mysql@sha256:8c233bad33d520a7aae1c1e619c3a9775f4a1ba2d463d692fada04ec7f40be00"
+# lscr.io/linuxserver/openssh-server:latest →
+OPENSSH_IMAGE="lscr.io/linuxserver/openssh-server@sha256:c8431b8982e7eb3935ebf9c46607d19c6417e39c12ce884cc66945df2e9334e8"
+
 docker run -d --name sela-ssh-pg --network "$NETWORK" \
   -e POSTGRES_USER=sela \
   -e POSTGRES_PASSWORD=sela \
   -e POSTGRES_DB=sample \
-  postgres:16 >/dev/null
+  "$PG_IMAGE" >/dev/null
 
 docker run -d --name sela-ssh-mysql --network "$NETWORK" \
   -e MYSQL_ROOT_PASSWORD=sela \
   -e MYSQL_USER=sela \
   -e MYSQL_PASSWORD=sela \
   -e MYSQL_DATABASE=sample \
-  mysql:8.4 >/dev/null
+  "$MYSQL_IMAGE" >/dev/null
 
 # linuxserver/openssh-server: password + pubkey, custom port 2222 inside.
 docker run -d --name sela-ssh-bastion --network "$NETWORK" \
@@ -63,24 +69,31 @@ docker run -d --name sela-ssh-bastion --network "$NETWORK" \
   -e PUBLIC_KEY_FILE=/keys/authorized_keys \
   -p "${SSH_PORT}:2222" \
   -v "$WORKDIR/keys:/keys:ro" \
-  lscr.io/linuxserver/openssh-server:latest >/dev/null
+  "$OPENSSH_IMAGE" >/dev/null
 
-echo "Waiting for bastion and Postgres…" >&2
-for i in $(seq 1 60); do
-  if docker exec sela-ssh-pg pg_isready -U sela -d sample >/dev/null 2>&1 \
-    && ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-         -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-         -p "$SSH_PORT" \
+echo "Waiting for bastion, Postgres, and MySQL…" >&2
+bastion_up=false
+pg_up=false
+for i in $(seq 1 90); do
+  if docker exec sela-ssh-pg pg_isready -U sela -d sample >/dev/null 2>&1; then
+    pg_up=true
+  fi
+  if ! $bastion_up; then
+    if ssh -i "$WORKDIR/keys/id_ed25519" -o StrictHostKeyChecking=no \
+         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p "$SSH_PORT" \
          "${USER_NAME}@127.0.0.1" "true" >/dev/null 2>&1; then
+      bastion_up=true
+    fi
+  fi
+  if $pg_up && $bastion_up; then
     break
   fi
-  # sshpass may be absent; fall back to key once the server is up.
-  if docker exec sela-ssh-bastion true >/dev/null 2>&1; then
-    if ssh -i "$WORKDIR/keys/id_ed25519" -o StrictHostKeyChecking=no \
-         -o UserKnownHostsFile=/dev/null -p "$SSH_PORT" \
-         "${USER_NAME}@127.0.0.1" "true" >/dev/null 2>&1; then
-      break
-    fi
+  sleep 1
+done
+# MySQL can take longer to accept connections.
+for i in $(seq 1 90); do
+  if docker exec sela-ssh-mysql mysqladmin ping -h 127.0.0.1 -usela -psela --silent >/dev/null 2>&1; then
+    break
   fi
   sleep 1
 done
