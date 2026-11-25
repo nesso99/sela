@@ -16,8 +16,25 @@ use sela_core::{
 };
 use sela_drivers::drive;
 
-use super::edit_session::format_commit_failure;
+use super::edit_session::{format_commit_failure, EditSession, PendingCounts};
 use super::Workspace;
+
+/// Pending-bar left copy (08-preview-commit.md / CAN-03).
+pub(crate) fn pending_bar_left_text(session: &EditSession, counts: &PendingCounts) -> String {
+    let pending_n = counts.total();
+    if session.committing {
+        format!("Committing {pending_n} changes…")
+    } else if session.commit_cancelled {
+        format!(
+            "{} · Commit cancelled. No changes were saved.",
+            counts.summary_left()
+        )
+    } else if session.commit_failed {
+        format!("{} · Commit failed. Changes kept.", counts.summary_left())
+    } else {
+        counts.summary_left()
+    }
+}
 
 impl Workspace {
     /// 26px pending-changes bar (08-preview-commit.md).
@@ -32,14 +49,7 @@ impl Workspace {
         }
         let safe_mode = self.active_safe_mode();
         let counts = session.pending_counts();
-        let pending_n = counts.total();
-        let left = if session.committing {
-            format!("Committing {pending_n} changes…")
-        } else if session.commit_failed {
-            format!("{} · Commit failed. Changes kept.", counts.summary_left())
-        } else {
-            counts.summary_left()
-        };
+        let left = pending_bar_left_text(session, &counts);
         let busy = view.map(|v| v.busy).unwrap_or(false) || session.committing;
         let commit_block = session.commit_blocked_reason_for(safe_mode);
         let commit_disabled = busy || commit_block.is_some();
@@ -63,7 +73,7 @@ impl Workspace {
             .child(
                 div()
                     .text_xs()
-                    .text_color(if session.commit_failed {
+                    .text_color(if session.commit_failed || session.commit_cancelled {
                         palette.status_error
                     } else {
                         cx.theme().foreground
@@ -592,10 +602,11 @@ impl Workspace {
                     }
                     Err(err) => {
                         let conflict = matches!(err, DbError::ChangeConflict { .. });
+                        let cancelled = matches!(err, DbError::Cancelled { .. });
                         let (banner, status) = format_commit_failure(&err, statement_count);
                         if let Some(view) = this.view_mut(tab_id) {
                             if let Some(edit) = view.edit.as_mut() {
-                                if !edit.note_commit_failure(generation, conflict) {
+                                if !edit.note_commit_failure(generation, conflict, cancelled) {
                                     return;
                                 }
                             }

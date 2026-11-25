@@ -257,8 +257,11 @@ pub(crate) struct EditSession {
     /// Monotonic id so a commit completion can ignore a superseded attempt.
     pub commit_generation: u64,
     /// After a failed commit: pending bar shows "Commit failed. Changes kept."
-    /// Not set for optimistic/PK conflicts (OW-05 uses conflict copy + Refresh).
+    /// Not set for optimistic/PK conflicts (OW-05 uses conflict copy + Refresh)
+    /// or for cancel (uses `commit_cancelled`).
     pub commit_failed: bool,
+    /// Last failure was a cancelled commit (CAN-03 pending-bar copy).
+    pub commit_cancelled: bool,
     /// Last failure was `ChangeConflict` (OW-05 Refresh on the banner).
     pub commit_conflict: bool,
     /// Latest connection safe-mode level (synced from the workspace before edits/commit).
@@ -292,6 +295,7 @@ impl EditSession {
             committing: false,
             commit_generation: 0,
             commit_failed: false,
+            commit_cancelled: false,
             commit_conflict: false,
             connection_safe_mode: SafeMode::Off,
         }
@@ -318,6 +322,7 @@ impl EditSession {
             committing: false,
             commit_generation: 0,
             commit_failed: false,
+            commit_cancelled: false,
             commit_conflict: false,
             connection_safe_mode: SafeMode::Off,
         }
@@ -344,6 +349,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                commit_cancelled: false,
                 commit_conflict: false,
                 connection_safe_mode: SafeMode::Off,
             };
@@ -365,6 +371,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                commit_cancelled: false,
                 commit_conflict: false,
                 connection_safe_mode: SafeMode::Off,
             },
@@ -382,6 +389,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                commit_cancelled: false,
                 commit_conflict: false,
                 connection_safe_mode: SafeMode::Off,
             },
@@ -399,6 +407,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                commit_cancelled: false,
                 commit_conflict: false,
                 connection_safe_mode: SafeMode::Off,
             },
@@ -792,6 +801,7 @@ impl EditSession {
         }
         self.editor = None;
         self.commit_failed = false;
+        self.commit_cancelled = false;
         Ok(())
     }
 
@@ -805,6 +815,7 @@ impl EditSession {
             after_source_pk: None,
         });
         self.commit_failed = false;
+        self.commit_cancelled = false;
         Ok(id)
     }
 
@@ -838,6 +849,7 @@ impl EditSession {
             after_source_pk: Some(after_source_pk),
         });
         self.commit_failed = false;
+        self.commit_cancelled = false;
         Ok(id)
     }
 
@@ -868,6 +880,7 @@ impl EditSession {
                 }
             }
             self.commit_failed = false;
+            self.commit_cancelled = false;
             return Ok(self.row_marker_for_server(pk));
         }
         // Preserve pending updates before delete replaces them.
@@ -893,6 +906,7 @@ impl EditSession {
         cs.delete_row_with_expected(pk, merged)
             .map_err(|e| e.to_string())?;
         self.commit_failed = false;
+        self.commit_cancelled = false;
         Ok(RowMarker::Deleted)
     }
 
@@ -902,6 +916,7 @@ impl EditSession {
         cs.delete_insert(insert_id).map_err(|e| e.to_string())?;
         self.overlay.retain(|o| o.insert_id != insert_id);
         self.commit_failed = false;
+        self.commit_cancelled = false;
         Ok(())
     }
 
@@ -915,6 +930,7 @@ impl EditSession {
         self.editor = None;
         self.preview_open = false;
         self.commit_failed = false;
+        self.commit_cancelled = false;
         self.commit_conflict = false;
         self.committing = false;
     }
@@ -924,6 +940,7 @@ impl EditSession {
     pub fn begin_commit(&mut self) -> u64 {
         self.committing = true;
         self.commit_failed = false;
+        self.commit_cancelled = false;
         self.commit_conflict = false;
         self.commit_generation = self.commit_generation.wrapping_add(1);
         self.commit_generation
@@ -940,14 +957,21 @@ impl EditSession {
 
     /// Failed commit: keep edits; do not reload. Caller sets banner/status.
     /// `conflict` is true for `DbError::ChangeConflict` (OW-05 Refresh).
-    pub fn note_commit_failure(&mut self, generation: u64, conflict: bool) -> bool {
+    /// `cancelled` is true for `DbError::Cancelled` (CAN-03 pending-bar copy).
+    pub fn note_commit_failure(
+        &mut self,
+        generation: u64,
+        conflict: bool,
+        cancelled: bool,
+    ) -> bool {
         if self.commit_generation != generation {
             return false;
         }
         self.committing = false;
         self.commit_conflict = conflict;
-        // Conflict uses the OW-05 banner copy, not "Commit failed. Changes kept."
-        self.commit_failed = !conflict;
+        self.commit_cancelled = cancelled && !conflict;
+        // Conflict / cancel use their own copy, not "Commit failed. Changes kept."
+        self.commit_failed = !conflict && !cancelled;
         true
     }
 
@@ -1589,7 +1613,7 @@ mod tests {
             .set_cell(&pk, "title", Value::text("a"), Value::text("b"))
             .unwrap();
         let gen = session.begin_commit();
-        assert!(session.note_commit_failure(gen, false));
+        assert!(session.note_commit_failure(gen, false, false));
         assert!(session.commit_failed);
         assert!(!session.commit_conflict);
         assert!(!session.committing);
@@ -1780,7 +1804,7 @@ mod tests {
         let mut session =
             EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
         let gen = session.begin_commit();
-        assert!(session.note_commit_failure(gen, true));
+        assert!(session.note_commit_failure(gen, true, false));
         assert!(session.commit_conflict);
         assert!(!session.commit_failed);
     }
@@ -1803,9 +1827,10 @@ mod tests {
         assert_eq!(banner, "Commit cancelled. No changes were saved.");
         assert_eq!(status, "Commit cancelled. No changes were saved.");
         assert!(!status.contains("Committed"));
-        assert!(session.note_commit_failure(gen, false));
+        assert!(session.note_commit_failure(gen, false, true));
         assert!(session.is_dirty());
-        assert!(session.commit_failed);
+        assert!(session.commit_cancelled);
+        assert!(!session.commit_failed);
         assert!(!session.committing);
     }
 

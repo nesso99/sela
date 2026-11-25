@@ -4,9 +4,10 @@ mod content;
 mod copy_selection;
 mod edit_actions;
 pub(crate) mod edit_session;
-mod edit_ui;
+pub(crate) mod edit_ui;
 mod filter_bar;
 mod history;
+pub(crate) mod palette;
 mod query;
 mod quit;
 mod result_strip;
@@ -49,14 +50,15 @@ use sela_core::{
 use super::{
     AcceptCellEditor, ActivateTab, CancelCellEditor, CancelQuery, CloseTab, CommitChanges,
     CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, DecreaseFontSize, DeleteEditRow,
-    DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory,
+    DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory, EscapePalette,
     ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
     ExtendGridSelectionUp, FindInSql, FindNext, FindPrevious, FocusHistorySearch, HistoryCopy,
     HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun, HistorySelectDown, HistorySelectUp,
-    IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab, PreviewChanges,
-    Quit, RemoveFilterRow, ResetFontSize, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery,
-    SelectAllGrid, SetCellNull, ShowTableData, ShowTableStructure, ToggleEditor, ToggleFilterBar,
-    ToggleHistory,
+    IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab, PaletteConfirm,
+    PaletteSelectDown, PaletteSelectUp, PreviewChanges, Quit, RemoveFilterRow, ResetFontSize,
+    ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, SelectAllGrid, SetCellNull,
+    ShowTableData, ShowTableStructure, ToggleCommandPalette, ToggleEditor, ToggleFilterBar,
+    ToggleHistory, ToggleQuickOpen,
 };
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
@@ -124,6 +126,8 @@ pub struct Workspace {
     pending_close_tabs: Option<PendingCloseTabs>,
     /// Updated each frame from `window.window_decorations()` for the CSD title bar.
     client_decorations: bool,
+    /// Command palette / quick open (M3-4). Created lazily on first open.
+    palette: Option<palette::PaletteState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -255,6 +259,7 @@ impl Workspace {
             close_tabs_confirm_open: false,
             pending_close_tabs: None,
             client_decorations: false,
+            palette: None,
             _subscriptions: vec![
                 tree_events,
                 tree_selection,
@@ -430,6 +435,7 @@ impl Render for Workspace {
         div()
             .id("sela-root")
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(cx.theme().background)
@@ -821,8 +827,14 @@ impl Render for Workspace {
             })
             .on_action({
                 let this = this.clone();
-                move |_: &PreviewChanges, _, cx| {
-                    this.update(cx, |workspace, cx| workspace.toggle_preview_sheet(cx));
+                move |_: &PreviewChanges, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        // secondary-shift-v must not steal paste in text fields.
+                        if workspace.text_input_focused(window, cx) {
+                            return;
+                        }
+                        workspace.toggle_preview_sheet(cx);
+                    });
                 }
             })
             .on_action({
@@ -839,6 +851,46 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| {
                         workspace.request_discard_changes(window, cx);
                     });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ToggleQuickOpen, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.open_palette(palette::PaletteMode::Tables, window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ToggleCommandPalette, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.open_palette(palette::PaletteMode::Actions, window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &EscapePalette, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.close_palette(window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &PaletteSelectUp, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.palette_move_selection(-1, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &PaletteSelectDown, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.palette_move_selection(1, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &PaletteConfirm, window, cx| {
+                    this.update(cx, |workspace, cx| workspace.palette_confirm(window, cx));
                 }
             })
             .map(|root| {
@@ -917,7 +969,8 @@ impl Render for Workspace {
                                     })
                                     .child(self.empty_content(cx))
                             }),
-                    ),
+                    )
+                    .child(self.command_palette_overlay(cx)),
             )
     }
 }
