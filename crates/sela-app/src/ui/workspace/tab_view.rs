@@ -8,7 +8,7 @@ use gpui_kit::component::input::{
     EditorState, GutterDecorationCollection, InputState, TextDecorationCollection,
 };
 use gpui_kit::component::table::TableState;
-use gpui_kit::{px, AppContext as _, Context, Entity, Focusable as _, SharedString, Window};
+use gpui_kit::{px, AppContext as _, Entity, Focusable as _, SharedString, Window};
 
 use sela_core::{FilterCondition, ResultWindow, RowCountKind, SortSpec, DEFAULT_SQL_ROW_CAP};
 
@@ -24,7 +24,7 @@ pub const COLLAPSED_EDITOR_HEIGHT: f32 = 28.;
 pub const MAX_RESULT_SNAPSHOTS: usize = 8;
 
 #[derive(Clone)]
-pub(super) struct SqlResultSnapshot {
+pub(crate) struct SqlResultSnapshot {
     pub statement_index: usize,
     pub result: ResultWindow,
     pub page_offset: u64,
@@ -41,7 +41,7 @@ pub(super) struct SqlResultSnapshot {
     pub loading: bool,
 }
 
-pub(super) struct TabView {
+pub(crate) struct TabView {
     pub grid: Entity<TableState<GridDelegate>>,
     pub sql: Entity<EditorState>,
     pub sql_gutter: GutterDecorationCollection,
@@ -116,7 +116,7 @@ pub(crate) struct CellInspect {
 }
 
 impl TabView {
-    pub fn new(window: &mut Window, cx: &mut Context<super::Workspace>, sql_text: &str) -> Self {
+    pub fn new(window: &mut Window, cx: &mut gpui_kit::App, sql_text: &str) -> Self {
         let grid = cx.new(|cx| {
             TableState::new(GridDelegate::empty(), window, cx)
                 .sortable(false)

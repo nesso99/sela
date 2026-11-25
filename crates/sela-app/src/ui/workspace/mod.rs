@@ -19,8 +19,8 @@ mod sql_run;
 mod state;
 mod status;
 mod structure;
-mod tab_view;
-mod tabs;
+pub(crate) mod tab_view;
+pub(crate) mod tabs;
 mod tree;
 
 use std::collections::{HashMap, HashSet};
@@ -126,7 +126,7 @@ pub struct Workspace {
 }
 
 #[derive(Clone)]
-pub(super) enum GridSource {
+pub(crate) enum GridSource {
     Idle,
     Table {
         schema: String,

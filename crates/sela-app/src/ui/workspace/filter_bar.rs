@@ -19,7 +19,7 @@ use sela_core::{
 use super::{EscapeFilterBar, InsertFilterRow, RemoveFilterRow, Workspace};
 
 /// One editable filter row (column / op / value inputs).
-pub(super) struct FilterRowUi {
+pub(crate) struct FilterRowUi {
     pub column: Entity<InputState>,
     pub value: Entity<InputState>,
     /// Two-item true/false menu for [`ColumnKind::Bool`] (hidden for null ops).

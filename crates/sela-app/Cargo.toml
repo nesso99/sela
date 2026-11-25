@@ -26,8 +26,14 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
+# Headless UI tests (`#[gpui_kit::test]` / TestAppContext). Feature is test-only;
+# production builds do not enable it.
+gpui-kit = { workspace = true, features = ["test-support"] }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+# gpui-kit/test-support may pull gpui-fast-wgpu (=30.0.1) while gpui-pre-wgpu
+# resolves wgpu to 30.0.2; pin so the graph unifies for UI tests.
+wgpu = "=30.0.1"
