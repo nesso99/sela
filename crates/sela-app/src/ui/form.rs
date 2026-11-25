@@ -126,7 +126,9 @@ impl ConnectionForm {
                     .default_value(seed.file_path)
             }),
             password: cx.new(|cx| {
+                // Spec: password is masked by default; mask_toggle only adds the reveal control.
                 InputState::new(window, cx)
+                    .masked(true)
                     .placeholder("Password")
                     .default_value(password)
             }),
@@ -155,21 +157,20 @@ impl ConnectionForm {
         }
     }
 
-    fn ensure_import_url_subscription(
-        &mut self,
-        this: Entity<Self>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn ensure_import_url_subscription(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self._import_url_subscription.is_some() {
             return;
         }
         let import_url = self.import_url.clone();
-        let subscription = cx.subscribe_in(&import_url, window, move |_, _, event, window, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.update(cx, |form, cx| form.import_from_url(window, cx));
-            }
-        });
+        // subscribe_in already runs inside a ConnectionForm update (`&mut Self`).
+        // Calling `this.update` here re-enters the entity and panics
+        // ("cannot update ConnectionForm while it is already being updated").
+        let subscription =
+            cx.subscribe_in(&import_url, window, move |form, _, event, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    form.import_from_url(window, cx);
+                }
+            });
         self._import_url_subscription = Some(subscription);
     }
 
@@ -261,6 +262,10 @@ impl ConnectionForm {
                 Self::set_value(&self.file_path, imported.file_path, window, cx);
                 if let Some(password) = imported.password {
                     Self::set_value(&self.password, password, window, cx);
+                    // Keep the field masked after Import URL (reveal stays available).
+                    self.password.update(cx, |state, cx| {
+                        state.set_masked(true, window, cx);
+                    });
                 }
                 if imported.engine == Engine::Sqlite {
                     self.tls_mode = TlsMode::Disable;
@@ -340,7 +345,7 @@ impl ConnectionForm {
 impl Render for ConnectionForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
-        self.ensure_import_url_subscription(this.clone(), window, cx);
+        self.ensure_import_url_subscription(window, cx);
         let network = self.engine != Engine::Sqlite;
         let palette = SelaPalette::for_mode(cx.theme().mode);
         let selected_color_label = self.color.label();

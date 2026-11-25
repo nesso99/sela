@@ -129,9 +129,8 @@ impl SafeMode {
             Self::Confirm => {
                 "Writes ask before they run. UPDATE and DELETE without WHERE still ask."
             }
-            Self::ReadOnly => {
-                "Writes are refused in the UI and on the server. Saving reconnects so the level applies immediately."
-            }
+            // docs/design/ux/05-connection-dialog.md Safe mode helper table.
+            Self::ReadOnly => "Writes are refused. Reads run as usual.",
         }
     }
 
@@ -626,6 +625,23 @@ mod tests {
         );
         c.group = "Work".into();
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn safe_mode_helper_matches_connection_dialog_spec() {
+        // docs/design/ux/05-connection-dialog.md Safe mode helper table.
+        assert_eq!(
+            SafeMode::Off.helper(),
+            "Writes run without a confirm. UPDATE and DELETE without WHERE still ask."
+        );
+        assert_eq!(
+            SafeMode::Confirm.helper(),
+            "Writes ask before they run. UPDATE and DELETE without WHERE still ask."
+        );
+        assert_eq!(
+            SafeMode::ReadOnly.helper(),
+            "Writes are refused. Reads run as usual."
+        );
     }
 
     #[test]

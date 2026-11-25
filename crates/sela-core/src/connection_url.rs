@@ -62,6 +62,16 @@ impl std::fmt::Display for ImportUrlError {
 impl std::error::Error for ImportUrlError {}
 
 /// Reject truncated or non-hex percent-encoding (`%`, `%A`, `%zz`).
+/// Map `url` crate parse failures onto the Import URL error table in
+/// `docs/design/ux/05-connection-dialog.md` (empty host / bad port vs BadUrl).
+fn map_url_parse_error(err: url::ParseError) -> ImportUrlError {
+    match err {
+        url::ParseError::EmptyHost => ImportUrlError::NoHost,
+        url::ParseError::InvalidPort => ImportUrlError::BadPort,
+        _ => ImportUrlError::BadUrl,
+    }
+}
+
 fn has_bad_percent_encoding(raw: &str) -> bool {
     let bytes = raw.as_bytes();
     let mut i = 0;
@@ -103,7 +113,7 @@ pub fn parse_connection_url(raw: &str) -> Result<ImportedConnection, ImportUrlEr
         return Err(ImportUrlError::UnsupportedScheme);
     }
 
-    let url = Url::parse(trimmed).map_err(|_| ImportUrlError::BadUrl)?;
+    let url = Url::parse(trimmed).map_err(map_url_parse_error)?;
     let engine = match url.scheme() {
         "postgres" | "postgresql" => Engine::Postgres,
         "mysql" => Engine::Mysql,
@@ -395,8 +405,32 @@ mod tests {
             parse_connection_url("postgres://u@h:0/db").unwrap_err(),
             ImportUrlError::BadPort
         );
-        // Port above 65535 is rejected by the URL parser (BadUrl) or our check.
-        assert!(parse_connection_url("postgres://u@h:99999/db").is_err());
+        // Port above 65535: url crate InvalidPort → BadPort (05 table).
+        assert_eq!(
+            parse_connection_url("postgres://u@h:99999/db").unwrap_err(),
+            ImportUrlError::BadPort
+        );
+        // user:pass@:port — url crate EmptyHost → NoHost (05 table).
+        assert_eq!(
+            parse_connection_url("postgres://selaqa:selaqa@:5432/selaqa").unwrap_err(),
+            ImportUrlError::NoHost
+        );
+    }
+
+    #[test]
+    fn map_url_parse_error_matches_spec_table() {
+        assert_eq!(
+            map_url_parse_error(url::ParseError::EmptyHost),
+            ImportUrlError::NoHost
+        );
+        assert_eq!(
+            map_url_parse_error(url::ParseError::InvalidPort),
+            ImportUrlError::BadPort
+        );
+        assert_eq!(
+            map_url_parse_error(url::ParseError::RelativeUrlWithoutBase),
+            ImportUrlError::BadUrl
+        );
     }
 
     #[test]

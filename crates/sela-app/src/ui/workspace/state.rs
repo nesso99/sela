@@ -67,19 +67,24 @@ impl Workspace {
             return;
         }
         let foreign = self.foreign_connection_ids(&id);
-        if let Some(window) = window {
-            if let Some((_confirm_id, name, tab_count, pending)) =
-                self.first_close_confirm_target(&foreign, cx)
-            {
+        if let Some((_confirm_id, name, tab_count, pending)) =
+            self.first_close_confirm_target(&foreign, cx)
+        {
+            if let Some(window) = window {
                 self.pending_close_tabs = Some(super::PendingCloseTabs::Connect { to_id: id });
                 self.show_close_tabs_confirm(window, cx, &name, tab_count, pending);
                 return;
             }
         }
-        self.proceed_connect_id(id, cx);
+        self.proceed_connect_id(id, window, cx);
     }
 
-    fn proceed_connect_id(&mut self, id: String, cx: &mut Context<Self>) {
+    fn proceed_connect_id(
+        &mut self,
+        id: String,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(saved) = self.connections.iter().find(|item| item.id == id).cloned() else {
             return;
         };
@@ -92,8 +97,28 @@ impl Workspace {
         // Drop a stale connection-error banner before the new attempt (and on
         // switch). Query / save errors on other paths set these again as needed.
         self.clear_connection_banner_error();
-        let password = match self.secrets.get(&saved.id) {
-            Ok(password) => password,
+        self.workspace_status = None;
+        let password = match self.secrets.get_optional(&saved.id) {
+            Ok(Some(password)) => password,
+            Ok(None) => {
+                // Duplicate (and any row with no keychain item) has no secret.
+                // Network engines must ask; SQLite has no password field.
+                if needs_password_prompt(saved.engine) {
+                    if let Some(window) = window {
+                        self.open_form(Some(saved), window, cx);
+                        return;
+                    }
+                    let message = "Type the password to connect.".to_string();
+                    if let Some(view) = self.active_view_mut() {
+                        view.status = message;
+                    } else {
+                        self.workspace_status = Some(message);
+                    }
+                    cx.notify();
+                    return;
+                }
+                String::new()
+            }
             Err(err) => {
                 let message = format!("Could not read the password from the OS keychain: {err}");
                 if let Some(view) = self.active_view_mut() {
@@ -136,6 +161,7 @@ impl Workspace {
                     }
                     // Successful connect must not leave a prior auth failure banner.
                     this.clear_connection_banner_error();
+                    this.workspace_status = None;
                     if let Some(view) = this.active_view_mut() {
                         view.status = status;
                     }
@@ -315,7 +341,11 @@ impl Workspace {
                                         workspace.close_tabs_confirm_open = false;
                                         match workspace.pending_close_tabs.take() {
                                             Some(super::PendingCloseTabs::Connect { to_id }) => {
-                                                workspace.proceed_connect_id(to_id, cx);
+                                                workspace.proceed_connect_id(
+                                                    to_id,
+                                                    Some(window),
+                                                    cx,
+                                                );
                                             }
                                             Some(super::PendingCloseTabs::Disconnect) => {
                                                 workspace.perform_disconnect(cx);
@@ -380,7 +410,7 @@ impl Workspace {
         let subscription =
             cx.subscribe_in(&form, window, |this, _, event, window, cx| match event {
                 FormEvent::Submit(draft) => {
-                    this.save_draft((**draft).clone(), cx);
+                    this.save_draft((**draft).clone(), Some(window), cx);
                     window.close_dialog(cx);
                 }
                 FormEvent::Cancel => window.close_dialog(cx),
@@ -411,14 +441,24 @@ impl Workspace {
             }
         }
         let status = format!("Duplicated {source_name}. Type the password to connect.");
+        // With no tab open the status bar is not mounted; keep the sentence on
+        // the workspace so the empty pane can show it (#88).
         if let Some(view) = self.active_view_mut() {
             view.status = status;
+            self.workspace_status = None;
+        } else {
+            self.workspace_status = Some(status);
         }
         self.rebuild_tree(cx);
         cx.notify();
     }
 
-    pub(super) fn save_draft(&mut self, draft: ConnectionDraft, cx: &mut Context<Self>) {
+    pub(super) fn save_draft(
+        &mut self,
+        draft: ConnectionDraft,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         let id = draft.connection.id.clone();
         let persistence = self.secrets.set(&id, &draft.password);
         if let Some(existing) = self.connections.iter_mut().find(|item| item.id == id) {
@@ -460,7 +500,7 @@ impl Workspace {
         }
         self.session = None;
         self.rebuild_tree(cx);
-        self.connect_id(id, None, cx);
+        self.connect_id(id, window, cx);
     }
 
     pub(super) fn confirm_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -703,6 +743,11 @@ fn sample_database_path(store: &sela_config::ConfigStore) -> PathBuf {
         .join("sample.sqlite")
 }
 
+/// Network engines need a typed password when no keychain/memory secret exists.
+pub(super) fn needs_password_prompt(engine: Engine) -> bool {
+    engine != Engine::Sqlite
+}
+
 /// Banner text when tabs are open: active tab error, else workspace boot error.
 pub(super) fn resolve_banner_error(
     boot_error: Option<&str>,
@@ -711,6 +756,21 @@ pub(super) fn resolve_banner_error(
     active_view_error
         .map(str::to_string)
         .or_else(|| boot_error.map(str::to_string))
+}
+
+/// Status line when no tab is open (Duplicate and similar).
+pub(super) fn resolve_workspace_status(
+    view_status: Option<&str>,
+    workspace_status: Option<&str>,
+) -> Option<String> {
+    if let Some(status) = view_status {
+        if !status.is_empty() {
+            return Some(status.to_string());
+        }
+    }
+    workspace_status
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Clears connection-lifecycle banner sources (boot + optional active tab).
@@ -753,6 +813,31 @@ mod tests {
             resolve_banner_error(boot.as_deref(), view_err.as_deref()),
             None
         );
+    }
+
+    #[test]
+    fn network_engines_need_password_prompt_sqlite_does_not() {
+        assert!(needs_password_prompt(Engine::Postgres));
+        assert!(needs_password_prompt(Engine::Mysql));
+        assert!(!needs_password_prompt(Engine::Sqlite));
+    }
+
+    #[test]
+    fn workspace_status_fills_in_when_no_tab_status() {
+        assert_eq!(
+            resolve_workspace_status(None, Some("Duplicated Red. Type the password to connect."))
+                .as_deref(),
+            Some("Duplicated Red. Type the password to connect.")
+        );
+        assert_eq!(
+            resolve_workspace_status(Some("Connected"), Some("Duplicated …")).as_deref(),
+            Some("Connected")
+        );
+        assert_eq!(
+            resolve_workspace_status(Some(""), Some("Duplicated …")).as_deref(),
+            Some("Duplicated …")
+        );
+        assert_eq!(resolve_workspace_status(None, None), None);
     }
 
     #[test]

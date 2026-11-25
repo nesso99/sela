@@ -200,4 +200,15 @@ mod tests {
         // Password is not a field on SavedConnection; duplicate does not
         // create a keychain item (caller must not copy secrets).
     }
+
+    #[test]
+    fn duplicate_status_sentence() {
+        // docs/design/ux/01-main-window.md — shown on the tab status or
+        // workspace status when no tab is open.
+        let name = "Red Prod";
+        assert_eq!(
+            format!("Duplicated {name}. Type the password to connect."),
+            "Duplicated Red Prod. Type the password to connect."
+        );
+    }
 }

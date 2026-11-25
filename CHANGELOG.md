@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Enter in the Import URL field no longer panics with a re-entrant `ConnectionForm` update; the subscription calls import on the form already being updated (#84).
+- Enter on a safe-mode confirm (`Run this write?` and related) cancels like the quit dialog and does not type into the SQL editor (#83).
+- Connection password field is masked by default, including after Import URL (#85).
+- Connecting a Duplicate (no keychain secret) opens the connection dialog for the password instead of sending an empty one (#87).
+- Read-only Safe mode helper matches the connection-dialog spec: `Writes are refused. Reads run as usual.` (#82).
+- Import URL reports `The URL has no host.` for an empty host and `Port must be a number from 1 to 65535.` for an out-of-range port (#86).
+- Duplicate status `Duplicated {name}. Type the password to connect.` is shown when no tab is open (#88).
+- Sidebar footer wraps so **Disconnect** stays readable at font size 18 (#89).
+
 ## [0.2.0] - 2026-11-25
 
 ### Added

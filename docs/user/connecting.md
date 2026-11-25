@@ -78,6 +78,6 @@ In the connection dialog:
 - **Label** — optional short tag (max 16) shown after the name in the sidebar.
 - **Group** — optional one-level group name (max 40, no `/`). Ungrouped connections stay at the top; groups follow in first-appearance order.
 
-**Duplicate** (sidebar, between Edit and Delete) saves a copy immediately without connecting. The password is not copied; type it before connecting. Status: `Duplicated {name}. Type the password to connect.`
+**Duplicate** (sidebar, between Edit and Delete) saves a copy immediately without connecting. The password is not copied; connecting the copy opens the dialog so you can type it. Status: `Duplicated {name}. Type the password to connect.` (With no tabs open, that line appears above the empty pane.)
 
-**Import URL** fills the form from `postgres://`, `postgresql://`, `mysql://`, or `sqlite:` / `sqlite://` / `sqlite:///`. It does not save or connect. A password in the URL goes into the masked password field (and into the keychain only when you Save). Sela never logs the URL.
+**Import URL** fills the form from `postgres://`, `postgresql://`, `mysql://`, or `sqlite:` / `sqlite://` / `sqlite:///`. It does not save or connect. A password in the URL goes into the masked password field (and into the keychain only when you Save). Sela never logs the URL. An empty host shows `The URL has no host.`; a port outside 1–65535 shows `Port must be a number from 1 to 65535.`
