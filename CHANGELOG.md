@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Headless GPUI UI tests for high-risk flows (#93): `gpui_kit::TestAppContext` harness in `crates/sela-app/src/ui/ui_tests/`, run with `./scripts/ui-tests.sh` (Xvfb optional on Linux). Covers connection-dialog Enter/Save/Cancel and password masking, cell-editor Space / empty accept / Duplicate+Copy as INSERT, and table-tab reload after SQL on Save/reconnect and on plain tab switch (#98).
+- `wgpu` is pinned to `=30.0.1` (was 30.0.2) so the GPUI test-support build resolves; the shared lockfile means the release binary also uses wgpu 30.0.1. Rendering should be re-checked on X11.
 
 ### Fixed
 
