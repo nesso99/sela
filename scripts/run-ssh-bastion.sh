@@ -4,11 +4,11 @@
 #
 # Topology (Docker network):
 #   - postgres:16 (and optionally mysql:8.4) with NO published host ports
-#   - linuxserver/openssh-server (or atmoz/sftp-style) publishing 2222:2222
+#   - linuxserver/openssh-server publishing 127.0.0.1:2222:2222
 #     so the runner reaches only the bastion; the DB is reachable from the
 #     bastion by Docker DNS name (`postgres` / `mysql`).
 #
-# Keys and known_hosts are generated under a temp dir — never committed.
+# Keys, passwords, and known_hosts are generated under a temp dir — never committed.
 # Usage:
 #   eval "$(./scripts/run-ssh-bastion.sh)"
 #   cargo test -p sela-drivers --test ssh_tunnel -- --nocapture
@@ -23,8 +23,9 @@ mkdir -p "$WORKDIR/keys" "$WORKDIR/home/.ssh"
 chmod 700 "$WORKDIR/home/.ssh"
 
 SSH_PORT="${SELA_SSH_PUBLISH_PORT:-2222}"
-PASSWORD="sela-ssh-test"
-PASSPHRASE="sela-key-pass"
+# Runtime-generated secrets (mask these in CI). DB password stays the fixed `sela`.
+PASSWORD="$(openssl rand -hex 16)"
+PASSPHRASE="$(openssl rand -hex 16)"
 USER_NAME="sela"
 NETWORK="sela-ssh-net"
 
@@ -65,6 +66,7 @@ docker run -d --name sela-ssh-mysql --network "$NETWORK" --network-alias mysql \
   "$MYSQL_IMAGE" >/dev/null
 
 # linuxserver/openssh-server: password + pubkey, custom port 2222 inside.
+# Bind bastion to loopback only on the runner.
 docker run -d --name sela-ssh-bastion --network "$NETWORK" \
   -e PUID="$(id -u)" \
   -e PGID="$(id -g)" \
@@ -73,7 +75,7 @@ docker run -d --name sela-ssh-bastion --network "$NETWORK" \
   -e USER_PASSWORD="$PASSWORD" \
   -e PASSWORD_ACCESS=true \
   -e PUBLIC_KEY_FILE=/keys/authorized_keys \
-  -p "${SSH_PORT}:2222" \
+  -p "127.0.0.1:${SSH_PORT}:2222" \
   -v "$WORKDIR/keys:/keys:ro" \
   "$OPENSSH_IMAGE" >/dev/null
 
@@ -178,6 +180,10 @@ echo "SSH LocalForward to postgres:5432 ok (port ${FWD_PORT})" >&2
 
 # Capture the bastion host key into known_hosts (and a deliberately wrong one).
 ssh-keyscan -p "$SSH_PORT" 127.0.0.1 2>/dev/null > "$WORKDIR/home/.ssh/known_hosts" || true
+if [[ ! -s "$WORKDIR/home/.ssh/known_hosts" ]]; then
+  echo "ssh-keyscan produced an empty known_hosts for 127.0.0.1:${SSH_PORT}" >&2
+  exit 1
+fi
 # Wrong key: reuse a different key type entry for the same host.
 ssh-keygen -t ed25519 -N "" -f "$WORKDIR/keys/fake_host" -q
 {
@@ -192,11 +198,9 @@ if [[ "$SSH_PORT" != "22" ]]; then
     awk '{print $1" "$2}' "$WORKDIR/keys/fake_host.pub"
   } > "$WORKDIR/home/.ssh/known_hosts.bad"
   # keyscan may write without brackets; rewrite known_hosts with bracket form too.
-  if [[ -s "$WORKDIR/home/.ssh/known_hosts" ]]; then
-    # Keep keyscan output; also ensure bracket form exists for russh.
-    KEYLINE=$(grep -v '^#' "$WORKDIR/home/.ssh/known_hosts" | head -1 | awk '{print $2" "$3}')
-    echo "[127.0.0.1]:${SSH_PORT} $KEYLINE" >> "$WORKDIR/home/.ssh/known_hosts"
-  fi
+  # Keep keyscan output; also ensure bracket form exists for russh.
+  KEYLINE=$(grep -v '^#' "$WORKDIR/home/.ssh/known_hosts" | head -1 | awk '{print $2" "$3}')
+  echo "[127.0.0.1]:${SSH_PORT} $KEYLINE" >> "$WORKDIR/home/.ssh/known_hosts"
 fi
 
 # Install the unencrypted public key into the container user if PUBLIC_KEY_FILE

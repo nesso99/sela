@@ -45,14 +45,18 @@ fn require_ssh_var(name: &str) -> String {
     })
 }
 
+fn ssh_required() -> bool {
+    std::env::var("SELA_SSH_REQUIRED").ok().as_deref() == Some("1")
+}
+
 fn ssh_env() -> Option<SshEnv> {
     // Unset HOST → skip locally. SELA_SSH_REQUIRED=1 (CI) makes missing HOST a failure.
     let host = match std::env::var("SELA_SSH_HOST") {
         Ok(h) if !h.is_empty() => h,
         _ => {
-            if std::env::var_os("SELA_SSH_REQUIRED").is_some() {
+            if ssh_required() {
                 panic!(
-                    "SELA_SSH_REQUIRED is set but SELA_SSH_HOST is unset — SSH integration env is required"
+                    "SELA_SSH_REQUIRED=1 but SELA_SSH_HOST is unset — SSH integration env is required"
                 );
             }
             return None;
@@ -518,6 +522,11 @@ async fn ssh17_mysql_through_tunnel() {
         return;
     };
     let Some(mysql_host) = env.mysql_host.clone() else {
+        if ssh_required() {
+            panic!(
+                "SELA_SSH_REQUIRED=1 but SELA_SSH_MYSQL_HOST is unset — MySQL through bastion is required"
+            );
+        }
         eprintln!("skip SSH-17: set SELA_SSH_MYSQL_HOST to exercise MySQL through the bastion");
         return;
     };

@@ -13,6 +13,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -22,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
-      ssh: ${{ steps.filter.outputs.ssh }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,7 +39,6 @@ jobs:
             || [ "${{ github.event_name }}" = "workflow_dispatch" ] \
             || { [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; }; then
             echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "ssh=true" >> "$GITHUB_OUTPUT"
             echo "Treating all code as changed (event=${{ github.event_name }})"
             exit 0
           fi
@@ -54,7 +55,6 @@ jobs:
           mapfile -t files < <(git diff --name-only "$BASE"..."$HEAD" || true)
 
           code=false
-          ssh=false
           for file in "${files[@]+"${files[@]}"}"; do
             [ -z "$file" ] && continue
             case "$file" in
@@ -62,28 +62,23 @@ jobs:
               *)
                 code=true
                 echo "Non-docs change: $file"
-                ;;
-            esac
-            # SSH integration paths (docs/md alone do not set ssh).
-            case "$file" in
-              *.md|docs|docs/*) ;;
-              crates/sela-ssh/*|crates/sela-drivers/*|scripts/run-ssh-bastion.sh|.github/workflows/ci.yml)
-                ssh=true
-                echo "SSH-related change: $file"
+                break
                 ;;
             esac
           done
 
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "ssh=$ssh" >> "$GITHUB_OUTPUT"
           echo "code=$code"
-          echo "ssh=$ssh"
 
   check:
     name: check
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # rust-cache save needs actions:write under a contents:read default.
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -153,6 +148,9 @@ jobs:
     needs: [changes, check]
     if: needs.changes.outputs.code == 'true' && success()
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -187,6 +185,9 @@ jobs:
     needs: [changes, check]
     if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     services:
       postgres:
         image: postgres:16
@@ -245,6 +246,9 @@ jobs:
     needs: [changes, check]
     if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -298,12 +302,16 @@ jobs:
         run: cargo test -p sela-drivers postgres_tls -- --nocapture
 
   # SSH bastion in front of Postgres/MySQL (DBs not published to the runner).
-  # Throwaway keys generated at runtime by scripts/run-ssh-bastion.sh.
+  # Throwaway keys/passwords generated at runtime by scripts/run-ssh-bastion.sh.
   ssh-integration:
     name: ssh-integration
     needs: [changes, check]
-    if: needs.changes.outputs.ssh == 'true' && success()
+    if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -327,10 +335,9 @@ jobs:
           eval "$(./scripts/run-ssh-bastion.sh)"
           eval "$(ssh-agent -s)"
           ssh-add "$SELA_SSH_KEY"
-          # Mask secrets before writing them to GITHUB_ENV.
+          # Mask runtime-generated SSH secrets only (DB password stays fixed `sela`).
           echo "::add-mask::$SELA_SSH_PASSWORD"
           echo "::add-mask::$SELA_SSH_KEY_PASSPHRASE"
-          echo "::add-mask::$SELA_SSH_DB_PASSWORD"
           {
             echo "SELA_SSH_HOST=$SELA_SSH_HOST"
             echo "SELA_SSH_PORT=$SELA_SSH_PORT"
@@ -355,6 +362,12 @@ jobs:
       - name: cargo test (SSH tunnel)
         run: cargo test -p sela-drivers --test ssh_tunnel -- --nocapture
 
+      - name: Tear down SSH bastion containers
+        if: always()
+        run: |
+          docker rm -f sela-ssh-bastion sela-ssh-pg sela-ssh-mysql >/dev/null 2>&1 || true
+          docker network rm sela-ssh-net >/dev/null 2>&1 || true
+
   ci-gate:
     name: ci-gate
     if: always()
@@ -377,9 +390,7 @@ jobs:
           echo "$NEEDS_JSON"
 
           code="$(python3 -c 'import json,os; print(json.loads(os.environ["NEEDS_JSON"])["changes"]["outputs"].get("code",""))')"
-          ssh="$(python3 -c 'import json,os; print(json.loads(os.environ["NEEDS_JSON"])["changes"]["outputs"].get("ssh",""))')"
           echo "changes.outputs.code=$code"
-          echo "changes.outputs.ssh=$ssh"
 
           # Fail if any needed job failed or was cancelled.
           python3 - <<'PY'
@@ -395,8 +406,15 @@ jobs:
               sys.exit(1)
 
           code = needs["changes"]["outputs"].get("code", "")
-          ssh = needs["changes"]["outputs"].get("ssh", "")
-          heavy = ["check", "deny", "docs", "test", "db-integration", "db-tls-postgres"]
+          heavy = [
+              "check",
+              "deny",
+              "docs",
+              "test",
+              "db-integration",
+              "db-tls-postgres",
+              "ssh-integration",
+          ]
           if code == "true":
               not_ok = []
               for name in heavy:
@@ -408,14 +426,6 @@ jobs:
                   sys.exit(1)
           else:
               print("docs-only (or no code changes): heavy jobs may be skipped")
-
-          if ssh == "true":
-              result = needs["ssh-integration"].get("result")
-              if result != "success":
-                  print(f"ci-gate failed: ssh changed but ssh-integration={result}")
-                  sys.exit(1)
-          else:
-              print("no SSH-related changes: ssh-integration may be skipped")
 
           print("ci-gate passed")
           PY

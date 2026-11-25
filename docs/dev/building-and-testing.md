@@ -90,7 +90,7 @@ Env vars (printed by the script):
 | `SELA_SSH_DB_USER` / `SELA_SSH_DB_PASSWORD` / `SELA_SSH_DB_NAME` | DB credentials |
 | `SELA_SSH_MYSQL_HOST` / `SELA_SSH_MYSQL_PORT` | Optional MySQL through the same bastion |
 
-Unit tests (config Include, host-key match/mismatch, secret `Debug` redaction, TLS-forward helper) run without Docker. CI job `ssh-integration` (Linux) starts the bastion via `scripts/run-ssh-bastion.sh`, masks generated SSH passwords/passphrases, exports those vars plus `SSH_AUTH_SOCK` and `SELA_SSH_REQUIRED=1`, and runs `cargo test -p sela-drivers --test ssh_tunnel`. It is required by `ci-gate` whenever `changes.outputs.code` is true (docs-only PRs skip it).
+Unit tests (config Include, host-key match/mismatch, secret `Debug` redaction, TLS-forward helper) run without Docker. CI job `ssh-integration` (Linux) starts the bastion via `scripts/run-ssh-bastion.sh`, masks runtime-generated SSH passwords/passphrases (not the fixed DB `sela` password), exports those vars plus `SSH_AUTH_SOCK` and `SELA_SSH_REQUIRED=1`, and runs `cargo test -p sela-drivers --test ssh_tunnel`. It runs whenever `changes.outputs.code` is true and is required by `ci-gate` in that case (docs-only PRs skip it).
 
 While a tunnel is open, any local process can connect to its `127.0.0.1` forwarded port; the tunnel does not authenticate local clients.
 
