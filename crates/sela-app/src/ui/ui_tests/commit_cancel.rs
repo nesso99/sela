@@ -1,4 +1,5 @@
-//! #68 headless UI: optimistic preview (OW-04) and cancel-commit (CAN-01, CAN-03).
+//! #68 headless UI: optimistic preview (OW-04), cancel-commit (CAN-01, CAN-03),
+//! and conflict Refresh (OW-05).
 //!
 //! Fixtures are injected in-memory (no native file dialogs / catalogs).
 
@@ -9,7 +10,7 @@ use gpui_kit::{div, px, size, Context, TestAppContext, Window};
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    ColumnStructure, DbError, Dialect, IndexInfo, RelationKind, TableStructure, Value,
+    ColumnStructure, DbError, Dialect, IndexInfo, RelationKind, TableRef, TableStructure, Value,
 };
 
 use crate::ui::workspace::edit_session::{format_commit_failure, EditSession};
@@ -99,15 +100,16 @@ impl CommitCancelHost {
 
     /// Same registration shape as `perform_commit_changes` (token + busy).
     fn begin_commit_like_ui(&mut self) -> u64 {
+        let n = self.edit.pending_counts().total();
         let generation = self.edit.begin_commit();
         let cancel = CancellationToken::new();
         self.cancel = Some(cancel);
         self.busy = true;
-        self.status = "Committing…".into();
+        self.status = format!("Committing {n} changes…");
         generation
     }
 
-    /// Same as `stop_query` while committing: cancel the token.
+    /// Same as Stop / pending-bar Cancel while committing.
     fn stop_like_ui(&mut self) {
         if !self.busy && !self.edit.committing {
             return;
@@ -122,11 +124,33 @@ impl CommitCancelHost {
     fn finish_cancelled(&mut self, generation: u64) {
         let err = DbError::cancelled("apply cancelled");
         let (banner, status) = format_commit_failure(&err, 1);
-        let _ = self.edit.note_commit_failure(generation);
+        let _ = self.edit.note_commit_failure(generation, false);
         self.busy = false;
         self.cancel = None;
         self.banner = Some(banner);
         self.status = status;
+    }
+
+    /// Apply a ChangeConflict the same way `edit_ui` does (OW-05).
+    fn finish_conflict(&mut self, generation: u64) {
+        let err =
+            DbError::change_conflict(&TableRef::new("public", "books"), 0, 0, &[Value::Int(3)]);
+        let (banner, status) = format_commit_failure(&err, 1);
+        let _ = self.edit.note_commit_failure(generation, true);
+        self.busy = false;
+        self.cancel = None;
+        self.banner = Some(banner);
+        self.status = status;
+    }
+
+    /// OW-05 Refresh: drop ChangeSet (no confirm) and clear the banner.
+    fn refresh_after_conflict(&mut self) {
+        if !self.edit.commit_conflict {
+            return;
+        }
+        self.edit.discard();
+        self.banner = None;
+        self.status = "Refreshed.".into();
     }
 }
 
@@ -153,6 +177,24 @@ impl Render for CommitCancelHost {
                 move |_, _, cx| {
                     this.update(cx, |host, cx| {
                         host.stop_like_ui();
+                        cx.notify();
+                    });
+                }
+            }))
+            .child(Button::new("pending-cancel").label("Cancel").on_click({
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |host, cx| {
+                        host.stop_like_ui();
+                        cx.notify();
+                    });
+                }
+            }))
+            .child(Button::new("conflict-refresh").label("Refresh").on_click({
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |host, cx| {
+                        host.refresh_after_conflict();
                         cx.notify();
                     });
                 }
@@ -199,28 +241,71 @@ fn can01_can03_stop_cancels_commit_keeps_edits(cx: &mut TestAppContext) {
             assert!(host.cancel.as_ref().is_some_and(|t| !t.is_cancelled()));
             assert!(host.busy);
             assert!(host.edit.committing);
+            assert!(
+                host.status.starts_with("Committing ") && host.status.ends_with(" changes…"),
+                "CAN-01 status: {}",
+                host.status
+            );
             gen
         });
-        window.click("stop", cx);
+        window.click("pending-cancel", cx);
         window.render_frame(cx);
         host.update(cx, |host, _| {
             assert!(
                 host.cancel.as_ref().is_some_and(|t| t.is_cancelled()),
-                "CAN-01: Stop must cancel the commit CancellationToken"
+                "CAN-01: pending Cancel must cancel the commit CancellationToken"
             );
             assert_eq!(host.status, "Cancelling…");
-            // Driver returns Cancelled → UI status (CAN-03).
             host.finish_cancelled(generation);
         });
         window.render_frame(cx);
         let host = host.read(cx);
-        assert_eq!(host.status, "Commit cancelled · changes kept");
-        assert_eq!(host.banner.as_deref(), Some("Commit cancelled."));
+        assert_eq!(host.status, "Commit cancelled. No changes were saved.");
+        assert_eq!(
+            host.banner.as_deref(),
+            Some("Commit cancelled. No changes were saved.")
+        );
         assert!(!host.status.starts_with("Committed"));
         assert!(host.edit.is_dirty());
         assert!(host.edit.commit_failed);
         assert!(!host.edit.committing);
         assert!(!host.busy);
+    })
+    .unwrap();
+}
+
+/// OW-05: conflict banner copy + Refresh drops pending edits.
+#[gpui_kit::test]
+fn ow05_conflict_refresh_drops_pending(cx: &mut TestAppContext) {
+    let (handle, host) = super::harness::open_window(cx, size(px(700.), px(400.)), |_, cx| {
+        cx.new(|_cx| CommitCancelHost::new())
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let generation = host.update(cx, |host, _| host.begin_commit_like_ui());
+        host.update(cx, |host, _| host.finish_conflict(generation));
+        window.render_frame(cx);
+        {
+            let host = host.read(cx);
+            let primary =
+                "Row changed since it was loaded. No changes were saved. Refresh and try again.";
+            assert_eq!(host.status, primary);
+            assert!(
+                host.banner
+                    .as_deref()
+                    .is_some_and(|b| b.starts_with(primary)),
+                "OW-05 banner: {:?}",
+                host.banner
+            );
+            assert!(host.edit.commit_conflict);
+            assert!(host.edit.is_dirty());
+        }
+        window.click("conflict-refresh", cx);
+        window.render_frame(cx);
+        let host = host.read(cx);
+        assert!(!host.edit.is_dirty());
+        assert!(!host.edit.commit_conflict);
+        assert!(host.banner.is_none());
     })
     .unwrap();
 }

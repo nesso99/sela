@@ -25,6 +25,9 @@ pub enum PlanOp {
     Insert,
 }
 
+/// Max byte length for blob/bytea optimistic WHERE equality (larger blobs are skipped).
+pub const OPTIMISTIC_BLOB_MAX_BYTES: usize = 4096;
+
 /// One bound DML statement ready for transactional execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedStatement {
@@ -34,6 +37,10 @@ pub struct PlannedStatement {
     /// Original primary-key identity for UPDATE/DELETE (empty for INSERT).
     /// Used by `apply_changes` when reporting [`crate::DbError::ChangeConflict`].
     pub pk: Vec<Value>,
+    /// Non-PK columns whose old values were not ANDed into WHERE (non-comparable
+    /// kinds: `Other`, PG `json`, MySQL JSON, XML, geometric, oversized blobs).
+    /// Preview lists these so the user knows what was not checked.
+    pub unchecked_optimistic: Vec<String>,
 }
 
 /// Ordered, dialect-specific SQL plan built from a [`ChangeSet`].
@@ -100,9 +107,15 @@ impl ChangePlan {
     /// Human-readable preview with SQL literals (display only — never execute).
     ///
     /// Includes `BEGIN;` / `COMMIT;` so M2-3 can show the full transaction.
+    /// Columns skipped by optimistic WHERE are listed as SQL comments.
     pub fn preview_sql(&self) -> Result<String, ChangeError> {
         let mut out = String::from("BEGIN;\n");
         for stmt in &self.statements {
+            if !stmt.unchecked_optimistic.is_empty() {
+                out.push_str("-- unchecked optimistic: ");
+                out.push_str(&stmt.unchecked_optimistic.join(", "));
+                out.push('\n');
+            }
             out.push_str(&render_preview_statement(self.dialect, stmt)?);
             out.push('\n');
         }
@@ -142,7 +155,7 @@ fn build_delete(
     );
     let mut params = Vec::new();
     append_pk_where(changeset, dialect, &mut sql, &mut params, pk)?;
-    append_optimistic_preds(
+    let unchecked = append_optimistic_preds(
         changeset,
         dialect,
         &mut sql,
@@ -154,6 +167,7 @@ fn build_delete(
         sql,
         params,
         pk: pk.to_vec(),
+        unchecked_optimistic: unchecked,
     })
 }
 
@@ -197,12 +211,13 @@ fn build_update(
     }
     append_pk_where(changeset, dialect, &mut sql, &mut params, pk)?;
     let expected = ordered_cell_old_values(changeset, cells);
-    append_optimistic_preds(changeset, dialect, &mut sql, &mut params, &expected)?;
+    let unchecked = append_optimistic_preds(changeset, dialect, &mut sql, &mut params, &expected)?;
     Ok(PlannedStatement {
         op: PlanOp::Update,
         sql,
         params,
         pk: pk.to_vec(),
+        unchecked_optimistic: unchecked,
     })
 }
 
@@ -263,8 +278,14 @@ fn append_optimistic_preds(
     sql: &mut String,
     params: &mut Vec<Value>,
     expected: &[(String, Value)],
-) -> Result<(), ChangeError> {
+) -> Result<Vec<String>, ChangeError> {
+    let mut unchecked = Vec::new();
     for (col, value) in expected {
+        let type_name = changeset.column_type(col);
+        if !optimistic_value_comparable(dialect, type_name, value) {
+            unchecked.push(col.clone());
+            continue;
+        }
         sql.push_str(" AND ");
         sql.push_str(&quote_ident(dialect, col)?);
         if value.is_null() {
@@ -275,7 +296,67 @@ fn append_optimistic_preds(
             params.push(value.clone());
         }
     }
-    Ok(())
+    Ok(unchecked)
+}
+
+/// Whether an old non-PK value can safely appear in optimistic `WHERE col = $n`.
+///
+/// Skips [`Value::Other`], Postgres `json` (keeps `jsonb`), MySQL JSON, XML,
+/// geometric types, and blobs larger than [`OPTIMISTIC_BLOB_MAX_BYTES`].
+pub fn optimistic_value_comparable(
+    dialect: Dialect,
+    type_name: Option<&str>,
+    value: &Value,
+) -> bool {
+    let lower = type_name.map(|t| t.trim().to_ascii_lowercase());
+    let lower = lower.as_deref().unwrap_or("");
+
+    if type_is_xml(lower) || type_is_geometric(lower) {
+        return false;
+    }
+    match dialect {
+        Dialect::Postgres if type_is_pg_json_not_jsonb(lower) => return false,
+        Dialect::Mysql if lower.contains("json") => return false,
+        _ => {}
+    }
+
+    match value {
+        Value::Other { .. } => false,
+        Value::Bytes(bytes) if bytes.len() > OPTIMISTIC_BLOB_MAX_BYTES => false,
+        Value::Json(_) => match dialect {
+            // jsonb equality is fine; plain json is rejected above via type_name.
+            // When the type name is missing, keep Json only for SQLite (text JSON).
+            Dialect::Postgres => lower.contains("jsonb"),
+            Dialect::Mysql => false,
+            Dialect::Sqlite => true,
+        },
+        _ => true,
+    }
+}
+
+fn type_is_xml(lower: &str) -> bool {
+    lower == "xml" || lower.ends_with(" xml") || lower.contains("xmltype")
+}
+
+fn type_is_geometric(lower: &str) -> bool {
+    matches!(
+        lower,
+        "point"
+            | "line"
+            | "lseg"
+            | "box"
+            | "path"
+            | "polygon"
+            | "circle"
+            | "geometry"
+            | "geography"
+    ) || lower.starts_with("geometry(")
+        || lower.starts_with("geography(")
+}
+
+fn type_is_pg_json_not_jsonb(lower: &str) -> bool {
+    (lower == "json" || lower.starts_with("json(") || lower.contains(" json"))
+        && !lower.contains("jsonb")
 }
 
 fn build_insert(
@@ -326,6 +407,7 @@ fn build_insert(
         sql,
         params,
         pk: Vec::new(),
+        unchecked_optimistic: Vec::new(),
     })
 }
 
@@ -782,6 +864,154 @@ mod tests {
         assert_eq!(
             sl.statements[1].sql,
             "UPDATE \"public\".\"books\" SET \"title\" = ?, \"note\" = ? WHERE \"id\" = ? AND \"title\" = ? AND \"note\" IS NULL"
+        );
+    }
+
+    /// Skip non-comparable optimistic preds; preview lists unchecked columns.
+    #[test]
+    fn optimistic_skips_non_comparable_kinds_and_lists_unchecked() {
+        let mut types = BTreeMap::new();
+        types.insert("id".into(), "integer".into());
+        types.insert("title".into(), "text".into());
+        types.insert("score".into(), "real".into());
+        types.insert("meta".into(), "json".into());
+        types.insert("doc".into(), "jsonb".into());
+        types.insert("blob".into(), "bytea".into());
+        types.insert("shape".into(), "point".into());
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new("public", "items"),
+            vec!["id".into()],
+            vec![
+                "id".into(),
+                "title".into(),
+                "score".into(),
+                "meta".into(),
+                "doc".into(),
+                "blob".into(),
+                "shape".into(),
+            ],
+            types,
+        )
+        .unwrap();
+        let big = vec![0u8; OPTIMISTIC_BLOB_MAX_BYTES + 1];
+        cs.set_cell(
+            &[Value::Int(1)],
+            "title",
+            Value::text("a"),
+            Value::text("b"),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "score",
+            Value::Float(1.5),
+            Value::Float(2.5),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "meta",
+            Value::json_raw(r#"{"k":1}"#),
+            Value::json_raw(r#"{"k":2}"#),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "doc",
+            Value::json_raw(r#"{"j":1}"#),
+            Value::json_raw(r#"{"j":2}"#),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "blob",
+            Value::Bytes(big.clone()),
+            Value::Bytes(vec![1, 2, 3]),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "shape",
+            Value::Other {
+                type_name: "point".into(),
+                text: "(0,0)".into(),
+            },
+            Value::Other {
+                type_name: "point".into(),
+                text: "(1,1)".into(),
+            },
+        )
+        .unwrap();
+
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let update = &plan.statements[0];
+        let where_sql = update.sql.split(" WHERE ").nth(1).unwrap_or("");
+        assert!(
+            where_sql.contains("AND \"title\" =") && where_sql.contains("AND \"score\" ="),
+            "{}",
+            update.sql
+        );
+        assert!(
+            where_sql.contains("AND \"doc\" =") && where_sql.contains("::jsonb"),
+            "jsonb kept: {}",
+            update.sql
+        );
+        assert!(
+            !where_sql.contains("\"meta\""),
+            "plain json skipped in WHERE: {}",
+            update.sql
+        );
+        assert!(
+            !where_sql.contains("\"blob\"") && !where_sql.contains("\"shape\""),
+            "blob/geo skipped in WHERE: {}",
+            update.sql
+        );
+        assert_eq!(
+            update.unchecked_optimistic,
+            vec!["meta".to_string(), "blob".to_string(), "shape".to_string()]
+        );
+        let preview = plan.preview_sql().unwrap();
+        assert!(
+            preview.contains("-- unchecked optimistic: meta, blob, shape"),
+            "{preview}"
+        );
+
+        // MySQL: JSON skipped entirely; float kept.
+        let mut types = BTreeMap::new();
+        types.insert("id".into(), "int".into());
+        types.insert("score".into(), "double".into());
+        types.insert("meta".into(), "json".into());
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new("sample", "items"),
+            vec!["id".into()],
+            vec!["id".into(), "score".into(), "meta".into()],
+            types,
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "score",
+            Value::Float(1.0),
+            Value::Float(2.0),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "meta",
+            Value::json_raw("{}"),
+            Value::json_raw("[]"),
+        )
+        .unwrap();
+        let my = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        let my_where = my.statements[0].sql.split(" WHERE ").nth(1).unwrap_or("");
+        assert!(
+            my_where.contains("AND `score` =") && !my_where.contains("`meta`"),
+            "{}",
+            my.statements[0].sql
+        );
+        assert_eq!(
+            my.statements[0].unchecked_optimistic,
+            vec!["meta".to_string()]
         );
     }
 

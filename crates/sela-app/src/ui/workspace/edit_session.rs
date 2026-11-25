@@ -257,7 +257,10 @@ pub(crate) struct EditSession {
     /// Monotonic id so a commit completion can ignore a superseded attempt.
     pub commit_generation: u64,
     /// After a failed commit: pending bar shows "Commit failed. Changes kept."
+    /// Not set for optimistic/PK conflicts (OW-05 uses conflict copy + Refresh).
     pub commit_failed: bool,
+    /// Last failure was `ChangeConflict` (OW-05 Refresh on the banner).
+    pub commit_conflict: bool,
     /// Latest connection safe-mode level (synced from the workspace before edits/commit).
     pub connection_safe_mode: SafeMode,
 }
@@ -289,6 +292,7 @@ impl EditSession {
             committing: false,
             commit_generation: 0,
             commit_failed: false,
+            commit_conflict: false,
             connection_safe_mode: SafeMode::Off,
         }
     }
@@ -314,6 +318,7 @@ impl EditSession {
             committing: false,
             commit_generation: 0,
             commit_failed: false,
+            commit_conflict: false,
             connection_safe_mode: SafeMode::Off,
         }
     }
@@ -339,6 +344,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                commit_conflict: false,
                 connection_safe_mode: SafeMode::Off,
             };
         }
@@ -359,6 +365,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                commit_conflict: false,
                 connection_safe_mode: SafeMode::Off,
             },
             Err(ChangeError::NoPrimaryKey) => Self {
@@ -375,6 +382,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                commit_conflict: false,
                 connection_safe_mode: SafeMode::Off,
             },
             Err(_) => Self {
@@ -391,6 +399,7 @@ impl EditSession {
                 committing: false,
                 commit_generation: 0,
                 commit_failed: false,
+                commit_conflict: false,
                 connection_safe_mode: SafeMode::Off,
             },
         }
@@ -906,6 +915,7 @@ impl EditSession {
         self.editor = None;
         self.preview_open = false;
         self.commit_failed = false;
+        self.commit_conflict = false;
         self.committing = false;
     }
 
@@ -914,6 +924,7 @@ impl EditSession {
     pub fn begin_commit(&mut self) -> u64 {
         self.committing = true;
         self.commit_failed = false;
+        self.commit_conflict = false;
         self.commit_generation = self.commit_generation.wrapping_add(1);
         self.commit_generation
     }
@@ -928,12 +939,15 @@ impl EditSession {
     }
 
     /// Failed commit: keep edits; do not reload. Caller sets banner/status.
-    pub fn note_commit_failure(&mut self, generation: u64) -> bool {
+    /// `conflict` is true for `DbError::ChangeConflict` (OW-05 Refresh).
+    pub fn note_commit_failure(&mut self, generation: u64, conflict: bool) -> bool {
         if self.commit_generation != generation {
             return false;
         }
         self.committing = false;
-        self.commit_failed = true;
+        self.commit_conflict = conflict;
+        // Conflict uses the OW-05 banner copy, not "Commit failed. Changes kept."
+        self.commit_failed = !conflict;
         true
     }
 
@@ -1150,6 +1164,11 @@ pub(crate) fn format_preview_sheet(plan: &ChangePlan) -> String {
     for stmt in &plan.statements {
         out.push_str(&preview_comment(stmt));
         out.push('\n');
+        if !stmt.unchecked_optimistic.is_empty() {
+            out.push_str("-- unchecked optimistic: ");
+            out.push_str(&stmt.unchecked_optimistic.join(", "));
+            out.push('\n');
+        }
         out.push_str(&stmt.sql);
         out.push('\n');
         for (i, param) in stmt.params.iter().enumerate() {
@@ -1193,27 +1212,31 @@ fn param_display(value: &Value, dialect: Dialect) -> String {
     }
 }
 
-/// Status / banner text for a failed commit (keeps edits; no reload).
+/// Status / banner text for a failed or cancelled commit (keeps edits; no reload).
 ///
-/// Banner and status both number statements from 1 (08-preview-commit.md).
+/// Copy from 08-preview-commit.md (CAN-03 / OW-05). Non-conflict failures still
+/// number statements from 1.
 pub(crate) fn format_commit_failure(err: &DbError, statement_count: usize) -> (String, String) {
     match err {
-        DbError::ChangeConflict {
-            statement_index,
-            message,
-            ..
-        } => {
-            let n = statement_index + 1;
-            let banner = message.clone();
-            let status =
-                format!("Commit failed · statement {n} of {statement_count} · changes kept");
-            (banner, status)
+        DbError::ChangeConflict { message, .. } => {
+            // OW-05 primary copy; driver detail (e.g. "No row matched…") under it.
+            let primary =
+                "Row changed since it was loaded. No changes were saved. Refresh and try again.";
+            let banner = if message.is_empty() || message == primary {
+                primary.to_string()
+            } else {
+                format!("{primary}\n{message}")
+            };
+            (banner, primary.to_string())
         }
-        DbError::Cancelled { .. } => (
-            "Commit cancelled.".into(),
-            "Commit cancelled · changes kept".into(),
-        ),
-        _ => (err.to_string(), "Commit failed · changes kept".into()),
+        DbError::Cancelled { .. } => {
+            let line = "Commit cancelled. No changes were saved.".to_string();
+            (line.clone(), line)
+        }
+        _ => {
+            let _ = statement_count;
+            (err.to_string(), "Commit failed · changes kept".into())
+        }
     }
 }
 
@@ -1550,6 +1573,7 @@ mod tests {
         assert!(session.overlay.is_empty());
         assert!(!session.preview_open);
         assert!(!session.commit_failed);
+        assert!(!session.commit_conflict);
         assert!(session.changeset.as_ref().unwrap().is_empty());
     }
 
@@ -1565,8 +1589,9 @@ mod tests {
             .set_cell(&pk, "title", Value::text("a"), Value::text("b"))
             .unwrap();
         let gen = session.begin_commit();
-        assert!(session.note_commit_failure(gen));
+        assert!(session.note_commit_failure(gen, false));
         assert!(session.commit_failed);
+        assert!(!session.commit_conflict);
         assert!(!session.committing);
         assert!(session.is_dirty());
         assert_eq!(
@@ -1738,14 +1763,26 @@ mod tests {
         );
     }
 
+    /// OW-05: conflict UI copy; driver detail may trail in the banner.
     #[test]
-    fn change_conflict_status_names_statement() {
+    fn ow05_conflict_copy_primary_with_driver_detail() {
         let err =
             DbError::change_conflict(&TableRef::new("public", "books"), 1, 0, &[Value::Int(9)]);
         let (banner, status) = format_commit_failure(&err, 4);
-        assert!(banner.contains("No row matched public.books for this key."));
-        assert!(status.contains("statement 2 of 4"));
-        assert!(status.contains("changes kept"));
+        let primary =
+            "Row changed since it was loaded. No changes were saved. Refresh and try again.";
+        assert_eq!(status, primary);
+        assert!(banner.starts_with(primary), "{banner}");
+        assert!(
+            banner.contains("No row matched public.books for this key."),
+            "{banner}"
+        );
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let gen = session.begin_commit();
+        assert!(session.note_commit_failure(gen, true));
+        assert!(session.commit_conflict);
+        assert!(!session.commit_failed);
     }
 
     /// CAN-03: cancelled commit is not reported as success; edits stay dirty.
@@ -1763,10 +1800,10 @@ mod tests {
         let gen = session.begin_commit();
         let err = DbError::cancelled("apply cancelled");
         let (banner, status) = format_commit_failure(&err, 1);
-        assert_eq!(banner, "Commit cancelled.");
-        assert_eq!(status, "Commit cancelled · changes kept");
+        assert_eq!(banner, "Commit cancelled. No changes were saved.");
+        assert_eq!(status, "Commit cancelled. No changes were saved.");
         assert!(!status.contains("Committed"));
-        assert!(session.note_commit_failure(gen));
+        assert!(session.note_commit_failure(gen, false));
         assert!(session.is_dirty());
         assert!(session.commit_failed);
         assert!(!session.committing);

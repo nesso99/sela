@@ -354,7 +354,7 @@ pub(crate) fn install_sela_keybindings(cx: &mut gpui_kit::App) {
     );
     bind_secondary(
         cx,
-        "secondary-shift-p",
+        "secondary-shift-v",
         Box::new(PreviewChanges),
         Some("DataTable"),
     );

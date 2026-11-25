@@ -1701,6 +1701,170 @@ mod tests {
         assert_eq!(page.rows[0][1], Value::text("filled"));
     }
 
+    /// Optimistic WHERE with float / json / blob: UPDATE + DELETE (OW typed cols).
+    #[tokio::test]
+    async fn ow_sqlite_optimistic_float_json_blob_update_and_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes_typed.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_typed (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    score REAL NOT NULL,
+                    meta TEXT NOT NULL,
+                    payload BLOB NOT NULL
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute(
+                "INSERT INTO sela_typed (id, name, score, meta, payload)
+                 VALUES (1, 'a', 1.5, '{\"k\":1}', X'0102'),
+                        (2, 'b', 2.5, '{\"k\":2}', X'0304')",
+            )
+            .await
+            .unwrap();
+
+        let mut types = BTreeMap::new();
+        types.insert("id".into(), "INTEGER".into());
+        types.insert("name".into(), "TEXT".into());
+        types.insert("score".into(), "REAL".into());
+        types.insert("meta".into(), "TEXT".into());
+        types.insert("payload".into(), "BLOB".into());
+        let cols = vec![
+            "id".into(),
+            "name".into(),
+            "score".into(),
+            "meta".into(),
+            "payload".into(),
+        ];
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new("main", "sela_typed"),
+            vec!["id".into()],
+            cols.clone(),
+            types.clone(),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("a2"),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "score",
+            Value::Float(1.5),
+            Value::Float(1.75),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "meta",
+            Value::json_raw(r#"{"k":1}"#),
+            Value::json_raw(r#"{"k":9}"#),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "payload",
+            Value::Bytes(vec![1, 2]),
+            Value::Bytes(vec![9, 9]),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        assert!(
+            plan.statements[0].sql.contains("AND \"score\" =")
+                && plan.statements[0].sql.contains("AND \"meta\" =")
+                && plan.statements[0].sql.contains("AND \"payload\" ="),
+            "{}",
+            plan.statements[0].sql
+        );
+        session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+
+        // Concurrent float edit → conflict on UPDATE.
+        session
+            .execute("UPDATE sela_typed SET score = 9.0 WHERE id = 1")
+            .await
+            .unwrap();
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new("main", "sela_typed"),
+            vec!["id".into()],
+            cols.clone(),
+            types.clone(),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a2"),
+            Value::text("stale"),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "score",
+            Value::Float(1.75),
+            Value::Float(3.0),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        let err = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::ChangeConflict { .. }), "{err:?}");
+
+        // DELETE: oversized blob skipped (listed unchecked); float still checked.
+        let big = vec![0u8; sela_core::OPTIMISTIC_BLOB_MAX_BYTES + 8];
+        session
+            .execute("UPDATE sela_typed SET score = 2.5, name = 'b' WHERE id = 2")
+            .await
+            .unwrap();
+        // Store a large blob on row 2 for the skip path.
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new("main", "sela_typed"),
+            vec!["id".into()],
+            cols,
+            types,
+        )
+        .unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert("name".into(), Value::text("b"));
+        expected.insert("score".into(), Value::Float(2.5));
+        expected.insert("meta".into(), Value::json_raw(r#"{"k":2}"#));
+        expected.insert("payload".into(), Value::Bytes(big));
+        cs.delete_row_with_expected(&[Value::Int(2)], expected)
+            .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        assert_eq!(
+            plan.statements[0].unchecked_optimistic,
+            vec!["payload".to_string()]
+        );
+        assert!(
+            plan.statements[0].sql.contains("AND \"score\" =")
+                && !plan.statements[0].sql.contains("\"payload\""),
+            "{}",
+            plan.statements[0].sql
+        );
+        session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+        let page = session
+            .query("SELECT COUNT(*) FROM sela_typed WHERE id = 2")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::Int(0));
+    }
+
     #[tokio::test]
     async fn sqlite_read_only_safe_mode_rejects_insert() {
         let dir = tempfile::tempdir().unwrap();

@@ -1347,6 +1347,7 @@ mod tests {
                 sql: format!("UPDATE {qschema}.`sela_guard` SET `name` = ? WHERE `id` = ?"),
                 params: vec![Value::text("a"), Value::Int(1)],
                 pk: vec![Value::Int(1)],
+                unchecked_optimistic: Vec::new(),
             }],
         };
         let result = session
@@ -1496,8 +1497,20 @@ mod tests {
             .unwrap();
         assert_eq!(result.statements_executed, 1);
 
-        // CAN-02: cancel while blocked on a row lock — no partial commit.
-        // MySQL rejects prepared `BEGIN` (error 1295); use Connection::begin.
+        // CAN-02: 2-statement plan — stmt1 updates unlocked row 2, stmt2 blocks on
+        // row 1. Cancel must roll back stmt1. MySQL rejects prepared BEGIN (1295).
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_opt68 SET name = 'a', note = NULL WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_opt68 SET name = 'b', note = 'x' WHERE id = 2"
+            ))
+            .await
+            .unwrap();
         let lock_pool = sqlx::MySqlPool::connect(&url).await.expect("lock pool");
         let mut lock_conn = lock_pool.acquire().await.expect("lock conn");
         let mut lock_tx = lock_conn.begin().await.expect("lock BEGIN");
@@ -1513,14 +1526,22 @@ mod tests {
             vec!["id".into(), "name".into(), "note".into()],
         )
         .unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert("name".into(), Value::text("b"));
+        expected.insert("note".into(), Value::text("x"));
+        cs.delete_row_with_expected(&[Value::Int(2)], expected)
+            .unwrap();
         cs.set_cell(
             &[Value::Int(1)],
             "name",
-            Value::text("ok"),
+            Value::text("a"),
             Value::text("blocked"),
         )
         .unwrap();
         let plan = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        assert_eq!(plan.statements.len(), 2);
+        assert_eq!(plan.statements[0].op, sela_core::PlanOp::Delete);
+        assert_eq!(plan.statements[1].op, sela_core::PlanOp::Update);
         let cancel = CancellationToken::new();
         let cancel_later = cancel.clone();
         tokio::spawn(async move {
@@ -1546,14 +1567,188 @@ mod tests {
         lock_pool.close().await;
         let page = session
             .query(&format!(
-                "SELECT name FROM {qschema}.sela_opt68 WHERE id = 1"
+                "SELECT id, name FROM {qschema}.sela_opt68 ORDER BY id"
             ))
             .await
             .unwrap();
-        assert_eq!(page.rows[0][0], Value::text("ok"));
+        assert_eq!(page.rows.len(), 2, "CAN-02: stmt1 DELETE must roll back");
+        assert_eq!(page.rows[0][1], Value::text("a"));
+        assert_eq!(page.rows[1][1], Value::text("b"));
 
         session
             .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_opt68"))
+            .await
+            .unwrap();
+    }
+
+    /// Optimistic WHERE: float kept; MySQL JSON and oversized BLOB skipped.
+    #[tokio::test]
+    async fn ow_mysql_optimistic_float_json_blob_update_and_delete_when_configured() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql typed optimistic: set SELA_MYSQL_URL");
+            return;
+        };
+        let schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
+        let session = MysqlSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| panic!("SELA_MYSQL_URL is set but MySQL is unreachable: {err}"));
+        let qschema = sela_core::quote_ident(Dialect::Mysql, &schema).unwrap();
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_typed68"))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "CREATE TABLE {qschema}.sela_typed68 (
+                    id INT PRIMARY KEY,
+                    name VARCHAR(64) NOT NULL,
+                    score DOUBLE NOT NULL,
+                    meta JSON NOT NULL,
+                    payload BLOB NOT NULL
+                )"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_typed68 (id, name, score, meta, payload)
+                 VALUES (1, 'a', 1.5, '{{\"k\":1}}', X'0102'),
+                        (2, 'b', 2.5, '{{\"k\":2}}', X'0304')"
+            ))
+            .await
+            .unwrap();
+
+        let mut types = BTreeMap::new();
+        types.insert("id".into(), "int".into());
+        types.insert("name".into(), "varchar".into());
+        types.insert("score".into(), "double".into());
+        types.insert("meta".into(), "json".into());
+        types.insert("payload".into(), "blob".into());
+        let cols = vec![
+            "id".into(),
+            "name".into(),
+            "score".into(),
+            "meta".into(),
+            "payload".into(),
+        ];
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new(&schema, "sela_typed68"),
+            vec!["id".into()],
+            cols.clone(),
+            types.clone(),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("a2"),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "score",
+            Value::Float(1.5),
+            Value::Float(1.75),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "meta",
+            Value::json_raw(r#"{"k":1}"#),
+            Value::json_raw(r#"{"k":9}"#),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "payload",
+            Value::Bytes(vec![1, 2]),
+            Value::Bytes(vec![9, 9]),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        let where_sql = plan.statements[0].sql.split(" WHERE ").nth(1).unwrap_or("");
+        assert!(
+            where_sql.contains("AND `score` =")
+                && where_sql.contains("AND `payload` =")
+                && !where_sql.contains("`meta`"),
+            "{}",
+            plan.statements[0].sql
+        );
+        assert_eq!(
+            plan.statements[0].unchecked_optimistic,
+            vec!["meta".to_string()]
+        );
+        session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_typed68 SET score = 9.0 WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new(&schema, "sela_typed68"),
+            vec!["id".into()],
+            cols.clone(),
+            types.clone(),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "score",
+            Value::Float(1.75),
+            Value::Float(3.0),
+        )
+        .unwrap();
+        let err = session
+            .apply_changes(
+                &ChangePlan::build(&cs, Dialect::Mysql).unwrap(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::ChangeConflict { .. }), "{err:?}");
+
+        let big = vec![0u8; sela_core::OPTIMISTIC_BLOB_MAX_BYTES + 8];
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new(&schema, "sela_typed68"),
+            vec!["id".into()],
+            cols,
+            types,
+        )
+        .unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert("name".into(), Value::text("b"));
+        expected.insert("score".into(), Value::Float(2.5));
+        expected.insert("meta".into(), Value::json_raw(r#"{"k":2}"#));
+        expected.insert("payload".into(), Value::Bytes(big));
+        cs.delete_row_with_expected(&[Value::Int(2)], expected)
+            .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        assert!(plan.statements[0]
+            .unchecked_optimistic
+            .contains(&"meta".to_string()));
+        assert!(plan.statements[0]
+            .unchecked_optimistic
+            .contains(&"payload".to_string()));
+        session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+        let page = session
+            .query(&format!(
+                "SELECT COUNT(*) AS c FROM {qschema}.sela_typed68 WHERE id = 2"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::Int(0));
+
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_typed68"))
             .await
             .unwrap();
     }

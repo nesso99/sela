@@ -894,6 +894,9 @@ fn extract_pk(
 
 /// Non-PK originals for optimistic DELETE WHERE: pending `old_value` when the
 /// cell was edited, otherwise the loaded server cell.
+///
+/// Passes every loaded non-PK through; [`ChangePlan`] skips non-comparable
+/// kinds and lists them under `-- unchecked optimistic:` in Preview.
 fn extract_optimistic_expected(
     result: &sela_core::ResultWindow,
     row: usize,

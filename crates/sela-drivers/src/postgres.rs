@@ -1903,7 +1903,20 @@ mod tests {
         assert_eq!(page.rows[0][1], Value::text("concurrent"));
         assert_eq!(page.rows[1][1], Value::text("b"));
 
-        // Cancel while a statement is blocked on a row lock (server cancel path).
+        // CAN-02: 2-statement plan — stmt1 updates unlocked row 2, stmt2 blocks on
+        // row 1 locked by another connection. Cancel must roll back stmt1 too.
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_opt68 SET name = 'a' WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_opt68 SET name = 'b' WHERE id = 2"
+            ))
+            .await
+            .unwrap();
         let lock_pool = sqlx::PgPool::connect(&url).await.expect("lock pool");
         let mut lock_conn = lock_pool.acquire().await.expect("lock conn");
         sqlx::query("BEGIN").execute(&mut *lock_conn).await.unwrap();
@@ -1919,14 +1932,23 @@ mod tests {
             vec!["id".into(), "name".into(), "note".into()],
         )
         .unwrap();
+        // DELETE id=2 runs first (unlocked); UPDATE id=1 blocks on the lock.
+        let mut expected = BTreeMap::new();
+        expected.insert("name".into(), Value::text("b"));
+        expected.insert("note".into(), Value::text("x"));
+        cs.delete_row_with_expected(&[Value::Int(2)], expected)
+            .unwrap();
         cs.set_cell(
             &[Value::Int(1)],
             "name",
-            Value::text("concurrent"),
+            Value::text("a"),
             Value::text("blocked"),
         )
         .unwrap();
         let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        assert_eq!(plan.statements.len(), 2);
+        assert_eq!(plan.statements[0].op, sela_core::PlanOp::Delete);
+        assert_eq!(plan.statements[1].op, sela_core::PlanOp::Update);
         let cancel = CancellationToken::new();
         let cancel_later = cancel.clone();
         tokio::spawn(async move {
@@ -1955,11 +1977,13 @@ mod tests {
         lock_pool.close().await;
         let page = session
             .query(&format!(
-                "SELECT name FROM {qschema}.sela_opt68 WHERE id = 1"
+                "SELECT id, name FROM {qschema}.sela_opt68 ORDER BY id"
             ))
             .await
             .unwrap();
-        assert_eq!(page.rows[0][0], Value::text("concurrent"));
+        assert_eq!(page.rows.len(), 2, "CAN-02: stmt1 DELETE must roll back");
+        assert_eq!(page.rows[0][1], Value::text("a"));
+        assert_eq!(page.rows[1][1], Value::text("b"));
 
         // OW-03: optimistic WHERE with NULL old non-PK still commits.
         session
@@ -1992,6 +2016,197 @@ mod tests {
 
         session
             .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_opt68"))
+            .await
+            .unwrap();
+    }
+
+    /// Optimistic WHERE: float + jsonb kept; plain json / oversized bytea skipped.
+    #[tokio::test]
+    async fn ow_postgres_optimistic_float_json_blob_update_and_delete_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres typed optimistic: set SELA_POSTGRES_URL");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| {
+                panic!("SELA_POSTGRES_URL is set but Postgres is unreachable: {err}")
+            });
+        let qschema = quote_ident(Dialect::Postgres, &schema).unwrap();
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_typed68"))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "CREATE TABLE {qschema}.sela_typed68 (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    score DOUBLE PRECISION NOT NULL,
+                    meta JSON NOT NULL,
+                    doc JSONB NOT NULL,
+                    payload BYTEA NOT NULL
+                )"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_typed68 (id, name, score, meta, doc, payload)
+                 VALUES (1, 'a', 1.5, '{{\"k\":1}}'::json, '{{\"j\":1}}'::jsonb, '\\x0102'::bytea),
+                        (2, 'b', 2.5, '{{\"k\":2}}'::json, '{{\"j\":2}}'::jsonb, '\\x0304'::bytea)"
+            ))
+            .await
+            .unwrap();
+
+        let mut types = BTreeMap::new();
+        types.insert("id".into(), "integer".into());
+        types.insert("name".into(), "text".into());
+        types.insert("score".into(), "double precision".into());
+        types.insert("meta".into(), "json".into());
+        types.insert("doc".into(), "jsonb".into());
+        types.insert("payload".into(), "bytea".into());
+        let cols = vec![
+            "id".into(),
+            "name".into(),
+            "score".into(),
+            "meta".into(),
+            "doc".into(),
+            "payload".into(),
+        ];
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new(&schema, "sela_typed68"),
+            vec!["id".into()],
+            cols.clone(),
+            types.clone(),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("a2"),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "score",
+            Value::Float(1.5),
+            Value::Float(1.75),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "meta",
+            Value::json_raw(r#"{"k":1}"#),
+            Value::json_raw(r#"{"k":9}"#),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "doc",
+            Value::json_raw(r#"{"j":1}"#),
+            Value::json_raw(r#"{"j":9}"#),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "payload",
+            Value::Bytes(vec![1, 2]),
+            Value::Bytes(vec![9, 9]),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        assert!(
+            plan.statements[0].sql.contains("AND \"score\" =")
+                && plan.statements[0].sql.contains("AND \"doc\" =")
+                && plan.statements[0].sql.contains("::jsonb"),
+            "{}",
+            plan.statements[0].sql
+        );
+        assert!(
+            !plan.statements[0].sql.contains("\"meta\""),
+            "plain json skipped: {}",
+            plan.statements[0].sql
+        );
+        assert!(plan.statements[0]
+            .unchecked_optimistic
+            .iter()
+            .any(|c| c == "meta"));
+        session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+
+        // Concurrent float → conflict.
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_typed68 SET score = 9.0 WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new(&schema, "sela_typed68"),
+            vec!["id".into()],
+            cols.clone(),
+            types.clone(),
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "score",
+            Value::Float(1.75),
+            Value::Float(3.0),
+        )
+        .unwrap();
+        let err = session
+            .apply_changes(
+                &ChangePlan::build(&cs, Dialect::Postgres).unwrap(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::ChangeConflict { .. }), "{err:?}");
+
+        // DELETE with oversized bytea skipped.
+        let big = vec![0u8; sela_core::OPTIMISTIC_BLOB_MAX_BYTES + 8];
+        let mut cs = ChangeSet::try_new_with_types(
+            TableRef::new(&schema, "sela_typed68"),
+            vec!["id".into()],
+            cols,
+            types,
+        )
+        .unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert("name".into(), Value::text("b"));
+        expected.insert("score".into(), Value::Float(2.5));
+        expected.insert("meta".into(), Value::json_raw(r#"{"k":2}"#));
+        expected.insert("doc".into(), Value::json_raw(r#"{"j":2}"#));
+        expected.insert("payload".into(), Value::Bytes(big));
+        cs.delete_row_with_expected(&[Value::Int(2)], expected)
+            .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        assert!(plan.statements[0]
+            .unchecked_optimistic
+            .contains(&"payload".to_string()));
+        assert!(plan.statements[0]
+            .unchecked_optimistic
+            .contains(&"meta".to_string()));
+        session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+        let page = session
+            .query(&format!(
+                "SELECT COUNT(*)::bigint FROM {qschema}.sela_typed68 WHERE id = 2"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::Int(0));
+
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_typed68"))
             .await
             .unwrap();
     }

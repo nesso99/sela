@@ -116,6 +116,9 @@ pub(crate) async fn apply_postgres(
         .await
         .map_err(crate::sqlx_err)?;
 
+    // Cancel helper shares the session pool (max_connections = 5). When every
+    // connection is checked out, this acquire can wait/fail and server-side
+    // cancel is skipped; cooperative checks + dropping the tx still roll back.
     let cancel_watch = cancel.clone();
     let pool_cancel = pool.clone();
     let cancel_task = tokio::spawn(async move {
@@ -133,14 +136,11 @@ pub(crate) async fn apply_postgres(
     .await;
 
     let cancelled = cancel.is_cancelled() || matches!(&result, Err(DbError::Cancelled { .. }));
-    if cancelled || cancel.is_cancelled() {
+    if cancelled {
         let _ = tokio::time::timeout(Duration::from_secs(1), cancel_task).await;
         let _ = conn.close().await;
     } else {
         cancel_task.abort();
-        if cancel.is_cancelled() {
-            let _ = conn.close().await;
-        }
     }
     result
 }
@@ -164,6 +164,9 @@ pub(crate) async fn apply_mysql(
         .await
         .map_err(crate::sqlx_err)?;
 
+    // Cancel helper shares the session pool (max_connections = 5). When every
+    // connection is checked out, this acquire can wait/fail and server-side
+    // cancel is skipped; cooperative checks + dropping the tx still roll back.
     let cancel_watch = cancel.clone();
     let pool_cancel = pool.clone();
     let cancel_task = tokio::spawn(async move {
@@ -179,14 +182,11 @@ pub(crate) async fn apply_mysql(
     .await;
 
     let cancelled = cancel.is_cancelled() || matches!(&result, Err(DbError::Cancelled { .. }));
-    if cancelled || cancel.is_cancelled() {
+    if cancelled {
         let _ = tokio::time::timeout(Duration::from_secs(1), cancel_task).await;
         let _ = conn.close().await;
     } else {
         cancel_task.abort();
-        if cancel.is_cancelled() {
-            let _ = conn.close().await;
-        }
     }
     result
 }
