@@ -10,3 +10,4 @@ mod file_menu;
 mod grid_editing;
 mod harness;
 mod reconnect;
+mod ssh_dialog;

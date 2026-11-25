@@ -589,9 +589,14 @@ async fn ssh18_unknown_host_key_challenge_then_accept() {
         "fingerprint={}",
         challenge.fingerprint
     );
-    // Reject path (typed error).
+    // Reject path (typed error); known_hosts must stay empty.
     let rejected = challenge.reject();
     assert!(matches!(rejected, DbError::Ssh { .. }));
+    let after_reject = std::fs::read_to_string(&empty_known).unwrap_or_default();
+    assert!(
+        after_reject.trim().is_empty(),
+        "reject must not write known_hosts; got {after_reject:?}"
+    );
 
     // Fresh challenge → accept_and_remember.
     let paths = SshPaths::from_home(&env.home)

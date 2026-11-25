@@ -65,9 +65,62 @@ impl SshError {
     }
 
     /// Map into [`sela_core::DbError::Ssh`] (US-02: distinct from DB auth/connection).
+    ///
+    /// Host-key mismatch uses vendor code `host-key-mismatch` and the UX dialog
+    /// body (SSH-07) so the UI can show a hard-error alert without a Replace button.
     pub fn into_db_error(self) -> sela_core::DbError {
-        sela_core::DbError::ssh(self.to_string())
+        match self {
+            Self::HostKeyMismatch {
+                host,
+                expected,
+                presented,
+                ..
+            } => sela_core::DbError::Ssh {
+                message: host_key_changed_body(&host, &expected, &presented),
+                sqlstate: None,
+                vendor_code: Some(HOST_KEY_MISMATCH_VENDOR.into()),
+            },
+            other => sela_core::DbError::ssh(other.to_string()),
+        }
     }
+}
+
+/// Vendor code on [`sela_core::DbError::Ssh`] for a changed host key (SSH-07).
+pub const HOST_KEY_MISMATCH_VENDOR: &str = "host-key-mismatch";
+
+/// Dialog title for a changed SSH host key (SSH-07).
+pub fn host_key_changed_title() -> &'static str {
+    "SSH host key changed"
+}
+
+/// Dialog body for a changed SSH host key (SSH-07). No override / Replace.
+pub fn host_key_changed_body(host: &str, expected: &str, presented: &str) -> String {
+    format!(
+        "The host key for {host} does not match known_hosts. This can mean the server was rebuilt — or that someone is intercepting the connection.\n\nExpected:\n{expected}\n\nPresented:\n{presented}\n\nSela will not connect. Remove or update the entry for this host in ~/.ssh/known_hosts (or %USERPROFILE%\\.ssh\\known_hosts on Windows), then try again."
+    )
+}
+
+/// Dialog title for a first-seen SSH host key (SSH-18).
+pub fn unknown_host_key_title() -> &'static str {
+    "Unknown SSH host key"
+}
+
+/// Dialog body for a first-seen SSH host key (SSH-18).
+pub fn unknown_host_key_body(host: &str, fingerprint: &str) -> String {
+    format!(
+        "The host key for {host} is not in known_hosts.\n\nSHA256 fingerprint:\n{fingerprint}\n\nAccept and save this key to known_hosts?"
+    )
+}
+
+/// True when a [`sela_core::DbError`] is the hard host-key-changed case (SSH-07).
+pub fn db_error_is_host_key_mismatch(err: &sela_core::DbError) -> bool {
+    matches!(
+        err,
+        sela_core::DbError::Ssh {
+            vendor_code: Some(code),
+            ..
+        } if code == HOST_KEY_MISMATCH_VENDOR
+    )
 }
 
 impl From<std::io::Error> for SshError {
@@ -106,5 +159,29 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = expand_user_path("~/.ssh/id_ed25519", Some(dir.path())).unwrap();
         assert_eq!(path, dir.path().join(".ssh/id_ed25519"));
+    }
+
+    #[test]
+    // SSH-07: mismatch maps to DbError::Ssh with UX body and vendor code.
+    fn host_key_mismatch_into_db_error_uses_ux_copy() {
+        let err = SshError::HostKeyMismatch {
+            host: "bastion.example.com".into(),
+            port: 22,
+            expected: "SHA256:old".into(),
+            presented: "SHA256:new".into(),
+        };
+        let db = err.into_db_error();
+        assert!(db_error_is_host_key_mismatch(&db));
+        let msg = db.to_string();
+        assert!(msg.contains("Expected:"));
+        assert!(msg.contains("Presented:"));
+        assert!(msg.contains("Sela will not connect."));
+        assert!(msg.contains("SHA256:old"));
+        assert!(msg.contains("SHA256:new"));
+        assert_eq!(host_key_changed_title(), "SSH host key changed");
+        assert_eq!(unknown_host_key_title(), "Unknown SSH host key");
+        let body = unknown_host_key_body("bastion.example.com", "SHA256:abc");
+        assert!(body.contains("SHA256:abc"));
+        assert!(body.contains("Accept and save"));
     }
 }
