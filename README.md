@@ -37,8 +37,8 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Grid selection + copy (TSV/CSV/JSON/INSERT); light/dark/system themes | Done (M1-7) |
 | Safe mode (editor) | Done (M2-4) — [safe mode](docs/user/safe-mode.md) |
 | Inline edit, connection color / groups | Done (M2) — [safe mode](docs/user/safe-mode.md), [connecting](docs/user/connecting.md) |
-| SSH tunnel | Planned (M3-1) — [roadmap](docs/design/roadmap.md) |
-| Export CSV/JSON/SQL + CSV import | Done (M3-3) [11-export-import](docs/design/ux/11-export-import.md) — [export-import](docs/user/export-import.md) |
+| SSH tunnel | Done (M3-1) — [connecting](docs/user/connecting.md#ssh-tunnel-postgresql-and-mysql) |
+| Export CSV/JSON/SQL + CSV import | M3-3 UI shipped (dialogs, progress, cancel, native Browse); palette wiring waits on M3-4 — [11-export-import](docs/design/ux/11-export-import.md), [export-import](docs/user/export-import.md) |
 
 ## Documentation
 

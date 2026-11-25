@@ -104,6 +104,7 @@ impl ReconnectHost {
                     // Save reconnects then activates the tab (same as production).
                     this.activate_table_tab(cx);
                 }
+                FormEvent::SaveOnly(_) | FormEvent::Test(_) => {}
                 FormEvent::Cancel => {
                     window.close_dialog(cx);
                     cx.notify();

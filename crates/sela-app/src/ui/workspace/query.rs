@@ -843,17 +843,21 @@ impl Workspace {
                 self.apply_cancelled(tab_id, err, cx);
             }
             Err(err) => {
-                if let Some(view) = self.view_mut(tab_id) {
-                    let stmt = view.sql_run_statement_index;
-                    view.status = Self::format_query_failed_status(Some(stmt), err.sqlstate());
-                    view.error = Some(err.to_string());
-                    view.last_error_sqlstate = err.sqlstate().map(str::to_string);
-                    view.grid.update(cx, |state, cx| {
-                        state.delegate_mut().note_query_failed();
-                        state.refresh(cx);
-                    });
+                // SSH-11: tunneled session drop → banner + status; leave tabs/edits.
+                self.note_possible_ssh_tunnel_drop(&err, cx);
+                if self.session.is_some() {
+                    if let Some(view) = self.view_mut(tab_id) {
+                        let stmt = view.sql_run_statement_index;
+                        view.status = Self::format_query_failed_status(Some(stmt), err.sqlstate());
+                        view.error = Some(err.to_string());
+                        view.last_error_sqlstate = err.sqlstate().map(str::to_string);
+                        view.grid.update(cx, |state, cx| {
+                            state.delegate_mut().note_query_failed();
+                            state.refresh(cx);
+                        });
+                    }
+                    self.advance_sql_batch_after_stream(tab_id, true, Some(&err), cx);
                 }
-                self.advance_sql_batch_after_stream(tab_id, true, Some(&err), cx);
             }
         }
         cx.notify();

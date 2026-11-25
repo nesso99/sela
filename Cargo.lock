@@ -7286,6 +7286,7 @@ dependencies = [
  "sela-config",
  "sela-core",
  "sela-drivers",
+ "sela-ssh",
  "serde_json",
  "tempfile",
  "tokio",
