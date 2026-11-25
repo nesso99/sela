@@ -166,14 +166,35 @@ async fn au03_no_open_inside_comment(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// AU-05: ctrl-space opens manually; secondary-space does not.
+/// AU-05: ctrl-space opens manually on every OS; secondary-space stays free on macOS.
 ///
-/// On Linux `secondary` resolves to Control, so Control+Space and
-/// `secondary-space` are the same physical chord. Simulate macOS so
-/// `secondary-space` is ⌘Space (Spotlight) and must not open the popup.
+/// Control+Space is bound as `ctrl-space` (not `secondary-space`). Assert the
+/// trigger on the host OS first. Then simulate macOS so `secondary-space` is
+/// ⌘Space (Spotlight) and must not open the popup.
 #[gpui_kit::test]
 async fn au05_ctrl_space_opens_secondary_space_free(cx: &mut TestAppContext) {
     let fix = open_workspace(cx).await;
+    // Host OS (Linux / Windows / macOS CI): Control+Space must open.
+    cx.update_window(fix.handle, |_, window, cx| {
+        fix.workspace
+            .update(cx, |ws, cx| ws.test_focus_sql_editor(window, cx));
+        window.press("ctrl-space", cx);
+    })
+    .unwrap();
+    settle(fix.handle, cx);
+    cx.update_window(fix.handle, |_, window, cx| {
+        assert!(
+            fix.workspace.read(cx).test_completion_popup_open(cx),
+            "ctrl-space must open the popup on {:?}",
+            cx.platform_info().os
+        );
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(!fix.workspace.read(cx).test_completion_popup_open(cx));
+    })
+    .unwrap();
+
+    // Spotlight chord: secondary-space must stay free when secondary is ⌘.
     cx.set_platform_info(gpui_kit::PlatformInfo {
         os: gpui_kit::OperatingSystem::Mac,
         target: gpui_kit::PlatformTarget::Native,
@@ -190,6 +211,7 @@ async fn au05_ctrl_space_opens_secondary_space_free(cx: &mut TestAppContext) {
             !fix.workspace.read(cx).test_completion_popup_open(cx),
             "secondary-space (⌘Space on macOS) must stay free"
         );
+        // Still Control+Space after the platform flip.
         window.press("ctrl-space", cx);
     })
     .unwrap();
@@ -197,7 +219,7 @@ async fn au05_ctrl_space_opens_secondary_space_free(cx: &mut TestAppContext) {
     cx.update_window(fix.handle, |_, _, cx| {
         assert!(
             fix.workspace.read(cx).test_completion_popup_open(cx),
-            "ctrl-space must open the popup"
+            "ctrl-space must still open after macOS platform simulation"
         );
     })
     .unwrap();
