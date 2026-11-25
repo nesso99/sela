@@ -2,7 +2,7 @@
 
 The editor is the bottom of the content column. M1-4 replaces the single-statement textarea behavior with statement-at-caret, multi-statement runs, and a gutter. Format (`sqlformat`) is backlog, not M1-4. Autocomplete is M3-2 (US-08) and is specified here so its chords are not taken by M1-4. Shortcut notation is in [README.md](./README.md). The running, cancelled, capped, and error states of the window are in [01-main-window.md](./01-main-window.md).
 
-![Editor split, statement gutter, autocomplete above the caret, and a result-set strip](images/sql-editor.png)
+![Editor split, statement gutter, autocomplete popup at the caret, and a result-set strip](images/sql-editor.png)
 
 ## What is built
 
@@ -92,7 +92,7 @@ Milestone M3-2 (US-08). Maps to QA [v0.3-test-plan.md](../../qa/v0.3-test-plan.m
 
 **Identifier character (AU-01).** A character counts toward the 2-character auto-trigger when it is a Unicode letter (`Alphabetic`), a Unicode decimal digit (`Nd`), or `_`. On MySQL connections, `$` also counts. Other punctuation (including `.`, which has its own rule) does not. The two characters are consecutive in the current unquoted identifier fragment at the caret.
 
-`secondary-space` stays free (Spotlight). Bind `ctrl-space` only while the SQL editor is focused. On macOS with multiple input sources, the OS may swallow Control+Space before GPUI sees it — that is **not** a product bug. Headless `TestAppContext` asserts AU-05. When SE ships user docs, name the OS alternate (typically Control+Option+Space or the Input menu) so a “manual trigger does nothing on macOS” report is not filed as a Sela defect.
+Bind `ctrl-space` / `ShowSqlCompletions` only in the `SqlEditor` focus context. On macOS, `secondary-space` (Command+Space) stays free for Spotlight; Control+Space is the manual trigger. On Linux and Windows, `secondary` is Control, so `secondary-space` and `ctrl-space` are the same chord — that chord is bound only to `ShowSqlCompletions` in `SqlEditor` (see [12-command-palette.md](./12-command-palette.md)). On macOS with multiple input sources, the OS may swallow Control+Space before GPUI sees it — that is **not** a product bug. Headless `TestAppContext` asserts AU-05.
 
 **Catalog.** Same cache as the sidebar. Load on connect. Refresh on:
 
@@ -115,7 +115,7 @@ While the catalog is loading, the popup shows a single muted row `Loading schema
 
 **Rows.** Monospace name; muted label on the right: type name, `table`, `schema`, or `keyword`. Max 8 rows × 22px (≤ 176px) then scroll; width up to 360px.
 
-**Placement.** Prefer above the caret; flip below only when there is no room above.
+**Placement (AU-12).** The gpui-kit completion menu opens **below** the caret. It flips **above** only when opening below would clip. It is never clipped off-screen. (Strict prefer-above is deferred — see [Deferred](#deferred--backlog).)
 
 **Keys.**
 
@@ -134,8 +134,9 @@ While the catalog is loading, the popup shows a single muted row `Loading schema
 2. **AU-02** — Opens immediately after `.`.
 3. **AU-03** — No open inside comment/string.
 4. **AU-04** — IME: closed during composition; Enter commits composition only.
-5. **AU-05** (updated) — `secondary-space` stays free; **`ctrl-space` manually opens** autocomplete in the editor.
-6. **AU-06…AU-12** — Catalog + keywords; alias columns first; ranking; quoting; large catalog; row chrome; placement above caret.
+5. **AU-05** (updated) — **`ctrl-space` manually opens** autocomplete in the `SqlEditor` context. On macOS, Command+Space (`secondary-space`) stays free. On Linux/Windows, `secondary-space` is the same key and is that editor binding only.
+6. **AU-06…AU-11** — Catalog + keywords; alias columns first; ranking; quoting; large catalog; row chrome.
+6b. **AU-12** — Popup opens below the caret; flips above when below would clip; never clipped off-screen.
 7. **AU-13** (updated) — Up/Down navigate; **Tab and Enter accept** while open; Tab while closed indents in the editor; Escape dismisses; click outside closes.
 8. **AU-14** — Arrows do nothing to a closed popup.
 9. **AU-15** — Optional tree-sitter; skip if not shipped.
@@ -215,12 +216,21 @@ M1-4. Stay inside the theme: comments in `muted_foreground`, strings in `foregro
 
 ## Decisions
 
-1. **Autocomplete is M3-2.** Auto-trigger after `.` or 2 identifier chars (class above); manual `ctrl-space` (headless AU-05; macOS OS may swallow in GUI); Tab/Enter accept when open; Tab closed = indent; Esc dismisses.
+1. **Autocomplete is M3-2.** Auto-trigger after `.` or 2 identifier chars (class above); manual `ctrl-space` in `SqlEditor` (headless AU-05; macOS OS may swallow in GUI); Tab/Enter accept when open; Tab closed = indent; Esc dismisses.
 2. **Catalog refresh:** connect, Refresh schema, successful DDL allowlist, `USE` / `SET search_path` / reconnect / schema-scope change. Loading row: `Loading schema…`.
-3. **Run-all stops at the first error.** Name that statement in the strip and the status (`Query failed · statement 2`). Keep every result that already finished. Do not start the rest.
-4. **Store at most 8 result sets.** Evict the oldest when a new one arrives.
-5. **No `sqlformat` in M1-4.** Format is backlog. `secondary-shift-f` is reserved for that later work and is not in the M1-4 binding set.
+3. **Popup placement** follows gpui-kit: below first, flip above when below would clip, never off-screen.
+4. **Run-all stops at the first error.** Name that statement in the strip and the status (`Query failed · statement 2`). Keep every result that already finished. Do not start the rest.
+5. **Store at most 8 result sets.** Evict the oldest when a new one arrives.
+6. **No `sqlformat` in M1-4.** Format is backlog. `secondary-shift-f` is reserved for that later work and is not in the M1-4 binding set.
+
+## Deferred / backlog
+
+| Item | Notes |
+| --- | --- |
+| Strict prefer-above autocomplete placement | Needs an upstream gpui-kit placement option (kit API is private today). Until then AU-12 is below-first as above. |
+| `sqlformat` / `secondary-shift-f` | Already reserved; not M1-4 / M3-2. |
+| AU-15 tree-sitter muted highlight | Optional per roadmap. |
 
 ## Open questions
 
-None for autocomplete product behavior. AU-15 tree-sitter remains optional per roadmap.
+None for autocomplete product behavior.

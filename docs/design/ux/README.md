@@ -52,7 +52,7 @@ The user-facing shortcut page should keep saying “⌘ on macOS, Ctrl on Linux 
 
 | Chord | Why |
 | --- | --- |
-| `secondary-space` | Spotlight on macOS. Stays free. Autocomplete manual trigger is editor-scoped `ctrl-space` ([03](./03-sql-editor.md)); headless tests assert it; macOS GUI may still route Control+Space to the input-source switch. |
+| `secondary-space` | Spotlight on macOS (Command+Space) — stays free there. On Linux/Windows, `secondary-space` equals `ctrl-space` and is bound only to `ShowSqlCompletions` in `SqlEditor` ([03](./03-sql-editor.md), [12](./12-command-palette.md)). |
 | `secondary-q` | Quit. Global, including the SQL editor and dialogs. Bound. See [01-main-window.md](./01-main-window.md#quit-and-window-lifecycle). |
 | `secondary-w` | Close tab, already bound. It does not close the window. |
 | `secondary-h`, `secondary-m` | Hide and minimize on macOS |
