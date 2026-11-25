@@ -109,6 +109,39 @@ fn unloaded_row_refuses_any_format() {
 }
 
 #[test]
+fn unset_overlay_cells_copy_without_not_loaded() {
+    // #99: duplicated/inserted overlay with unset PK must copy; Unset ≠ NotLoaded.
+    let headers = vec!["id".into(), "note".into(), "pages".into()];
+    let rows = vec![vec![CopyCell::Unset, CopyCell::Null, number("310")]];
+    let insert = format_selection(
+        &headers,
+        &rows,
+        CopyFormat::Insert,
+        Some("public.edit_pk"),
+        Dialect::Postgres,
+    )
+    .expect("unset PK must not refuse");
+    assert!(
+        insert.contains(
+            "INSERT INTO \"public\".\"edit_pk\" (\"note\", \"pages\") VALUES (NULL, 310)"
+        ),
+        "unset id omitted: {insert}"
+    );
+    assert!(!insert.contains("\"id\""), "id must stay out: {insert}");
+
+    let json =
+        format_selection(&headers, &rows, CopyFormat::Json, None, Dialect::Postgres).expect("json");
+    assert!(json.contains("\"note\""), "{json}");
+    assert!(json.contains("null"), "{json}");
+    assert!(json.contains("310"), "{json}");
+    assert!(!json.contains("\"id\""), "omit unset key: {json}");
+
+    let tsv =
+        format_selection(&headers, &rows, CopyFormat::Tsv, None, Dialect::Postgres).expect("tsv");
+    assert_eq!(tsv, "id\tnote\tpages\n\tNULL\t310\n");
+}
+
+#[test]
 fn insert_placeholder_adds_replace_comment() {
     let headers = vec!["id".into()];
     let rows = vec![vec![number("1")]];

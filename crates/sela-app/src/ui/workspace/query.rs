@@ -17,6 +17,7 @@ use sela_core::{
 };
 use sela_drivers::drive;
 
+use super::tab_view::TabView;
 use super::{GridSource, Workspace};
 
 impl Workspace {
@@ -470,6 +471,7 @@ impl Workspace {
                     if let Some(view) = this.view_mut(tab_id) {
                         view.total_rows = Some(total);
                         view.row_count_kind = RowCountKind::Exact;
+                        snapshot_last_query_ms(view);
                         view.grid.update(cx, |state, cx| {
                             state.delegate_mut().result.set_total_rows(total as usize);
                             state.refresh(cx);
@@ -573,9 +575,14 @@ impl Workspace {
             d.sorts = sorts.clone();
         });
         view.live_row_cap = None;
-        view.post_commit_reload = false;
         view.cell_inspect = None;
-        view.status = "Running…".into();
+        // Post-commit reload must keep `post_commit_reload` and the Committed
+        // status through the load; clearing here made apply_outcome always see
+        // the ordinary row-count line (#81). User-initiated loads have the flag
+        // false and still get Running….
+        let (keep_flag, status) = begin_source_load_status(view.post_commit_reload, &view.status);
+        view.post_commit_reload = keep_flag;
+        view.status = status;
         view.grid.update(cx, |state, cx| {
             let delegate = state.delegate_mut();
             delegate.loading = true;
@@ -776,6 +783,7 @@ impl Workspace {
         if let Some(view) = self.view_mut(tab_id) {
             view.busy = false;
             view.live_row_cap = None;
+            snapshot_last_query_ms(view);
         }
         match outcome {
             Ok(summary) => {
@@ -843,6 +851,7 @@ impl Workspace {
             view.truncated = true;
             view.can_load_more = view.live_row_cap.is_some();
             view.busy = false;
+            snapshot_last_query_ms(view);
             view.grid.update(cx, |state, cx| {
                 state.delegate_mut().loading = false;
                 state.refresh(cx);
@@ -1014,10 +1023,8 @@ impl Workspace {
             view.page_len = rows;
             view.total_rows = Some(rows as u64);
             view.error = None;
-            let ms = view
-                .query_started
-                .map(|t| t.elapsed().as_millis())
-                .unwrap_or(0);
+            snapshot_last_query_ms(view);
+            let ms = view.last_query_ms;
             view.status = format!("Cancelled · {rows} rows · {ms} ms · {err}");
             view.note = Some("Query cancelled".into());
             view.grid.update(cx, |state, cx| {
@@ -1055,10 +1062,7 @@ impl Workspace {
         let Some(view) = self.view_mut(tab_id) else {
             return;
         };
-        let ms = view
-            .query_started
-            .map(|t| t.elapsed().as_millis())
-            .unwrap_or(0);
+        let ms = status_line_ms(view.busy, view.query_started, view.last_query_ms);
         view.status = format_status_line(
             view.row_count_kind,
             view.total_rows,
@@ -1113,10 +1117,8 @@ impl Workspace {
                 // (08-preview-commit.md). Do not overwrite with the row-count line (#81).
                 if let Some(view) = self.view_mut(tab_id) {
                     view.cell_inspect = None;
-                    let ms = view
-                        .query_started
-                        .map(|t| t.elapsed().as_millis())
-                        .unwrap_or(0);
+                    snapshot_last_query_ms(view);
+                    let ms = view.last_query_ms;
                     let reload = format_status_line(
                         view.row_count_kind,
                         view.total_rows,
@@ -1153,10 +1155,10 @@ impl Workspace {
                     view.truncated = false;
                     view.can_load_more = false;
                     view.note = None;
+                    view.last_query_ms = executed.duration.as_millis();
                     let message = format!(
                         "{} rows affected · {} ms",
-                        executed.rows_affected,
-                        executed.duration.as_millis()
+                        executed.rows_affected, view.last_query_ms
                     );
                     view.status = message.clone();
                     view.grid.update(cx, |state, cx| {
@@ -1313,6 +1315,39 @@ pub(crate) fn status_after_rows_load(
     }
 }
 
+/// Start of `load_source_for`: keep the Committed line and flag for a post-commit
+/// reload; otherwise clear the flag and show `Running…` (#81).
+pub(crate) fn begin_source_load_status(
+    post_commit_reload: bool,
+    current_status: &str,
+) -> (bool, String) {
+    if post_commit_reload {
+        (true, current_status.to_string())
+    } else {
+        (false, "Running…".into())
+    }
+}
+
+/// Status-bar `ms`: live elapsed while busy; snapshotted last query duration
+/// when idle so Structure → Data does not show wall time since load (#95).
+pub(crate) fn status_line_ms(
+    busy: bool,
+    query_started: Option<Instant>,
+    last_query_ms: u128,
+) -> u128 {
+    if busy {
+        query_started.map(|t| t.elapsed().as_millis()).unwrap_or(0)
+    } else {
+        last_query_ms
+    }
+}
+
+fn snapshot_last_query_ms(view: &mut TabView) {
+    if let Some(started) = view.query_started {
+        view.last_query_ms = started.elapsed().as_millis();
+    }
+}
+
 /// Status-bar count sentence (extracted for unit tests / UX acceptance).
 pub(super) fn format_status_line(
     kind: RowCountKind,
@@ -1371,8 +1406,12 @@ pub(super) async fn run_source(
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_pending_stream_batches, format_status_line, status_after_rows_load};
+    use super::{
+        begin_source_load_status, drain_pending_stream_batches, format_status_line,
+        status_after_rows_load, status_line_ms,
+    };
     use sela_core::{RowCountKind, StreamBatch};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn unknown_filtered_status_matches_ux() {
@@ -1400,6 +1439,36 @@ mod tests {
             status_after_rows_load(false, "Cancelled · 0 rows · 1 ms · stopped", reload),
             "5 rows · 2 ms"
         );
+    }
+
+    #[test]
+    fn load_source_for_preserves_post_commit_status() {
+        // #81: load_source_for must not clear the flag or overwrite Committed
+        // with Running… before apply_outcome can keep the line.
+        let committed = "Committed · 1 statements · 12 ms";
+        let (keep, status) = begin_source_load_status(true, committed);
+        assert!(keep);
+        assert_eq!(status, committed);
+        let (cleared, running) = begin_source_load_status(false, committed);
+        assert!(!cleared);
+        assert_eq!(running, "Running…");
+        // End-to-end: preserved status + flag → status_after_rows_load keeps it.
+        assert_eq!(
+            status_after_rows_load(keep, &status, "5 rows · 2 ms".into()),
+            committed
+        );
+    }
+
+    #[test]
+    fn status_ms_idle_uses_last_query_not_wall_clock() {
+        // #95: after Structure → Data, ms must be the snapshotted query time.
+        let started = Instant::now()
+            .checked_sub(Duration::from_secs(45))
+            .expect("clock");
+        assert_eq!(status_line_ms(false, Some(started), 79), 79);
+        // While busy, live elapsed is used (at least the subtracted age).
+        let live = status_line_ms(true, Some(started), 79);
+        assert!(live >= 45_000, "live elapsed was {live}");
     }
 
     #[test]

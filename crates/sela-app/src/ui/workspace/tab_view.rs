@@ -70,6 +70,10 @@ pub(super) struct TabView {
     pub note: Option<String>,
     pub busy: bool,
     pub query_started: Option<Instant>,
+    /// Duration of the last completed query/count, used by the status `ms`
+    /// when the tab is idle (Structure → Data must not use wall time since
+    /// `query_started`, #95).
+    pub last_query_ms: u128,
     pub sql_run_queue: Vec<String>,
     pub sql_run_base_index: usize,
     pub sql_run_statement_index: usize,
@@ -163,6 +167,7 @@ impl TabView {
             note: None,
             busy: false,
             query_started: None,
+            last_query_ms: 0,
             sql_run_queue: Vec::new(),
             sql_run_base_index: 0,
             sql_run_statement_index: 0,

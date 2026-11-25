@@ -121,7 +121,8 @@ impl GridDelegate {
     ///
     /// Overlay cells use typed [`Value`]s via [`value_to_copy_cell`]. An unset
     /// insert column (absent from [`OverlayPaintRow::raw`]) is
-    /// [`CopyCell::NotLoaded`] so formats refuse inventing NULL/`''`.
+    /// [`CopyCell::Unset`] so formats omit it instead of inventing NULL/`''`
+    /// or refusing as an unloaded page row (#99).
     pub(crate) fn copy_row_cells(&self, visual_row: usize) -> Option<Vec<CopyCell>> {
         let col_count = self.result.columns().len().max(1);
         match self.visual_rows().get(visual_row).copied()? {
@@ -136,7 +137,7 @@ impl GridDelegate {
                         .columns()
                         .iter()
                         .map(|col| match overlay.raw.get(&col.name) {
-                            None => CopyCell::NotLoaded,
+                            None => CopyCell::Unset,
                             Some(value) => value_to_copy_cell(value),
                         })
                         .collect(),
@@ -965,9 +966,7 @@ pub(crate) fn cell_in_selection(
 mod tests {
     use std::time::Duration;
 
-    use sela_core::{
-        format_selection, ColumnMeta, CopyError, CopyFormat, Dialect, QueryPage, Value,
-    };
+    use sela_core::{format_selection, ColumnMeta, CopyFormat, Dialect, QueryPage, Value};
 
     use super::*;
 
@@ -1208,8 +1207,8 @@ mod tests {
         // Title column matches the duplicated source (server row 1 → "b").
         assert_eq!(screen_2[1], server_1[1]);
         assert_eq!(screen_2[1], value_to_copy_cell(&Value::Text("b".into())));
-        // Unset PK is NotLoaded, not NULL / ''.
-        assert!(matches!(screen_2[0], CopyCell::NotLoaded));
+        // Unset PK is Unset (omitted on copy), not NULL / '' / NotLoaded (#99).
+        assert!(matches!(screen_2[0], CopyCell::Unset));
         // Screen row 3 is still server row 2 ("c"), not shifted off the page.
         let screen_3 = grid.copy_row_cells(3).expect("last server");
         assert_eq!(screen_3[1], value_to_copy_cell(&Value::Text("c".into())));
@@ -1259,11 +1258,16 @@ mod tests {
         let cells = grid.copy_row_cells(1).expect("dup");
         assert_eq!(cells[1], CopyCell::Null);
         assert_eq!(cells[2], value_to_copy_cell(&Value::Int(310)));
-        // Skip unset id so INSERT can succeed (NotLoaded refuses the whole format).
-        let body = vec![vec![cells[1].clone(), cells[2].clone()]];
-        let cols = vec!["note".to_string(), "pages".to_string()];
+        // Whole overlay row: Unset id is omitted; NULL/Int stay typed (#99).
+        let headers: Vec<String> = grid
+            .result
+            .columns()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let body = [cells];
         let insert = format_selection(
-            &cols,
+            &headers,
             &body,
             CopyFormat::Insert,
             Some("public.books"),
@@ -1278,7 +1282,11 @@ mod tests {
             insert.contains("310") && !insert.contains("'310'"),
             "Int must be unquoted: {insert}"
         );
-        let json = format_selection(&cols, &body, CopyFormat::Json, None, Dialect::Postgres)
+        assert!(
+            !insert.contains("\"id\""),
+            "unset PK omitted from INSERT: {insert}"
+        );
+        let json = format_selection(&headers, &body, CopyFormat::Json, None, Dialect::Postgres)
             .expect("json");
         assert!(json.contains("null"), "JSON null: {json}");
         assert!(json.contains("310"), "JSON number: {json}");
@@ -1286,6 +1294,7 @@ mod tests {
             !json.contains("\"NULL\""),
             "must not stringify NULL: {json}"
         );
+        assert!(!json.contains("\"id\""), "omit unset PK key: {json}");
     }
 
     #[test]
@@ -1327,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_overlay_unset_cell_is_not_loaded() {
+    fn copy_overlay_unset_cells_omit_from_insert() {
         let mut grid = GridDelegate::empty();
         grid.show_page(books_overlay_page());
         // Blank insert: every column unset.
@@ -1340,22 +1349,25 @@ mod tests {
             generated: Vec::new(),
         });
         let cells = grid.copy_row_cells(1).expect("insert overlay");
-        assert!(cells.iter().all(|c| matches!(c, CopyCell::NotLoaded)));
+        assert!(cells.iter().all(|c| matches!(c, CopyCell::Unset)));
         let headers: Vec<String> = grid
             .result
             .columns()
             .iter()
             .map(|c| c.name.clone())
             .collect();
-        let err = format_selection(
+        let insert = format_selection(
             &headers,
             &[cells],
             CopyFormat::Insert,
             Some("public.books"),
             Dialect::Postgres,
         )
-        .expect_err("unset must refuse INSERT");
-        assert!(matches!(err, CopyError::NotLoaded { .. }));
+        .expect("all-unset overlay still copies");
+        assert!(
+            insert.contains("DEFAULT VALUES"),
+            "all unset → DEFAULT VALUES: {insert}"
+        );
     }
 
     #[test]

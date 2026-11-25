@@ -367,7 +367,7 @@ fn value_to_sql_literal(value: &Value, dialect: Dialect) -> String {
         CopyCell::Value(text, CopyScalarKind::Bool) => text,
         CopyCell::Value(text, CopyScalarKind::Text) => escape_sql_string(&text, dialect),
         CopyCell::Decode(text) => escape_sql_string(&text, dialect),
-        CopyCell::NotLoaded => "NULL".into(),
+        CopyCell::NotLoaded | CopyCell::Unset => "NULL".into(),
     }
 }
 
