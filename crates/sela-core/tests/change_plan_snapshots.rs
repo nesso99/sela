@@ -16,6 +16,8 @@ fn assert_snapshot(name: &str, dialect: Dialect, actual: &str) {
     let path = snapshot_dir().join(format!("{name}.{}.sql", dialect_label(dialect)));
     let expected = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    // Normalize line endings so a CRLF checkout (e.g. Windows) still matches.
+    let expected = expected.replace("\r\n", "\n");
     assert_eq!(
         actual.trim_end(),
         expected.trim_end(),
