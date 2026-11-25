@@ -344,6 +344,14 @@ Safe mode per connection: Off / Confirm writes / Read-only (`safe_mode` on `Save
 | M1-7 Selection / copy / themes | Grid selection + TSV/CSV/JSON/INSERT; light/dark/system themes; result-strip a11y | Done (#24) |
 | M1-8 TLS + config v2 | No migration; schema_version 2; `DbError::Tls`; Postgres TLS CI | Done (#15) |
 | M1-9 PG text-cast fallback | `pg_decode` strategies | Done (#13) |
+| M3-3 Export / CSV import | Streaming CSV/JSON/INSERT writers + CSV import (`sela-core`); injectable `Write`/`Read` + `TableSchemaSource`; UX [11](./ux/11-export-import.md) | Core done; UI not started |
+
+### M3-3 export / import (core)
+
+- Writers: `CsvExporter` / `JsonExporter` / `SqlInsertExporter` and `export_rows` / `export_query` take `std::io::Write` and a `CancellationToken`; progress is rows written. Never buffer the whole result. Cancel → `discard_export_partial` for path destinations.
+- CSV NULL default **empty field** (optional `\N`; text equal to the sentinel is quoted); optional UTF-8 BOM off; LF line endings. JSON: array or NDJSON with keys in column order; NUMERIC as exact raw number; JSON cells verbatim after validation. SQL INSERT: dialect quoting with separate schema/table; flush at 100 rows or ~1 MiB (EX-12); SQL-result placeholder `table` + trailing `-- replace table name`.
+- Import: `CsvImporter` / `import_csv_into` take `std::io::Read` (buffered; strip leading UTF-8 BOM); case-insensitive header map via `TableSchemaSource` (unmatched → Skip); empty field = NULL by default (quote-aware; `\N` only when unquoted); rows feed `ImportRowSink`. Safe mode via `decide_import_gate`.
+- UX: [11-export-import.md](./ux/11-export-import.md). Clipboard copy (US-14) remains in `copy_format`.
 
 ---
 

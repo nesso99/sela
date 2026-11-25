@@ -6660,6 +6660,7 @@ version = "0.2.0"
 dependencies = [
  "async-channel",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "percent-encoding",
  "rust_decimal",

@@ -1,0 +1,6 @@
+[
+  {"id":1,"title":"a,b","note":null,"blob":"deadbeef","flag":true},
+  {"id":2,"title":"say \"hi\"\nthere","note":"","blob":"","flag":false},
+  {"id":3,"title":"café","note":"NULL","blob":"00","flag":null},
+  {"id":4,"title":"cr\ronly","note":"plain","blob":"ff","flag":true}
+]
