@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Export and import</title><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; color: #e8e8e8; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 14px 18px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; }
+.win {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  background: #161616; border: 1px solid #3a3a3a; position: relative;
+}
+.titlebar {
+  height: 22px; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #bdbdbd; border-bottom: 1px solid #3a3a3a; background: #1c1c1c;
+}
+.toolbar {
+  height: 40px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; border-bottom: 1px solid #3a3a3a;
+}
+.tb-title { font-size: 12px; }
+.btn {
+  height: 20px; padding: 0 8px; border: 1px solid #555; background: #2a2a2a;
+  color: #e8e8e8; font: 11px/18px Inter, sans-serif; display: inline-flex; align-items: center;
+}
+.btn.primary { background: #e8e8e8; color: #161616; border-color: #e8e8e8; font-weight: 600; }
+.btn.ghost { background: transparent; border-color: transparent; color: #bdbdbd; }
+.grid { flex: 1; padding: 8px 10px; font: 11px/22px "JetBrains Mono", monospace; color: #6a6a6a; }
+.status {
+  height: 28px; background: #242424; border-top: 1px solid #3a3a3a;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; font-size: 11px; color: #d0d0d0;
+}
+.status .prog { color: #f2f2f2; }
+.dimwin { position: absolute; inset: 22px 0 28px 0; background: rgba(0,0,0,.45); }
+.dialog {
+  position: absolute; left: 50%; top: 80px; transform: translateX(-50%);
+  width: 480px; background: #1c1c1c; border: 1px solid #6a6a6a;
+}
+.dtitle {
+  height: 28px; display: flex; align-items: center; padding: 0 12px;
+  font-size: 12px; font-weight: 600; border-bottom: 1px solid #3a3a3a; background: #242424;
+}
+.dbody { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.lab { font-size: 10px; color: #8d8d8d; }
+.field {
+  height: 22px; border: 1px solid #555; background: #141414; color: #e8e8e8;
+  font: 12px/20px Inter, sans-serif; padding: 0 8px; display: flex; align-items: center; justify-content: space-between;
+}
+.dfoot {
+  height: 40px; display: flex; justify-content: flex-end; align-items: center; gap: 8px;
+  padding: 0 12px; border-top: 1px solid #3a3a3a;
+}
+.sheet {
+  position: absolute; left: 0; right: 0; bottom: 28px; height: 260px;
+  background: #1c1c1c; border-top: 1px solid #6a6a6a; display: none;
+}
+.caption { font-size: 12px; color: #bdbdbd; }
+.check { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.box { width: 12px; height: 12px; border: 1px solid #888; background: #e8e8e8; font: 700 11px/10px Inter, sans-serif; text-align: center; color: #161616; }
+</style></head>
+<body>
+  <div class="kicker"><b>Sela</b><span>Export dialog · status progress · M3-3</span></div>
+  <div class="win">
+    <div class="titlebar">Sela — public.books</div>
+    <div class="toolbar">
+      <div class="tb-title">public.books · Data</div>
+      <div><span class="btn ghost">Import CSV…</span> <span class="btn">Export…</span></div>
+    </div>
+    <div class="grid">id  title           author_id
+1   The Hobbit      2
+2   Dune            1
+…</div>
+    <div class="status">
+      <span class="prog">Exporting · 12 400 rows written · 3.2 s</span>
+      <span class="btn ghost">Cancel</span>
+    </div>
+    <div class="dimwin"></div>
+    <div class="dialog">
+      <div class="dtitle">Export</div>
+      <div class="dbody">
+        <div class="lab">Format</div>
+        <div class="field">CSV<span>▾</span></div>
+        <div class="lab">Scope</div>
+        <div class="field">Whole table<span>▾</span></div>
+        <div class="lab">File</div>
+        <div class="field" style="font-family:JetBrains Mono,monospace;font-size:11px">~/exports/books.csv<span class="btn" style="margin-left:8px">Browse</span></div>
+        <div class="lab">Delimiter</div>
+        <div class="field">,<span>▾</span></div>
+        <div class="check"><span class="box">✓</span>Header row</div>
+        <div class="lab">NULL as</div>
+        <div class="field">Empty field<span>▾</span></div>
+        <div class="check"><span class="box" style="background:transparent;color:#888"></span>UTF-8 with BOM</div>
+      </div>
+      <div class="dfoot">
+        <span class="btn ghost">Cancel</span>
+        <span class="btn primary">Export</span>
+      </div>
+    </div>
+  </div>
+  <div class="caption">Context menu + palette open this dialog. Cancel deletes the partial file. Import: existing table only, preview 100 rows.</div>
+</body></html>

@@ -112,17 +112,17 @@ Developers work with databases every day and need a tool that opens instantly, s
 | ID | Story | Acceptance criteria | Status |
 | --- | --- | --- | --- |
 | US-01 | As a developer, I save a connection and reopen it with one click | Create/edit/delete/duplicate; Test connection; password never in config file; survives app restart | Mostly done |
-| US-02 | I connect through an SSH bastion | Password, private key (+ passphrase), ssh-agent, `~/.ssh/config`; known_hosts checked; SSH errors distinct from DB errors | Core/drivers done (UI deferred) |
+| US-02 | I connect through an SSH bastion | Password, private key (+ passphrase), ssh-agent, `~/.ssh/config`; known_hosts checked; SSH errors distinct from DB errors | Core/drivers done (UI deferred; UX: [10](./ux/10-ssh-tunnel.md)) |
 | US-03 | I open many tables and queries in tabs | Cmd+T new query, Cmd+W close, Cmd+1..9 switch; tab remembers its connection; dirty close prompts when pending edits exist | Done (M1-1); dirty prompt is M2 |
 | US-04 | I filter and sort without writing SQL | Filter bar: column + op (`=`, `!=`, `LIKE`, `IN`, `IS NULL`, `>`, `<`) + value, AND combine; header click to sort; generated SQL visible | Done (M1-3) |
 | US-05 | I edit data on the grid | Double-click or Enter to edit; edited cells highlighted; insert/delete/duplicate rows; Cmd+S commits in one transaction; Esc cancels the open cell editor only; Cmd+Shift+Z and Discard drop pending edits after confirm; no primary key → read-only with a reason | Not started |
 | US-06 | I preview SQL before commit | Preview lists exact statements with bound values; commit failure rolls back and keeps pending changes | Not started |
 | US-07 | As on-call, I do not accidentally break production | Safe mode Off / Confirm writes / Read-only; UPDATE/DELETE without WHERE always warns; connection color + name on toolbar | Not started |
-| US-08 | I write SQL quickly | Syntax highlight; autocomplete keywords, schema, table, columns (after `alias.`); Cmd+Enter runs statement at cursor or selection; multi-statement file | Partial (editor + multi-run; no autocomplete / no SQL grammar yet) |
+| US-08 | I write SQL quickly | Syntax highlight; autocomplete keywords, schema, table, columns (after `alias.`); Cmd+Enter runs statement at cursor or selection; multi-statement file | Partial (editor + multi-run; autocomplete M3 UX planned: [03](./ux/03-sql-editor.md#autocomplete)) |
 | US-09 | I cancel a long-running query | Stop button and Cmd+.; server receives cancel within ~1 s; UI never freezes | Done (M1-2b) |
 | US-10 | I find a past query | History stores SQL, connection, time, rows, duration; full-text search; reopen in a new tab | Not started |
 | US-11 | I inspect table structure | Structure tab: columns (type, nullable, default, comment), indexes, FKs, full DDL; Data/Structure shortcut | Done (M1-6) |
-| US-12 | I export data | Export result or whole table as CSV, JSON, SQL INSERT; background with progress and cancel; not limited to current page | Not started |
+| US-12 | I export data | Export result or whole table as CSV, JSON, SQL INSERT; background with progress and cancel; not limited to current page | Not started (M3 UX planned: [11](./ux/11-export-import.md)) |
 | US-13 | I see correctly typed values | NULL ≠ empty string; NUMERIC keeps digits; UUID, JSON, timestamptz correct; BLOB short hex + full view | Mostly done |
 | US-14 | I copy data | Multi-cell selection; copy as TSV, CSV, JSON, or INSERT | Done (M1-7; full-table export remains US-12) |
 
@@ -135,7 +135,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 1. **Cmd+P → type table name** — quick open from the connection schema cache; Enter opens a Data tab.
 2. **Filter** — Cmd+F opens the filter bar; column, operator, value; Enter applies; grid reloads page 1.
 3. **Edit** — Enter on a cell; edited cells, new rows, deleted rows use distinct colors; status bar counts pending changes.
-4. **Preview** — Cmd+Shift+P (or Preview) shows the SQL that will run.
+4. **Preview** — Cmd/Ctrl+Shift+V (or Preview) shows the SQL that will run. (Cmd/Ctrl+Shift+P is the command palette in M3.)
 5. **Commit** — Cmd+S. If safe mode is on, a confirm dialog lists statements; run in one transaction; on success clear pending and reload.
 
 ### Run a query and cancel (current + target)
