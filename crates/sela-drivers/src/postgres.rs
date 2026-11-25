@@ -2118,16 +2118,21 @@ mod tests {
         )
         .unwrap();
         let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let where_sql = plan.statements[0]
+            .sql
+            .split(" WHERE ")
+            .nth(1)
+            .unwrap_or("");
         assert!(
-            plan.statements[0].sql.contains("AND \"score\" =")
-                && plan.statements[0].sql.contains("AND \"doc\" =")
-                && plan.statements[0].sql.contains("::jsonb"),
+            where_sql.contains("AND \"score\" =")
+                && where_sql.contains("AND \"doc\" =")
+                && where_sql.contains("::jsonb"),
             "{}",
             plan.statements[0].sql
         );
         assert!(
-            !plan.statements[0].sql.contains("\"meta\""),
-            "plain json skipped: {}",
+            !where_sql.contains("\"meta\""),
+            "plain json skipped in WHERE: {}",
             plan.statements[0].sql
         );
         assert!(plan.statements[0]
