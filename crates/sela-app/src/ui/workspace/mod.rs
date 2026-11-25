@@ -33,11 +33,11 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tree::{TreeEvent, TreeState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _, TitleBar};
 use gpui_kit::prelude::*;
+#[cfg(test)]
+use gpui_kit::Focusable as _;
 use gpui_kit::{
     div, px, App, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window,
 };
-#[cfg(test)]
-use gpui_kit::Focusable as _;
 
 use super::decorations::{should_show_client_title_bar, should_suppress_title_bar_window_menu};
 
