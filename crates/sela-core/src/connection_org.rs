@@ -68,11 +68,12 @@ pub fn next_duplicate_name<'a>(
 
 /// Duplicate a saved connection without copying the password / keychain secret.
 ///
-/// Copies engine, host, port, user, database, file, TLS, record_history, color,
-/// label, group, and safe mode. Assigns a new id and [`next_duplicate_name`].
-/// Sets [`SavedConnection::needs_password`] when the engine uses a password so
-/// connect asks for a secret (the password is never copied and no keychain item
-/// is written). SQLite and any engine without a password field stay false.
+/// Copies engine, host, port, user, database, file, TLS, SSH settings,
+/// record_history, color, label, group, and safe mode. Assigns a new id and
+/// [`next_duplicate_name`]. Sets [`SavedConnection::needs_password`] when the
+/// engine uses a password so connect asks for a secret (the password is never
+/// copied and no keychain item is written). SSH passwords / passphrases are
+/// likewise not copied. SQLite and any engine without a password field stay false.
 pub fn duplicate_connection(
     source: &SavedConnection,
     existing_names: impl IntoIterator<Item = impl AsRef<str>>,

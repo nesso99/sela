@@ -59,6 +59,21 @@ Optional schema overrides: `SELA_POSTGRES_SCHEMA` (default `public`) and `SELA_M
 
 CI job `db-integration` sets the same URLs against service containers.
 
+### SSH tunnel (M3-1)
+
+Tests in `crates/sela-drivers/tests/ssh_tunnel.rs` and `sela-ssh` unit tests skip unless `SELA_SSH_HOST` (and related vars) are set. Keys and known_hosts are generated at runtime — never committed.
+
+```bash
+eval "$(./scripts/run-ssh-bastion.sh)"
+cargo test -p sela-drivers --test ssh_tunnel -- --nocapture
+# optional: ssh-agent for SSH-04
+eval "$(ssh-agent -s)"
+ssh-add "$SELA_SSH_KEY"
+cargo test -p sela-drivers --test ssh_tunnel ssh04 -- --nocapture
+```
+
+Env vars (printed by the script): `SELA_SSH_HOST`, `SELA_SSH_PORT`, `SELA_SSH_USER`, `SELA_SSH_PASSWORD`, `SELA_SSH_KEY`, `SELA_SSH_KEY_PASSPHRASE`, `SELA_SSH_KEY_ENCRYPTED`, `SELA_SSH_KNOWN_HOSTS`, `SELA_SSH_KNOWN_HOSTS_BAD`, `SELA_SSH_DB_HOST`, `SELA_SSH_DB_PORT`, `SELA_SSH_MYSQL_HOST`, `SELA_SSH_MYSQL_PORT`. Proposed CI job: `ssh-integration` (Linux; see the M3-1 PR for the exact job YAML for DevOps).
+
 ### Postgres TLS (CI acceptance for M1-8)
 
 Tests skip unless both env vars are set. They use the real `sela_drivers::connect` path:

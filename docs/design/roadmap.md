@@ -112,7 +112,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 
 | ID | Work | Done when |
 | --- | --- | --- |
-| M3-1 | SSH tunnel (russh): password, key + passphrase, agent, `~/.ssh/config`, known_hosts | US-02; openssh container test |
+| M3-1 | SSH tunnel (`sela-ssh` / russh): password, key + passphrase, agent, `~/.ssh/config`, known_hosts (core/drivers; UI later) | US-02; openssh container test |
 | M3-2 | Schema + alias autocomplete; optional MIT tree-sitter SQL grammar for muted keyword/comment highlight | US-08 complete |
 | M3-3 | Export CSV/JSON/SQL with background progress; CSV import | US-12 |
 | M3-4 | Command palette + quick open table | Every primary action reachable from palette |

@@ -16,10 +16,20 @@ use sqlx::Row;
 
 pub struct MysqlSession {
     pool: MySqlPool,
+    /// Keeps the local SSH forward alive for the session lifetime (SSH-10).
+    _ssh_tunnel: Option<sela_ssh::SshTunnel>,
 }
 
 impl MysqlSession {
     pub async fn connect(connection: &SavedConnection, password: &str) -> Result<Self, DbError> {
+        Self::connect_with_tunnel(connection, password, None).await
+    }
+
+    pub(crate) async fn connect_with_tunnel(
+        connection: &SavedConnection,
+        password: &str,
+        ssh_tunnel: impl Into<Option<sela_ssh::SshTunnel>>,
+    ) -> Result<Self, DbError> {
         let options = MySqlConnectOptions::new()
             .host(connection.host.trim())
             .port(connection.port)
@@ -35,7 +45,10 @@ impl MysqlSession {
             .found_rows(true);
         let options = crate::tls::apply_mysql_tls(options, &connection.tls)?;
         let pool = Self::pool_with_safe_mode(options, connection.safe_mode).await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            _ssh_tunnel: ssh_tunnel.into(),
+        })
     }
 
     async fn pool_with_safe_mode(
@@ -93,7 +106,10 @@ impl MysqlSession {
             .connect_with(options)
             .await
             .map_err(crate::sqlx_err)?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            _ssh_tunnel: None,
+        })
     }
 
     async fn load_columns(

@@ -1,0 +1,19 @@
+[package]
+name = "sela-ssh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "SSH tunnel (russh) for Sela database connections."
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+russh = { workspace = true }
+sela-core = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "process"] }

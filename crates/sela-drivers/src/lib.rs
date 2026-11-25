@@ -16,6 +16,7 @@ mod pg_decode;
 mod postgres;
 mod runtime;
 mod sqlite;
+mod ssh_connect;
 mod stream;
 mod tls;
 
@@ -41,6 +42,8 @@ pub fn refine_sqlite_column_types_if_needed(
 }
 pub(crate) use error_map::sqlx_err;
 pub use runtime::drive;
+pub use sela_ssh::{SshAuthSecrets, SshPaths};
+pub use ssh_connect::{ConnectAuth, ConnectOutcome, UnknownSshHostKeyChallenge};
 pub use tokio_util::sync::CancellationToken;
 
 /// Build a sqlx query from a dynamically constructed SQL string.
@@ -87,30 +90,66 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Open a session for a saved connection. The password is used for network
 /// engines and ignored for SQLite.
+///
+/// When SSH is enabled and the bastion host key is unknown, returns
+/// [`DbError::Ssh`] with the fingerprint (reject-unknown default). Use
+/// [`connect_with_auth`] for the typed [`ConnectOutcome::UnknownSshHostKey`]
+/// challenge (SSH-18).
 pub async fn connect(
     connection: &SavedConnection,
     password: &str,
 ) -> Result<Box<dyn DatabaseSession>, DbError> {
+    match connect_with_auth(
+        connection,
+        ConnectAuth {
+            db_password: password.to_string(),
+            ..ConnectAuth::default()
+        },
+    )
+    .await?
+    {
+        ConnectOutcome::Ready(session) => Ok(session),
+        ConnectOutcome::UnknownSshHostKey(challenge) => Err(challenge.reject()),
+    }
+}
+
+/// Like [`connect`], but returns a host-key challenge instead of rejecting.
+pub async fn connect_with_auth(
+    connection: &SavedConnection,
+    auth: ConnectAuth,
+) -> Result<ConnectOutcome, DbError> {
     let connection = connection.clone();
-    let password = password.to_string();
     let open = async move {
+        if let Some(tunnel_open) = ssh_connect::maybe_open_tunnel(&connection, &auth).await? {
+            return match tunnel_open {
+                sela_ssh::TunnelOpen::Ready(tunnel) => {
+                    let session =
+                        ssh_connect::finish_with_tunnel(connection, &auth.db_password, tunnel)
+                            .await?;
+                    Ok(ConnectOutcome::Ready(session))
+                }
+                sela_ssh::TunnelOpen::UnknownHostKey(unknown) => {
+                    Ok(ConnectOutcome::UnknownSshHostKey(Box::new(
+                        ssh_connect::challenge_from_unknown(unknown, connection, auth),
+                    )))
+                }
+            };
+        }
         match connection.engine {
-            Engine::Postgres => Ok(
-                Box::new(PostgresSession::connect(&connection, &password).await?)
-                    as Box<dyn DatabaseSession>,
-            ),
-            Engine::Mysql => Ok(
-                Box::new(MysqlSession::connect(&connection, &password).await?)
-                    as Box<dyn DatabaseSession>,
-            ),
-            Engine::Sqlite => Ok(Box::new(
+            Engine::Postgres => Ok(ConnectOutcome::Ready(Box::new(
+                PostgresSession::connect(&connection, &auth.db_password).await?,
+            ))),
+            Engine::Mysql => Ok(ConnectOutcome::Ready(Box::new(
+                MysqlSession::connect(&connection, &auth.db_password).await?,
+            ))),
+            Engine::Sqlite => Ok(ConnectOutcome::Ready(Box::new(
                 SqliteSession::open_with_safe_mode(
                     std::path::Path::new(&connection.file_path),
                     false,
                     connection.safe_mode,
                 )
                 .await?,
-            ) as Box<dyn DatabaseSession>),
+            ))),
         }
     };
     match tokio::time::timeout(CONNECT_TIMEOUT, open).await {
