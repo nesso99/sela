@@ -4,7 +4,7 @@ Per-connection write protection for the SQL editor and grid (M2-4). Design: [09-
 
 ## Levels
 
-Set **Safe mode** in the connection dialog. The toolbar engine line always shows the level: `Safe: Off`, `Safe: Confirm`, or `Safe: Read-only`. Missing `safe_mode` in an older `connections.json` loads as Off. Saving Off omits the field. There is no schema migration.
+Set **Safe mode** in the connection dialog. The helper under the select is one line per level (`Writes are refused. Reads run as usual.` for Read-only). The toolbar engine line always shows the level: `Safe: Off`, `Safe: Confirm`, or `Safe: Read-only`. Missing `safe_mode` in an older `connections.json` loads as Off. Saving Off omits the field. There is no schema migration.
 
 A new connection starts at Off. Choosing the **Red** color swatch before you touch Safe mode sets Confirm writes; leaving Red sets Off again. After you change Safe mode yourself, color no longer changes it. Editing an existing connection never changes Safe mode when the color changes.
 

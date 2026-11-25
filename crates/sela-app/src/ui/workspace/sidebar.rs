@@ -152,10 +152,13 @@ impl Workspace {
                 )
             })
             .child(
+                // Wrap so Disconnect stays readable at UI font 18 in the fixed
+                // 292px sidebar (06-theme-tokens.md; #89).
                 h_flex()
                     .px_3()
                     .py_2()
                     .gap_1()
+                    .flex_wrap()
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .child({

@@ -48,7 +48,7 @@ Clicking another saved connection while one is active switches: Sela cancels run
 
 **Editor.** Specified in [03-sql-editor.md](./03-sql-editor.md). Until that work lands it remains the monospace `Textarea` at 176px.
 
-**Status bar** (`status.rs`). Left: `TabView.status` (or a workspace keychain session warning when there is no tab status). Right: the source label. Text size is `text_xs`. The exact strings for each state are in [Status text](#status-text). When the OS keychain cannot store a password, the left text includes `The OS keychain is unavailable, so the password is kept for this session only. {message}` (also after a successful connect).
+**Status bar** (`status.rs`). Left: `TabView.status` (or `Workspace.workspace_status`, or a workspace keychain session warning when there is no tab status). Right: the source label. Text size is `text_xs`. The exact strings for each state are in [Status text](#status-text). When the OS keychain cannot store a password, the left text includes `The OS keychain is unavailable, so the password is kept for this session only. {message}` (also after a successful connect).
 
 ## States
 
@@ -62,7 +62,7 @@ Clicking another saved connection while one is active switches: Sela cancels run
 
 Use that sentence. In shortcut docs it is `secondary-t`. A selected connection with zero tabs uses this same main pane; the sidebar still shows that connection’s tree once it is connected. The empty column does not grow a close strip. When decorations are client-side, the title bar already has the close control.
 
-If `connections.json` fails to load, `boot_error` is the banner above the empty message. There is still no grid.
+If `connections.json` fails to load, `boot_error` is the banner above the empty message. There is still no grid. A non-error workspace status (for example after **Duplicate** with no tabs open) is a muted line above the empty message, because the status bar is not mounted without tabs.
 
 A query tab that has not been run is a different state: the grid’s empty message is “Open a table, or run a query.” (`GridDelegate::empty`). That tab does show the toolbar, editor, and status bar.
 
@@ -224,7 +224,7 @@ M2-5, with the dialog fields in [05-connection-dialog.md](./05-connection-dialog
 
 Groups are one level. The sidebar keeps file order. Connections with an empty group stay a flat list at the top, in the order they have today. Each non-empty group is a parent row after that, in the order its first member appears in the file. Members stay in file order under the parent. A group row shows the group name and a disclosure triangle. It is not a connection: clicking it expands or collapses, and it does not connect. Empty groups are not shown. There is no nested group.
 
-Duplicate is a ghost `xsmall` button between Edit and Delete, enabled when Edit is enabled. No shortcut (`secondary-d` is duplicate-row on the grid). It saves a new connection immediately and does not connect and does not open the dialog. The name is `{name} copy`, then `{name} copy 2`, and so on. The new id is new. Engine, host, port, user, database, file, TLS, `record_history`, color, label, group, and safe mode are copied. The password is not copied, and no keychain item is written for the new id. Status: `Duplicated {name}. Type the password to connect.`
+Duplicate is a ghost `xsmall` button between Edit and Delete, enabled when Edit is enabled. No shortcut (`secondary-d` is duplicate-row on the grid). It saves a new connection immediately and does not connect and does not open the dialog. The name is `{name} copy`, then `{name} copy 2`, and so on. The new id is new. Engine, host, port, user, database, file, TLS, `record_history`, color, label, group, and safe mode are copied. The password is not copied, and no keychain item is written for the new id. The copy is saved with `needs_password: true` (omitted when false; old files load as false) so connect asks for a password; Save and a successful connect clear that flag. Status: `Duplicated {name}. Type the password to connect.` When no tab is open, that sentence is shown as the workspace status line above the empty pane. Connecting the copy opens the connection dialog so the password can be typed.
 
 ## Client-side title bar
 

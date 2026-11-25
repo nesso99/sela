@@ -7,7 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Window};
+use gpui_kit::{Context, Focusable as _, Window};
 
 use sela_core::{
     classify_statement_safety, decide_editor_gate, truncate_one_line, Dialect, EditorGate,
@@ -66,6 +66,9 @@ impl Workspace {
     }
 
     /// Show a safe-mode confirm; on Continue, run `statements` on `tab_id`.
+    ///
+    /// Enter and Escape cancel (same as quit). The SQL editor is blurred first so
+    /// Enter cannot insert a newline under the dialog (#83).
     pub(super) fn show_safe_mode_confirm(
         &mut self,
         window: &mut Window,
@@ -81,8 +84,15 @@ impl Workspace {
             return;
         };
         self.safe_mode_confirm_open = true;
+        blur_sql_editor_for_confirm(self, tab_id, window, cx);
         let this = cx.entity();
-        window.open_alert_dialog(cx, move |alert, _, _| {
+        let cancel_focus = cx.focus_handle();
+        let initial_focus = std::cell::Cell::new(true);
+        window.open_alert_dialog(cx, move |alert, window, cx| {
+            // Focus Cancel on first paint so Enter activates it (quit pattern).
+            if initial_focus.replace(false) {
+                cancel_focus.focus(window, cx);
+            }
             let this_ok = this.clone();
             let this_cancel = this.clone();
             let this_continue = this.clone();
@@ -108,6 +118,7 @@ impl Workspace {
                             Button::new("safe-mode-cancel")
                                 .label("Cancel")
                                 .primary()
+                                .track_focus(&cancel_focus)
                                 .on_click({
                                     let this = this.clone();
                                     move |_, window, cx| {
@@ -155,7 +166,12 @@ impl Workspace {
         };
         self.safe_mode_confirm_open = true;
         let this = cx.entity();
-        window.open_alert_dialog(cx, move |alert, _, _| {
+        let cancel_focus = cx.focus_handle();
+        let initial_focus = std::cell::Cell::new(true);
+        window.open_alert_dialog(cx, move |alert, window, cx| {
+            if initial_focus.replace(false) {
+                cancel_focus.focus(window, cx);
+            }
             let this_ok = this.clone();
             let this_cancel = this.clone();
             let this_continue = this.clone();
@@ -182,6 +198,7 @@ impl Workspace {
                             Button::new("history-safe-mode-cancel")
                                 .label("Cancel")
                                 .primary()
+                                .track_focus(&cancel_focus)
                                 .on_click({
                                     let this = this.clone();
                                     move |_, window, cx| {
@@ -211,6 +228,21 @@ impl Workspace {
                         ),
                 )
         });
+    }
+}
+
+/// Drop SQL editor focus before a confirm so Enter cannot type into the editor.
+fn blur_sql_editor_for_confirm(
+    workspace: &Workspace,
+    tab_id: sela_core::TabId,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(view) = workspace.views.get(&tab_id) {
+        let handle = view.sql.read(cx).focus_handle(cx);
+        if handle.is_focused(window) {
+            window.blur(cx);
+        }
     }
 }
 
@@ -348,5 +380,19 @@ mod tests {
         assert!(body.contains("NOT SQL"));
         assert!(body.contains("This batch also runs 1 other write."));
         assert_eq!(label, "Run anyway");
+    }
+
+    #[test]
+    fn write_confirm_copy_uses_run_this_write_title() {
+        // Enter/Escape cancel is wired in show_safe_mode_confirm (quit pattern);
+        // this locks the editor dialog title/body contract from 09-safe-mode.md.
+        let gate = EditorGate::ConfirmWrite {
+            write_sqls: vec!["UPDATE t SET a = 1 WHERE id = 1".into()],
+            has_reads: false,
+        };
+        let (title, body, label) = dialog_copy(&gate).unwrap();
+        assert_eq!(title, "Run this write?");
+        assert!(body.contains("UPDATE t SET a = 1 WHERE id = 1"));
+        assert_eq!(label, "Run");
     }
 }

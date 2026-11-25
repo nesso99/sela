@@ -168,6 +168,12 @@ impl<S: SecretStore> CachingSecrets<S> {
     }
 
     pub fn get(&self, account: &str) -> Result<String, SecretError> {
+        Ok(self.get_optional(account)?.unwrap_or_default())
+    }
+
+    /// Like [`Self::get`], but `None` when neither memory nor the keychain has
+    /// an entry (Duplicate creates a row with no secret).
+    pub fn get_optional(&self, account: &str) -> Result<Option<String>, SecretError> {
         if let Some(value) = self
             .memory
             .lock()
@@ -175,7 +181,7 @@ impl<S: SecretStore> CachingSecrets<S> {
             .get(account)
             .cloned()
         {
-            return Ok(value);
+            return Ok(Some(value));
         }
         match self.inner.get(account)? {
             Some(value) => {
@@ -183,16 +189,21 @@ impl<S: SecretStore> CachingSecrets<S> {
                     .lock()
                     .expect("secret lock")
                     .insert(account.to_string(), value.clone());
-                Ok(value)
+                Ok(Some(value))
             }
-            None => Ok(String::new()),
+            None => Ok(None),
         }
     }
 
     pub fn set(&self, account: &str, secret: &str) -> PasswordPersistence {
         if secret.is_empty() {
             let _ = self.inner.delete(account);
-            self.memory.lock().expect("secret lock").remove(account);
+            // Remember an intentional empty password for this session so connect
+            // does not re-prompt (Duplicate never calls set, so it stays None).
+            self.memory
+                .lock()
+                .expect("secret lock")
+                .insert(account.to_string(), String::new());
             return PasswordPersistence::Empty;
         }
         match self.inner.set(account, secret) {
@@ -227,10 +238,19 @@ mod tests {
     fn memory_store_round_trip() {
         let secrets = CachingSecrets::new(MemorySecretStore::default());
         assert_eq!(secrets.get("a").unwrap(), "");
+        assert_eq!(secrets.get_optional("a").unwrap(), None);
         assert_eq!(secrets.set("a", "s3cret"), PasswordPersistence::Keychain);
         assert_eq!(secrets.get("a").unwrap(), "s3cret");
+        assert_eq!(
+            secrets.get_optional("a").unwrap().as_deref(),
+            Some("s3cret")
+        );
         assert_eq!(secrets.set("a", ""), PasswordPersistence::Empty);
         assert_eq!(secrets.get("a").unwrap(), "");
+        // Intentional empty is remembered in-session so connect does not re-prompt.
+        assert_eq!(secrets.get_optional("a").unwrap().as_deref(), Some(""));
+        // An account that was never set stays missing (Duplicate → prompt).
+        assert_eq!(secrets.get_optional("never-set").unwrap(), None);
     }
 
     #[test]
