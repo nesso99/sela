@@ -94,9 +94,9 @@ pub use sql::{
 };
 pub use sql_complete::{
     analyze_context, complete, dialect_keywords, is_catalog_refresh_statement,
-    quote_ident_if_needed, should_auto_trigger, snapshot_from_catalog, CatalogStatus,
-    CompletionContext, CompletionKind, CompletionSuggestion, SchemaEntry, SchemaSnapshot,
-    TableEntry,
+    prefer_above_popup_origin, quote_ident_if_needed, should_auto_trigger, snapshot_from_catalog,
+    CatalogStatus, CompletionContext, CompletionKind, CompletionSuggestion, SchemaEntry,
+    SchemaSnapshot, TableEntry,
 };
 pub use structure::{ColumnStructure, ForeignKeyInfo, IndexInfo, TableStructure};
 pub use tabs::{

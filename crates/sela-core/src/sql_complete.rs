@@ -72,8 +72,12 @@ pub struct CompletionContext {
     pub in_string_or_comment: bool,
     /// Unquoted identifier fragment immediately before the caret (may be empty).
     pub fragment: String,
-    /// Byte start of [`Self::fragment`] in the buffer.
+    /// Byte start of the text that accept will replace (opener + fragment when
+    /// completing inside an open quoted identifier).
     pub fragment_start: usize,
+    /// Byte length to replace on accept (usually `fragment.len()`; longer when
+    /// the opening identifier quote must be rewritten).
+    pub replace_len: usize,
     /// Qualifier before a trailing `.` (`alias.`, `table.`, `schema.`), if any.
     pub qualifier: Option<String>,
     /// True when the character immediately before the caret (ignoring the fragment) is `.`.
@@ -107,7 +111,7 @@ pub fn complete(
 
     match catalog {
         CatalogStatus::Loading => {
-            return vec![status_row(LOADING_LABEL, ctx.fragment.len())];
+            return vec![status_row(LOADING_LABEL, ctx.replace_len)];
         }
         CatalogStatus::Empty => {
             // Still offer keywords so typing works before a catalog exists.
@@ -125,8 +129,9 @@ pub fn complete(
     };
 
     let statement = current_statement_text(buffer, caret, dialect);
-    let aliases = extract_aliases(&statement);
-    let tables_in_statement = tables_named_in_statement(&statement, snapshot, active_schema);
+    let aliases = extract_aliases(dialect, &statement);
+    let tables_in_statement =
+        tables_named_in_statement(dialect, &statement, snapshot, active_schema);
 
     let mut scored: Vec<(i32, CompletionSuggestion)> = Vec::new();
 
@@ -215,19 +220,27 @@ pub fn quote_ident_if_needed(dialect: Dialect, ident: &str) -> String {
 /// Parse trigger / fragment / qualifier at `caret`.
 pub fn analyze_context(dialect: Dialect, buffer: &str, caret: usize) -> CompletionContext {
     let caret = caret.min(buffer.len());
-    if in_string_or_comment(buffer, caret) {
+    if in_string_or_comment(dialect, buffer, caret) {
         return CompletionContext {
             in_string_or_comment: true,
             fragment: String::new(),
             fragment_start: caret,
+            replace_len: 0,
             qualifier: None,
             after_dot: false,
         };
     }
 
     let before = &buffer[..caret];
+
+    // Inside an open dialect identifier quote (`"Od` / `` `Od ``): complete the name.
+    if let Some(ctx) = analyze_open_quoted_ident(dialect, before) {
+        return ctx;
+    }
+
     let fragment_start = scan_ident_start(dialect, before);
     let fragment = before[fragment_start..].to_string();
+    let replace_len = fragment.len();
 
     let mut after_dot = false;
     let mut qualifier = None;
@@ -237,11 +250,7 @@ pub fn analyze_context(dialect: Dialect, buffer: &str, caret: usize) -> Completi
         if ch == '.' {
             after_dot = true;
             let without_dot = &trimmed[..trimmed.len() - ch.len_utf8()];
-            let q_start = scan_ident_start(dialect, without_dot);
-            let q = without_dot[q_start..].trim();
-            // Strip surrounding quotes from the qualifier token.
-            let q = unquote_ident(dialect, q);
-            if !q.is_empty() {
+            if let Some(q) = qualifier_token_before(dialect, without_dot) {
                 qualifier = Some(q);
             }
         }
@@ -251,9 +260,34 @@ pub fn analyze_context(dialect: Dialect, buffer: &str, caret: usize) -> Completi
         in_string_or_comment: false,
         fragment,
         fragment_start,
+        replace_len,
         qualifier,
         after_dot,
     }
+}
+
+/// Prefer placing a popup above the caret; flip below only when it does not fit above (AU-12).
+///
+/// `below_anchor_y` is the origin used when placing below (typically caret bottom + gap).
+/// Returns the popup top Y in the same coordinate space as the inputs.
+pub fn prefer_above_popup_origin(
+    caret_top: f32,
+    below_anchor_y: f32,
+    popup_height: f32,
+    viewport_height: f32,
+    gap: f32,
+) -> f32 {
+    let space_above = (caret_top - gap).max(0.0);
+    if popup_height <= space_above {
+        return (space_above - popup_height).max(0.0);
+    }
+    if below_anchor_y + popup_height <= viewport_height {
+        return below_anchor_y;
+    }
+    // Neither fits cleanly: clamp within the viewport.
+    (viewport_height - popup_height)
+        .max(0.0)
+        .min(below_anchor_y)
 }
 
 fn status_row(label: &str, replace_len: usize) -> CompletionSuggestion {
@@ -279,7 +313,7 @@ fn keyword_suggestions(dialect: Dialect, ctx: &CompletionContext) -> Vec<Complet
             detail: "keyword".into(),
             kind: CompletionKind::Keyword,
             insert: kw.to_ascii_uppercase(),
-            replace_len: ctx.fragment.len(),
+            replace_len: ctx.replace_len,
         })
         .collect()
 }
@@ -336,7 +370,7 @@ fn push_qualified(
                         detail: "table".into(),
                         kind: CompletionKind::Table,
                         insert: quote_ident_if_needed(dialect, &table.name),
-                        replace_len: ctx.fragment.len(),
+                        replace_len: ctx.replace_len,
                     },
                 ));
             }
@@ -363,7 +397,7 @@ fn push_unqualified(
                     detail: "alias".into(),
                     kind: CompletionKind::Alias,
                     insert: quote_ident_if_needed(dialect, alias),
-                    replace_len: ctx.fragment.len(),
+                    replace_len: ctx.replace_len,
                 },
             ));
         }
@@ -385,7 +419,7 @@ fn push_unqualified(
                     detail: "schema".into(),
                     kind: CompletionKind::Schema,
                     insert: quote_ident_if_needed(dialect, &schema.name),
-                    replace_len: ctx.fragment.len(),
+                    replace_len: ctx.replace_len,
                 },
             ));
         }
@@ -411,7 +445,7 @@ fn push_unqualified(
                         detail: "table".into(),
                         kind: CompletionKind::Table,
                         insert: quote_ident_if_needed(dialect, &table.name),
-                        replace_len: ctx.fragment.len(),
+                        replace_len: ctx.replace_len,
                     },
                 ));
             }
@@ -461,7 +495,7 @@ fn push_column_scored(
             detail: col.type_name.clone(),
             kind: CompletionKind::Column,
             insert: quote_ident_if_needed(dialect, &col.name),
-            replace_len: ctx.fragment.len(),
+            replace_len: ctx.replace_len,
         },
     ));
 }
@@ -578,10 +612,10 @@ fn needs_quoting(dialect: Dialect, ident: &str) -> bool {
     }) {
         return true;
     }
-    // Mixed case / reserved → quote so the insert round-trips.
-    if ident.chars().any(|ch| ch.is_ascii_uppercase())
-        && ident.chars().any(|ch| ch.is_ascii_lowercase())
-    {
+    // Any ASCII uppercase needs quoting: Postgres/SQLite fold unquoted names to
+    // lowercase, so ORDERS would become orders; MySQL likewise folds on most
+    // collations. Mixed-case is the common case of the same rule.
+    if ident.chars().any(|ch| ch.is_ascii_uppercase()) {
         return true;
     }
     let lower = ident.to_ascii_lowercase();
@@ -590,14 +624,20 @@ fn needs_quoting(dialect: Dialect, ident: &str) -> bool {
         .is_ok()
 }
 
-fn in_string_or_comment(buffer: &str, caret: usize) -> bool {
+/// True when the caret sits inside a string literal or SQL comment.
+///
+/// Dialect identifier quotes (`"` on Postgres/SQLite, `` ` `` on MySQL) are
+/// **not** strings — typing inside an open `"Od` must still complete.
+fn in_string_or_comment(dialect: Dialect, buffer: &str, caret: usize) -> bool {
     let bytes = buffer.as_bytes();
     let mut i = 0usize;
     let mut in_single = false;
-    let mut in_double = false;
-    let mut in_backtick = false;
+    // MySQL treats `"` as a string delimiter (unless ANSI_QUOTES); PG/SQLite use
+    // `"` for identifiers, handled separately by [`analyze_open_quoted_ident`].
+    let mut in_double_string = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
+    let double_is_string = matches!(dialect, Dialect::Mysql);
     while i < caret && i < bytes.len() {
         let b = bytes[i];
         if in_line_comment {
@@ -627,24 +667,13 @@ fn in_string_or_comment(buffer: &str, caret: usize) -> bool {
             i += 1;
             continue;
         }
-        if in_double {
+        if in_double_string {
             if b == b'"' {
                 if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
                     i += 2;
                     continue;
                 }
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-        if in_backtick {
-            if b == b'`' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'`' {
-                    i += 2;
-                    continue;
-                }
-                in_backtick = false;
+                in_double_string = false;
             }
             i += 1;
             continue;
@@ -661,13 +690,97 @@ fn in_string_or_comment(buffer: &str, caret: usize) -> bool {
         }
         match b {
             b'\'' => in_single = true,
-            b'"' => in_double = true,
-            b'`' => in_backtick = true,
+            b'"' if double_is_string => in_double_string = true,
             _ => {}
         }
         i += 1;
     }
-    in_single || in_double || in_backtick || in_line_comment || in_block_comment
+    in_single || in_double_string || in_line_comment || in_block_comment
+}
+
+fn ident_quote_char(dialect: Dialect) -> Option<char> {
+    match dialect {
+        Dialect::Postgres | Dialect::Sqlite => Some('"'),
+        Dialect::Mysql => Some('`'),
+    }
+}
+
+/// Open quoted identifier ending at `before`'s end (`"Od` / `` `Od ``).
+fn analyze_open_quoted_ident(dialect: Dialect, before: &str) -> Option<CompletionContext> {
+    let q = ident_quote_char(dialect)?;
+    // Find the last opener that is not closed before the end.
+    let mut open_at: Option<usize> = None;
+    let mut chars = before.char_indices().peekable();
+    while let Some((ix, ch)) = chars.next() {
+        if ch != q {
+            continue;
+        }
+        // Escaped quote inside an open ident: `""` / ``.
+        if open_at.is_some() {
+            if chars.peek().map(|(_, c)| *c) == Some(q) {
+                chars.next();
+                continue;
+            }
+            open_at = None;
+            continue;
+        }
+        open_at = Some(ix);
+    }
+    let start = open_at?;
+    let inner = &before[start + q.len_utf8()..];
+    let fragment = inner.to_string();
+    // Cover the opening quote + fragment so accept rewrites the whole token.
+    let replace_len = before.len() - start;
+    Some(CompletionContext {
+        in_string_or_comment: false,
+        fragment,
+        fragment_start: start,
+        replace_len,
+        qualifier: None,
+        after_dot: false,
+    })
+}
+
+fn qualifier_token_before(dialect: Dialect, without_dot: &str) -> Option<String> {
+    let trimmed = without_dot.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(q) = ident_quote_char(dialect) {
+        if trimmed.ends_with(q) {
+            // Walk back to the matching opener; `trimmed` already ends with the closer.
+            let mut i = trimmed.len() - q.len_utf8();
+            while i > 0 {
+                let ch = trimmed[..i].chars().next_back()?;
+                let ch_start = i - ch.len_utf8();
+                if ch == q {
+                    // Escaped quote pair inside the name.
+                    if ch_start > 0 {
+                        let prev = trimmed[..ch_start].chars().next_back();
+                        if prev == Some(q) {
+                            i = ch_start - q.len_utf8();
+                            continue;
+                        }
+                    }
+                    let raw = &trimmed[ch_start..];
+                    let unq = unquote_ident(dialect, raw);
+                    if !unq.is_empty() {
+                        return Some(unq);
+                    }
+                    return None;
+                }
+                i = ch_start;
+            }
+        }
+    }
+    let q_start = scan_ident_start(dialect, trimmed);
+    let q = trimmed[q_start..].trim();
+    let q = unquote_ident(dialect, q);
+    if q.is_empty() {
+        None
+    } else {
+        Some(q)
+    }
 }
 
 fn current_statement_text(buffer: &str, caret: usize, dialect: Dialect) -> String {
@@ -681,10 +794,10 @@ fn current_statement_text(buffer: &str, caret: usize, dialect: Dialect) -> Strin
 }
 
 /// Map alias (lower) → (optional schema, table name).
-fn extract_aliases(statement: &str) -> HashMap<String, (Option<String>, String)> {
+fn extract_aliases(dialect: Dialect, statement: &str) -> HashMap<String, (Option<String>, String)> {
     let mut out = HashMap::new();
     let stripped = strip_comments(statement);
-    let tokens = tokenize_idents(&stripped);
+    let tokens = tokenize_idents(dialect, &stripped);
     let mut i = 0usize;
     while i < tokens.len() {
         let tok = tokens[i].as_str();
@@ -729,11 +842,12 @@ fn parse_relation(tokens: &[String], start: usize) -> Option<(Option<String>, St
 }
 
 fn tables_named_in_statement(
+    dialect: Dialect,
     statement: &str,
     snapshot: &SchemaSnapshot,
     active_schema: Option<&str>,
 ) -> Vec<(String, String)> {
-    let aliases = extract_aliases(statement);
+    let aliases = extract_aliases(dialect, statement);
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for (schema, table) in aliases.values() {
@@ -747,7 +861,7 @@ fn tables_named_in_statement(
         }
     }
     // Also pick up bare table tokens that match the catalog.
-    for tok in tokenize_idents(statement) {
+    for tok in tokenize_idents(dialect, statement) {
         if is_sql_clause_keyword(&tok) {
             continue;
         }
@@ -816,11 +930,62 @@ fn find_columns<'a>(
         .map(|t| t.columns.as_slice())
 }
 
-fn tokenize_idents(sql: &str) -> Vec<String> {
+fn tokenize_idents(dialect: Dialect, sql: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
-    for ch in sql.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
+    let mut chars = sql.chars().peekable();
+    let ident_q = ident_quote_char(dialect);
+    while let Some(ch) = chars.next() {
+        if ident_q == Some(ch) {
+            if !buf.is_empty() {
+                out.push(std::mem::take(&mut buf));
+            }
+            let mut raw = String::from(ch);
+            while let Some(c) = chars.next() {
+                raw.push(c);
+                if c == ch {
+                    if chars.peek() == Some(&ch) {
+                        raw.push(chars.next().unwrap());
+                        continue;
+                    }
+                    break;
+                }
+            }
+            out.push(unquote_ident(dialect, &raw));
+            continue;
+        }
+        // Skip string literals so aliases are not confused with quoted text.
+        if ch == '\'' {
+            if !buf.is_empty() {
+                out.push(std::mem::take(&mut buf));
+            }
+            while let Some(c) = chars.next() {
+                if c == '\'' {
+                    if chars.peek() == Some(&'\'') {
+                        chars.next();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        if matches!(dialect, Dialect::Mysql) && ch == '"' {
+            if !buf.is_empty() {
+                out.push(std::mem::take(&mut buf));
+            }
+            while let Some(c) = chars.next() {
+                if c == '"' {
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch.is_alphabetic() {
             buf.push(ch);
             continue;
         }
@@ -1315,6 +1480,11 @@ mod tests {
             quote_ident_if_needed(Dialect::Postgres, "select"),
             "\"select\""
         );
+        // (a) All-uppercase Postgres names must be quoted (fold to lowercase).
+        assert_eq!(
+            quote_ident_if_needed(Dialect::Postgres, "ORDERS"),
+            "\"ORDERS\""
+        );
         let sql = "SELECT * FROM public.";
         let caret = sql.len();
         let items = complete(
@@ -1329,6 +1499,124 @@ mod tests {
             .find(|i| i.label == "Odd Name")
             .expect("Odd Name");
         assert_eq!(odd.insert, "\"Odd Name\"");
+    }
+
+    #[test]
+    fn au09_alias_over_quoted_table_returns_columns() {
+        // (b) FROM "Odd Name" AS o — tokenize must keep the quoted table whole.
+        let sql = "SELECT o. FROM \"Odd Name\" AS o";
+        let caret = sql.find('.').unwrap() + 1;
+        let items = complete(
+            Dialect::Postgres,
+            &books_catalog(),
+            sql,
+            caret,
+            Some("public"),
+        );
+        assert!(
+            items.iter().any(|i| i.label == "Weird Col"),
+            "expected column of quoted table; got {items:?}"
+        );
+    }
+
+    #[test]
+    fn au09_quoted_qualifier_dot_lists_columns_not_keywords() {
+        // (c) `"Odd Name".` must qualify columns, not fall through to keywords.
+        let sql = "SELECT \"Odd Name\".";
+        let caret = sql.len();
+        let ctx = analyze_context(Dialect::Postgres, sql, caret);
+        assert!(ctx.after_dot);
+        assert_eq!(ctx.qualifier.as_deref(), Some("Odd Name"));
+        let items = complete(
+            Dialect::Postgres,
+            &books_catalog(),
+            sql,
+            caret,
+            Some("public"),
+        );
+        assert!(items.iter().any(|i| i.label == "Weird Col"), "{items:?}");
+        assert!(
+            items.iter().all(|i| i.kind != CompletionKind::Keyword),
+            "keywords must not appear after a qualified dot"
+        );
+    }
+
+    #[test]
+    fn au09_complete_inside_open_postgres_quote() {
+        // (d) Typing inside `"Od` is an identifier, not a string literal.
+        let sql = "SELECT \"Od";
+        let caret = sql.len();
+        let ctx = analyze_context(Dialect::Postgres, sql, caret);
+        assert!(!ctx.in_string_or_comment);
+        assert_eq!(ctx.fragment, "Od");
+        assert!(ctx.replace_len >= 3, "must replace opener + fragment");
+        let items = complete(
+            Dialect::Postgres,
+            &books_catalog(),
+            sql,
+            caret,
+            Some("public"),
+        );
+        let odd = items
+            .iter()
+            .find(|i| i.label == "Odd Name")
+            .expect("Odd Name");
+        assert_eq!(odd.insert, "\"Odd Name\"");
+        assert_eq!(odd.replace_len, ctx.replace_len);
+    }
+
+    #[test]
+    fn au08_golden_ranking_rules() {
+        // (1) Case-insensitive prefix on the typed fragment.
+        let items = complete(Dialect::Postgres, &books_catalog(), "id", 2, Some("public"));
+        assert_eq!(items[0].label, "id");
+
+        // (2) Columns of tables named in the current statement rank above others.
+        let sql = "SELECT na FROM books JOIN authors ON true";
+        let caret = "SELECT na".len();
+        let items = complete(
+            Dialect::Postgres,
+            &books_catalog(),
+            sql,
+            caret,
+            Some("public"),
+        );
+        assert_eq!(items[0].label, "name");
+
+        // (3) Substring matches appear when there is no prefix hit on identifiers.
+        let items = complete(
+            Dialect::Postgres,
+            &books_catalog(),
+            "uth",
+            3,
+            Some("public"),
+        );
+        assert!(items.iter().any(|i| i.label == "authors"));
+
+        // (4) Keywords stay below identifiers unless the fragment is a keyword prefix.
+        let items = complete(Dialect::Postgres, &books_catalog(), "bo", 2, Some("public"));
+        assert_eq!(items[0].kind, CompletionKind::Table);
+        let items = complete(
+            Dialect::Postgres,
+            &books_catalog(),
+            "SEL",
+            3,
+            Some("public"),
+        );
+        assert_eq!(items[0].label, "SELECT");
+        assert_eq!(items[0].kind, CompletionKind::Keyword);
+    }
+
+    #[test]
+    fn au12_prefer_above_origin_rule() {
+        // Fits above → place above even when there is also room below.
+        let y = prefer_above_popup_origin(200.0, 220.0, 100.0, 600.0, 4.0);
+        assert!(y < 200.0, "expected above caret_top; got {y}");
+        assert!((y - (200.0 - 4.0 - 100.0)).abs() < 0.01);
+
+        // No room above → place below.
+        let y = prefer_above_popup_origin(50.0, 70.0, 100.0, 600.0, 4.0);
+        assert_eq!(y, 70.0);
     }
 
     #[test]

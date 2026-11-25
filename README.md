@@ -38,7 +38,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Safe mode (editor) | Done (M2-4) — [safe mode](docs/user/safe-mode.md) |
 | Inline edit, connection color / groups | Done (M2) — [safe mode](docs/user/safe-mode.md), [connecting](docs/user/connecting.md) |
 | SSH tunnel | Done (M3-1) — [connecting](docs/user/connecting.md#ssh-tunnel-postgresql-and-mysql) |
-| SQL autocomplete (keywords + schema cache) | Done (M3-2) — [keyboard shortcuts](docs/user/keyboard-shortcuts.md) |
+| SQL autocomplete (keywords + schema cache) | In progress (M3-2) — [keyboard shortcuts](docs/user/keyboard-shortcuts.md) |
 | Export CSV/JSON/SQL + CSV import | Core done (M3-3); UI follows [11-export-import](docs/design/ux/11-export-import.md) — [export-import](docs/user/export-import.md) |
 
 ## Documentation

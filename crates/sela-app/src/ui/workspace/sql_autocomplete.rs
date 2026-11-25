@@ -34,6 +34,9 @@ struct SchemaCacheState {
     dialect: Dialect,
     /// Schema that scopes unqualified names (sidebar / USE / search_path).
     active_schema: Option<String>,
+    /// Connection id the cache belongs to (`None` when disconnected).
+    connection_id: Option<String>,
+    /// Bumped on every load start / apply / clear / connection change.
     generation: u64,
 }
 
@@ -44,6 +47,7 @@ impl SchemaCacheHandle {
                 status: CatalogStatus::Empty,
                 dialect: Dialect::Sqlite,
                 active_schema: None,
+                connection_id: None,
                 generation: 0,
             })),
         }
@@ -53,11 +57,75 @@ impl SchemaCacheHandle {
         self.inner.borrow().status.clone()
     }
 
-    pub fn set_loading(&self, dialect: Dialect) {
+    pub fn generation(&self) -> u64 {
+        self.inner.borrow().generation
+    }
+
+    pub fn connection_id(&self) -> Option<String> {
+        self.inner.borrow().connection_id.clone()
+    }
+
+    /// Bind the cache to a connection (or clear it). Bumps generation.
+    pub fn set_connection_id(&self, connection_id: Option<String>) {
+        let mut g = self.inner.borrow_mut();
+        if g.connection_id != connection_id {
+            g.connection_id = connection_id;
+            g.generation = g.generation.wrapping_add(1);
+        }
+    }
+
+    /// Mark loading and return the generation that must match on apply.
+    pub fn begin_reload(&self, dialect: Dialect) -> u64 {
         let mut g = self.inner.borrow_mut();
         g.dialect = dialect;
         g.status = CatalogStatus::Loading;
         g.generation = g.generation.wrapping_add(1);
+        g.generation
+    }
+
+    pub fn set_loading(&self, dialect: Dialect) {
+        let _ = self.begin_reload(dialect);
+    }
+
+    /// Apply a finished load only when `generation` and `connection_id` still match.
+    pub fn apply_snapshot_if_current(
+        &self,
+        generation: u64,
+        connection_id: Option<&str>,
+        dialect: Dialect,
+        snapshot: SchemaSnapshot,
+        active_schema: Option<String>,
+    ) -> bool {
+        let mut g = self.inner.borrow_mut();
+        if g.generation != generation || g.connection_id.as_deref() != connection_id {
+            return false;
+        }
+        g.dialect = dialect;
+        g.active_schema = active_schema;
+        g.status = if snapshot.schemas.is_empty()
+            || snapshot.schemas.iter().all(|s| s.tables.is_empty())
+        {
+            CatalogStatus::Empty
+        } else {
+            CatalogStatus::Ready(snapshot)
+        };
+        // Keep the same generation — this result *is* the current load.
+        true
+    }
+
+    pub fn apply_empty_if_current(
+        &self,
+        generation: u64,
+        connection_id: Option<&str>,
+        dialect: Dialect,
+    ) -> bool {
+        let mut g = self.inner.borrow_mut();
+        if g.generation != generation || g.connection_id.as_deref() != connection_id {
+            return false;
+        }
+        g.dialect = dialect;
+        g.status = CatalogStatus::Empty;
+        true
     }
 
     pub fn set_snapshot(
@@ -83,6 +151,7 @@ impl SchemaCacheHandle {
         let mut g = self.inner.borrow_mut();
         g.dialect = dialect;
         g.status = CatalogStatus::Empty;
+        g.connection_id = None;
         g.generation = g.generation.wrapping_add(1);
     }
 
@@ -145,6 +214,13 @@ impl CompletionProvider for SqlCompletionProvider {
         if new_text.contains('.') {
             return true;
         }
+        // Open identifier quotes also refine completions.
+        if matches!(dialect, Dialect::Postgres | Dialect::Sqlite) && new_text.contains('"') {
+            return true;
+        }
+        if matches!(dialect, Dialect::Mysql) && new_text.contains('`') {
+            return true;
+        }
         new_text.chars().any(|ch| is_trigger_ident(dialect, ch))
     }
 }
@@ -203,7 +279,9 @@ impl Workspace {
             return;
         };
         let dialect = session.dialect();
-        self.schema_cache.set_loading(dialect);
+        let connection_id = self.active_id.clone();
+        self.schema_cache.set_connection_id(connection_id.clone());
+        let generation = self.schema_cache.begin_reload(dialect);
         let active_schema = self
             .schema_cache
             .active_schema()
@@ -214,18 +292,26 @@ impl Workspace {
         cx.spawn(async move |this, async_cx| {
             let result = drive(async move { load_schema_snapshot(session.as_ref()).await }).await;
             this.update(async_cx, |this, cx| {
-                match result {
+                let applied = match result {
                     Ok(snapshot) => {
                         let active = active_schema
                             .or_else(|| snapshot.schemas.first().map(|s| s.name.clone()));
-                        cache.set_snapshot(dialect, snapshot, active);
+                        cache.apply_snapshot_if_current(
+                            generation,
+                            connection_id.as_deref(),
+                            dialect,
+                            snapshot,
+                            active,
+                        )
                     }
                     Err(_) => {
-                        cache.set_empty(dialect);
+                        cache.apply_empty_if_current(generation, connection_id.as_deref(), dialect)
                     }
-                }
+                };
                 let _ = this;
-                cx.notify();
+                if applied {
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -329,4 +415,87 @@ pub(crate) fn install_test_completions(
             max_width: px(360.),
         };
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_snapshot(label: &str) -> SchemaSnapshot {
+        SchemaSnapshot {
+            schemas: vec![SchemaEntry {
+                name: "public".into(),
+                tables: vec![TableEntry {
+                    name: label.into(),
+                    columns: vec![],
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn discards_stale_load_when_generation_moves() {
+        let cache = SchemaCacheHandle::new();
+        cache.set_connection_id(Some("a".into()));
+        assert_eq!(cache.connection_id().as_deref(), Some("a"));
+        let gen_a = cache.begin_reload(Dialect::Postgres);
+        assert_eq!(cache.generation(), gen_a);
+        // Newer refresh (or reconnect) bumps generation before A finishes.
+        let gen_b = cache.begin_reload(Dialect::Postgres);
+        assert_ne!(gen_a, gen_b);
+        assert_eq!(cache.generation(), gen_b);
+        assert!(!cache.apply_snapshot_if_current(
+            gen_a,
+            Some("a"),
+            Dialect::Postgres,
+            sample_snapshot("stale"),
+            Some("public".into()),
+        ));
+        assert!(matches!(cache.status(), CatalogStatus::Loading));
+        assert!(cache.apply_snapshot_if_current(
+            gen_b,
+            Some("a"),
+            Dialect::Postgres,
+            sample_snapshot("fresh"),
+            Some("public".into()),
+        ));
+        match cache.status() {
+            CatalogStatus::Ready(snap) => {
+                assert_eq!(snap.schemas[0].tables[0].name, "fresh");
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discards_stale_load_when_connection_changes() {
+        let cache = SchemaCacheHandle::new();
+        cache.set_connection_id(Some("a".into()));
+        let gen = cache.begin_reload(Dialect::Postgres);
+        cache.set_connection_id(Some("b".into()));
+        assert_eq!(cache.connection_id().as_deref(), Some("b"));
+        assert_ne!(cache.generation(), gen);
+        // Connection change bumps generation; even the old gen+id pair is stale.
+        assert!(!cache.apply_snapshot_if_current(
+            gen,
+            Some("a"),
+            Dialect::Postgres,
+            sample_snapshot("from-a"),
+            Some("public".into()),
+        ));
+    }
+
+    #[test]
+    fn ddl_predicate_triggers_catalog_refresh() {
+        // Mirrors query.rs calling maybe_refresh_schema_after_sql after success.
+        assert!(is_catalog_refresh_statement("CREATE TABLE t (id int)"));
+        assert!(is_catalog_refresh_statement(
+            "ALTER TABLE t ADD COLUMN x int"
+        ));
+        assert!(is_catalog_refresh_statement("DROP TABLE t"));
+        assert!(is_catalog_refresh_statement("USE other"));
+        assert!(is_catalog_refresh_statement("SET search_path TO public"));
+        assert!(!is_catalog_refresh_statement("SELECT 1"));
+        assert!(!is_catalog_refresh_statement("GRANT SELECT ON t TO u"));
+    }
 }

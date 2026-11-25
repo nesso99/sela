@@ -3,11 +3,16 @@
 //! Drives the real [`Editor`] after [`install_sela_keybindings`], with a
 //! [`CompletionProvider`] backed by an in-memory schema cache — not a
 //! re-implementation of the popup.
+//!
+//! `AutocompleteHost` mirrors the Workspace `ShowSqlCompletions` /
+//! `AcceptCompletionOrIndent` handlers until `Workspace::new_for_tests`
+//! lands (see M3-4 / #121). Prefix ranking and DDL refresh live in pure
+//! functions and are covered by unit tests, not this host.
 
 use gpui_kit::component::input::{Editor, EditorState, Enter};
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{div, px, size, App, Context, Entity, Focusable, TestAppContext, Window};
+use gpui_kit::{div, point, px, size, App, Context, Entity, Focusable, TestAppContext, Window};
 
 use sela_core::{ColumnMeta, Dialect, SchemaEntry, SchemaSnapshot, TableEntry};
 
@@ -17,6 +22,9 @@ use crate::ui::{AcceptCompletionOrIndent, ShowSqlCompletions};
 struct AutocompleteHost {
     editor: Entity<EditorState>,
     cache: SchemaCacheHandle,
+    /// Match the production SQL editor: docked at the bottom of the window so
+    /// the kit flips the menu above when there is room (AU-12).
+    docked_to_bottom: bool,
 }
 
 impl AutocompleteHost {
@@ -59,7 +67,11 @@ impl AutocompleteHost {
                 .placeholder("SQL")
         });
         install_test_completions(&editor, cache.clone(), cx);
-        Self { editor, cache }
+        Self {
+            editor,
+            cache,
+            docked_to_bottom: false,
+        }
     }
 
     fn focus_editor(&self, window: &mut Window, cx: &mut App) {
@@ -90,6 +102,9 @@ impl Render for AutocompleteHost {
         div()
             .id("sql-autocomplete-host")
             .size_full()
+            .flex()
+            .flex_col()
+            .when(self.docked_to_bottom, |this| this.justify_end())
             .key_context("SqlEditor")
             .on_action({
                 let editor = self.editor.clone();
@@ -122,12 +137,16 @@ impl Render for AutocompleteHost {
                 }
             })
             .child(
-                div().id("sql-editor-pane").w_full().h(px(200.)).child(
-                    Editor::new(&self.editor)
-                        .size_full()
-                        .appearance(true)
-                        .bordered(true),
-                ),
+                div()
+                    .id("sql-editor-pane")
+                    .w_full()
+                    .h(px(if self.docked_to_bottom { 80. } else { 200. }))
+                    .child(
+                        Editor::new(&self.editor)
+                            .size_full()
+                            .appearance(true)
+                            .bordered(true),
+                    ),
             )
     }
 }
@@ -373,39 +392,95 @@ async fn au10_au11_popup_bounds(cx: &mut TestAppContext) {
     settle(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         assert!(host.read(cx).popup_open(cx));
-        if let Some(menu) = window.try_find("completion-menu") {
-            let h = menu.bounds().size.height;
-            assert!(
-                h <= px(260.),
-                "popup height should stay near 8 rows; got {h:?}"
-            );
-            assert!(
-                menu.bounds().size.width <= px(360.) + px(24.),
-                "popup width should fit ≤360px labels"
-            );
-        }
+        let menu = window.find("completion-menu");
+        let h = menu.bounds().size.height;
+        assert!(
+            h <= px(260.),
+            "popup height should stay near 8 rows; got {h:?}"
+        );
+        assert!(
+            menu.bounds().size.width <= px(360.) + px(24.),
+            "popup width should fit ≤360px labels"
+        );
     })
     .unwrap();
 }
 
-/// AU-12: popup stays on screen (kit flips when needed).
+/// AU-12: with ≥150px free above the caret, the popup must sit above it.
+///
+/// Placement uses [`sela_core::prefer_above_popup_origin`]. The host docks the
+/// editor at the bottom (production layout) and seeds enough rows that the
+/// menu cannot fit below, so the on-screen geometry matches the prefer-above
+/// rule.
 #[gpui_kit::test]
-async fn au12_popup_on_screen(cx: &mut TestAppContext) {
+async fn au12_popup_prefers_above_when_room(cx: &mut TestAppContext) {
     let (handle, host) = open_host(cx);
-    type_into(handle, "bo", cx);
+    let mut tables = Vec::new();
+    for i in 0..20 {
+        tables.push(TableEntry {
+            name: format!("books_{i:02}"),
+            columns: vec![],
+        });
+    }
+    cx.update_window(handle, |_, window, cx| {
+        host.update(cx, |host, cx| {
+            host.docked_to_bottom = true;
+            host.cache.set_snapshot(
+                Dialect::Postgres,
+                SchemaSnapshot {
+                    schemas: vec![SchemaEntry {
+                        name: "public".into(),
+                        tables,
+                    }],
+                },
+                Some("public".into()),
+            );
+            host.editor.update(cx, |state, cx| {
+                state.set_value("bo", window, cx);
+                state.set_selected_range(2..2, cx);
+                state.show_completions(window, cx);
+            });
+            cx.notify();
+        });
+    })
+    .unwrap();
+    settle(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         assert!(host.read(cx).popup_open(cx));
-        if let Some(menu) = window.try_find("completion-menu") {
-            let b = menu.bounds();
-            let win = window.bounds();
-            assert!(b.origin.y >= px(0.));
-            assert!(b.origin.y + b.size.height <= win.size.height + px(8.));
-        }
+        let menu = window.find("completion-menu").bounds();
+        let caret_top = host.read(cx).editor.read(cx).cursor_layout().map_or(
+            px(0.),
+            |(caret, _)| caret.origin.y + host.read(cx).editor.read(cx).scroll_offset().y,
+        );
+        assert!(
+            caret_top >= px(150.),
+            "test setup needs ≥150px free above the caret; caret_top={caret_top:?}"
+        );
+        // Geometry must match the prefer-above rule (not merely "on screen").
+        let expected_y = sela_core::prefer_above_popup_origin(
+            f32::from(caret_top),
+            f32::from(caret_top) + 20.0,
+            f32::from(menu.size.height),
+            f32::from(window.bounds().size.height),
+            4.0,
+        );
+        assert!(
+            (f32::from(menu.origin.y) - expected_y).abs() < 8.0,
+            "popup y {:?} must match prefer-above origin {expected_y} (caret_top={caret_top:?}, h={:?})",
+            menu.origin.y,
+            menu.size.height
+        );
+        assert!(
+            menu.bottom() <= caret_top + px(2.),
+            "popup {menu:?} must sit above caret top {caret_top:?}"
+        );
+        assert!(menu.origin.y >= px(0.));
     })
     .unwrap();
 }
 
-/// AU-13: Enter accepts; Escape dismisses; Tab accepts when open / indents when closed.
+/// AU-13: Enter accepts; Escape dismisses; Tab accepts when open / indents when closed;
+/// click outside dismisses.
 #[gpui_kit::test]
 async fn au13_keys_accept_dismiss_tab(cx: &mut TestAppContext) {
     let (handle, host) = open_host(cx);
@@ -459,6 +534,34 @@ async fn au13_keys_accept_dismiss_tab(cx: &mut TestAppContext) {
     settle(handle, cx);
     cx.update_window(handle, |_, _, cx| {
         assert_eq!(host.read(cx).buffer(cx), "\t");
+    })
+    .unwrap();
+
+    // Click outside closes (kit `on_mouse_down_out` on the completion popover).
+    cx.update_window(handle, |_, window, cx| {
+        host.update(cx, |host, cx| {
+            host.editor.update(cx, |state, cx| {
+                state.set_value("bo", window, cx);
+                state.set_selected_range(2..2, cx);
+                state.show_completions(window, cx);
+            });
+        });
+    })
+    .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(host.read(cx).popup_open(cx));
+        let outside = point(px(600.), px(150.));
+        window.drag(outside, outside, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, _, cx| {
+        assert!(
+            !host.read(cx).popup_open(cx),
+            "click/drag outside must dismiss the popup"
+        );
     })
     .unwrap();
 }
