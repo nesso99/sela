@@ -81,6 +81,8 @@ actions!(
         PreviewChanges,
         CommitChanges,
         DiscardChanges,
+        ExportData,
+        ImportCsv,
         Quit,
         IncreaseFontSize,
         DecreaseFontSize,

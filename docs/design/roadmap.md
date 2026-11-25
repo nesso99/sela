@@ -114,7 +114,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | --- | --- | --- | --- |
 | M3-1 | SSH tunnel (`sela-ssh` / russh): password, key + passphrase, agent, `~/.ssh/config`, known_hosts (core/drivers; UI later) | US-02; openssh container test. UX: [ux/10-ssh-tunnel.md](./ux/10-ssh-tunnel.md) | Core/drivers done; UI later |
 | M3-2 | Schema + alias autocomplete; optional MIT tree-sitter SQL grammar for muted keyword/comment highlight | US-08 complete. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md#autocomplete) | |
-| M3-3 | Export CSV/JSON/SQL with background progress; CSV import | US-12. UX: [ux/11-export-import.md](./ux/11-export-import.md) | Core streaming writers/readers + golden tests; UI follows |
+| M3-3 | Export CSV/JSON/SQL with background progress; CSV import | US-12. UX: [ux/11-export-import.md](./ux/11-export-import.md) | Core + UI (dialogs, progress, cancel, safe-mode); palette wiring with M3-4 |
 | M3-4 | Command palette + quick open table | Every primary action reachable from palette. UX: [ux/12-command-palette.md](./ux/12-command-palette.md) | |
 | M3 follow-up | #68 optimistic WHERE (always on) + cancel `apply_changes` | UX: [ux/08-preview-commit.md](./ux/08-preview-commit.md); QA: [v0.3-test-plan.md](../qa/v0.3-test-plan.md) | |
 

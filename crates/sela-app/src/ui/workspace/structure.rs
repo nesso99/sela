@@ -199,7 +199,7 @@ pub(crate) fn should_refresh_data_pane_status(status: &str) -> bool {
     !status.starts_with("Query failed")
 }
 
-fn structure_key(schema: &str, table: &str) -> String {
+pub(super) fn structure_key(schema: &str, table: &str) -> String {
     format!("{schema}\0{table}")
 }
 

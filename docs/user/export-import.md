@@ -1,6 +1,6 @@
 # Export and CSV import
 
-Core streaming export and CSV import for US-12 (M3-3). UI (dialogs, progress chrome, palette) follows [docs/design/ux/11-export-import.md](../design/ux/11-export-import.md). This page describes the `sela-core` behaviour the UI calls.
+Export and CSV import for US-12 (M3-3). The GPUI UI (dialogs, status-bar progress, cancel, safe-mode gates) follows [docs/design/ux/11-export-import.md](../design/ux/11-export-import.md). Open **Export…** or **Import CSV…** from the grid / table context menu (command palette wiring lands with M3-4). Native file dialogs are exercised at RC (**M-EX-01**); headless tests inject paths. This page also describes the `sela-core` behaviour the UI calls.
 
 ## Export
 

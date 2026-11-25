@@ -5,6 +5,7 @@
 
 mod commit_cancel;
 mod connection_dialog;
+mod export_import;
 mod file_menu;
 mod grid_editing;
 mod harness;

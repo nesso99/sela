@@ -77,6 +77,21 @@ impl Workspace {
     }
 
     pub(super) fn stop_query(&mut self, cx: &mut Context<Self>) {
+        // Export / import owns the busy flag while running; cancel it the same
+        // way as Stop / secondary-. (EX-06 / IM-04). Prefer transfer cancel when
+        // that job is active and no separate commit is in flight on another path.
+        if self.transfer_job.is_some() {
+            let committing = self
+                .tabs
+                .active()
+                .and_then(|t| self.views.get(&t.id))
+                .and_then(|v| v.edit.as_ref())
+                .is_some_and(|e| e.committing);
+            if !committing {
+                self.cancel_transfer_if_active(cx);
+                return;
+            }
+        }
         let Some(tab) = self.tabs.active_mut() else {
             return;
         };

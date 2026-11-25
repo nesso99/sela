@@ -5,6 +5,7 @@ mod copy_selection;
 mod edit_actions;
 pub(crate) mod edit_session;
 mod edit_ui;
+pub(crate) mod export_import;
 mod filter_bar;
 mod history;
 mod query;
@@ -49,15 +50,16 @@ use sela_core::{
 use super::{
     AcceptCellEditor, ActivateTab, CancelCellEditor, CancelQuery, CloseTab, CommitChanges,
     CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, DecreaseFontSize, DeleteEditRow,
-    DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory,
+    DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory, ExportData,
     ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
     ExtendGridSelectionUp, FindInSql, FindNext, FindPrevious, FocusHistorySearch, HistoryCopy,
     HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun, HistorySelectDown, HistorySelectUp,
-    IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab, PreviewChanges,
-    Quit, RemoveFilterRow, ResetFontSize, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery,
-    SelectAllGrid, SetCellNull, ShowTableData, ShowTableStructure, ToggleEditor, ToggleFilterBar,
-    ToggleHistory,
+    ImportCsv, IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab,
+    PreviewChanges, Quit, RemoveFilterRow, ResetFontSize, ResultStripNext, ResultStripPrev,
+    RunAllSql, RunQuery, SelectAllGrid, SetCellNull, ShowTableData, ShowTableStructure,
+    ToggleEditor, ToggleFilterBar, ToggleHistory,
 };
+use export_import::{ExportDialog, ImportDialog, TransferJob};
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
 
@@ -122,6 +124,15 @@ pub struct Workspace {
     close_tabs_confirm_open: bool,
     /// Action to run after the user confirms closing tabs with typed SQL / busy work.
     pending_close_tabs: Option<PendingCloseTabs>,
+    /// True while an import Confirm / discard-pending dialog is open.
+    import_confirm_open: bool,
+    /// Active export / import background job (one per window; EX-13).
+    transfer_job: Option<TransferJob>,
+    transfer_generation: u64,
+    /// Open export dialog entity (tests may inject a path).
+    export_dialog: Option<Entity<ExportDialog>>,
+    /// Open import dialog entity (tests may inject a path).
+    import_dialog: Option<Entity<ImportDialog>>,
     /// Updated each frame from `window.window_decorations()` for the CSD title bar.
     client_decorations: bool,
     _subscriptions: Vec<Subscription>,
@@ -254,6 +265,11 @@ impl Workspace {
             close_tab_confirm_open: false,
             close_tabs_confirm_open: false,
             pending_close_tabs: None,
+            import_confirm_open: false,
+            transfer_job: None,
+            transfer_generation: 0,
+            export_dialog: None,
+            import_dialog: None,
             client_decorations: false,
             _subscriptions: vec![
                 tree_events,
@@ -527,6 +543,22 @@ impl Render for Workspace {
                 let this = this.clone();
                 move |_: &CancelQuery, _, cx| {
                     this.update(cx, |workspace, cx| workspace.stop_query(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ExportData, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.open_export_dialog(window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ImportCsv, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.open_import_dialog(window, cx);
+                    });
                 }
             })
             .on_action({

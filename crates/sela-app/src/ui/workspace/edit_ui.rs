@@ -643,7 +643,7 @@ impl Workspace {
         self.reload_table_page_after_commit(tab_id, cx);
     }
 
-    fn reload_table_page_after_commit(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+    pub(super) fn reload_table_page_after_commit(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         // Reuse the table page loader. On reload failure after success, keep ChangeSet cleared.
         let Some(view) = self.views.get(&tab_id) else {
             return;
