@@ -41,8 +41,9 @@ Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below a
 | Inspect focused cell | Space (grid focused; any cell, including read-only). Inside the cell editor, Space types a space. |
 | Cancel open cell editor / close inspect | Escape (does not discard the pending set) |
 | Insert / Duplicate / Delete row | Cmd/Ctrl+I / Cmd/Ctrl+D / Cmd/Ctrl+Backspace (grid focused) |
-| Preview pending SQL | Cmd/Ctrl+Shift+P (table Data) |
+| Preview pending SQL | Cmd/Ctrl+Shift+V (table Data; pending bar Preview button unchanged) |
 | Commit pending changes | Cmd/Ctrl+S (table Data; accepts open editor first) |
+| Cancel in-flight commit | Cmd/Ctrl+. / Stop / pending-bar Cancel (while Committing…) |
 | Discard pending changes | Cmd/Ctrl+Shift+Z (table Data, editor closed; confirms) |
 | Previous / next SQL result | Left / Right (result strip focused) |
 | Larger / smaller / reset font size | Cmd/Ctrl+= or Cmd/Ctrl+Shift+= (also +) / Cmd/Ctrl+- / Cmd/Ctrl+0 (global) |

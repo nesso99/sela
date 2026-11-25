@@ -45,7 +45,7 @@ crates/
 | Results | Bounded `ResultWindow` (16×100); lazy Json; see [ADR 0002](../adr/0002-bounded-result-window.md) |
 | Cancel | Second-connection server cancel for PG/MySQL; [ADR 0003](../adr/0003-cancel-second-connection.md) |
 | Load-more | Safe re-run classifier; [ADR 0004](../adr/0004-safe-load-more.md) |
-| Pending edits | `ChangeSet` → `ChangePlan` (bound SQL); `apply_changes` one transaction; PK-only WHERE |
+| Pending edits | `ChangeSet` → `ChangePlan` (bound SQL); `apply_changes` one transaction with cancel; PK + optimistic non-PK WHERE (#68) |
 | Secrets | OS keychain via keyring v3 (`apple-native` / `windows-native` / `sync-secret-service` + `crypto-rust`); never passwords in JSON |
 | Grid | Keep DataTable; [ADR 0001](../adr/0001-keep-datatable.md) |
 

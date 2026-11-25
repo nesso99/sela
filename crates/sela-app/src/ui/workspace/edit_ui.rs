@@ -9,6 +9,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, IntoElement, Window};
+use tokio_util::sync::CancellationToken;
 
 use sela_core::{
     decide_grid_commit_gate, truncate_one_line, ChangePlan, DbError, GridCommitGate, TabId,
@@ -31,7 +32,10 @@ impl Workspace {
         }
         let safe_mode = self.active_safe_mode();
         let counts = session.pending_counts();
-        let left = if session.commit_failed {
+        let pending_n = counts.total();
+        let left = if session.committing {
+            format!("Committing {pending_n} changes…")
+        } else if session.commit_failed {
             format!("{} · Commit failed. Changes kept.", counts.summary_left())
         } else {
             counts.summary_left()
@@ -45,6 +49,7 @@ impl Workspace {
         } else {
             "Commit"
         };
+        let show_cancel = session.committing;
         let palette = super::super::theme::SelaPalette::for_mode(cx.theme().mode);
 
         h_flex()
@@ -74,7 +79,7 @@ impl Workspace {
                             .xsmall()
                             .ghost()
                             .label("Preview")
-                            .tooltip("Preview SQL (Ctrl/⌘+Shift+P)")
+                            .tooltip("Preview SQL (Ctrl/⌘+Shift+V)")
                             .on_click({
                                 let this = this.clone();
                                 move |_, _, cx| {
@@ -100,6 +105,23 @@ impl Workspace {
                                 }
                             }),
                     )
+                    .when(show_cancel, |row| {
+                        row.child(
+                            Button::new("pending-cancel")
+                                .xsmall()
+                                .ghost()
+                                .label("Cancel")
+                                .tooltip("Cancel in-flight commit (Ctrl/⌘+.)")
+                                .on_click({
+                                    let this = this.clone();
+                                    move |_, _, cx| {
+                                        this.update(cx, |workspace, cx| {
+                                            workspace.stop_query(cx);
+                                        });
+                                    }
+                                }),
+                        )
+                    })
                     .child(
                         Button::new("pending-commit")
                             .xsmall()
@@ -504,6 +526,12 @@ impl Workspace {
             return;
         };
         let statement_count = plan.statements.len();
+        let pending_n = self
+            .views
+            .get(&tab_id)
+            .and_then(|v| v.edit.as_ref())
+            .map(|e| e.pending_counts().total())
+            .unwrap_or(statement_count);
         let Some(generation) = self
             .view_mut(tab_id)
             .and_then(|v| v.edit.as_mut())
@@ -511,13 +539,29 @@ impl Workspace {
         else {
             return;
         };
+        // Same CancellationToken path as streaming queries (Stop / Cmd+. / Cancel).
+        // Do not bump the tab request id — paging/sort must not drop the result
+        // and leave committing=true forever.
+        let cancel = CancellationToken::new();
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.set_cancel(cancel.clone());
+        }
+        if let Some(view) = self.view_mut(tab_id) {
+            view.busy = true;
+            view.query_started = Some(Instant::now());
+            view.status = format!("Committing {pending_n} changes…");
+        }
         cx.notify();
         let started = Instant::now();
-        // Commit runs outside the tab request gate so sort/filter/paging cannot
-        // bump request and drop the result (leaving committing=true forever).
         cx.spawn(async move |this, async_cx| {
-            let result = drive(async move { session.apply_changes(&plan).await }).await;
+            let result = drive(async move { session.apply_changes(&plan, cancel).await }).await;
             this.update(async_cx, |this, cx| {
+                if let Some(tab) = this.tabs.get_mut(tab_id) {
+                    tab.clear_cancel();
+                }
+                if let Some(view) = this.view_mut(tab_id) {
+                    view.busy = false;
+                }
                 let Some(view) = this.views.get(&tab_id) else {
                     return;
                 };
@@ -547,10 +591,11 @@ impl Workspace {
                         this.reload_table_page_after_commit(tab_id, cx);
                     }
                     Err(err) => {
+                        let conflict = matches!(err, DbError::ChangeConflict { .. });
                         let (banner, status) = format_commit_failure(&err, statement_count);
                         if let Some(view) = this.view_mut(tab_id) {
                             if let Some(edit) = view.edit.as_mut() {
-                                if !edit.note_commit_failure(generation) {
+                                if !edit.note_commit_failure(generation, conflict) {
                                     return;
                                 }
                             }
@@ -570,6 +615,32 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// OW-05: drop pending edits and reload the page after a conflict.
+    pub(super) fn refresh_after_commit_conflict(&mut self, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
+            return;
+        };
+        let is_conflict = self
+            .views
+            .get(&tab_id)
+            .and_then(|v| v.edit.as_ref())
+            .is_some_and(|e| e.commit_conflict);
+        if !is_conflict {
+            return;
+        }
+        if let Some(view) = self.view_mut(tab_id) {
+            if let Some(edit) = view.edit.as_mut() {
+                edit.discard();
+            }
+            view.error = None;
+            view.last_error_sqlstate = None;
+            view.cell_inspect = None;
+        }
+        self.sync_tab_dirty(tab_id);
+        self.sync_grid_edit_paint(tab_id, cx);
+        self.reload_table_page_after_commit(tab_id, cx);
     }
 
     fn reload_table_page_after_commit(&mut self, tab_id: TabId, cx: &mut Context<Self>) {

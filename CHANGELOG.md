@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- #68 `apply_changes` cancel + always-on optimistic WHERE: `DatabaseSession::apply_changes` takes a `CancellationToken` (Stop / `secondary-.` / pending-bar Cancel; status `Commit cancelled. No changes were saved.`). `UPDATE`/`DELETE` `WHERE` ANDs comparable previous non-PK values (`IS NULL` for NULL; skips `Other`, PG `json`, MySQL JSON, XML, geometric types, oversized blobs — Preview lists `-- unchecked optimistic:`). Conflict: `Row changed since it was loaded. No changes were saved. Refresh and try again.` with banner **Refresh** (OW-05). Preview chord is `secondary-shift-v`. Golden snapshots (OW-01), driver CAN-*/OW-* (including typed float/json/blob), headless UI tests. See [v0.3-test-plan.md](docs/qa/v0.3-test-plan.md) and [08-preview-commit.md](docs/design/ux/08-preview-commit.md).
 - Headless GPUI UI tests for high-risk flows (#93): `gpui_kit::TestAppContext` harness in `crates/sela-app/src/ui/ui_tests/`, run with `./scripts/ui-tests.sh` (Xvfb optional on Linux). Covers connection-dialog Enter/Save/Cancel and password masking, cell-editor Space / empty accept / Duplicate+Copy as INSERT, and table-tab reload after SQL on Save/reconnect and on plain tab switch (#98).
 - `wgpu` is pinned to `=30.0.1` (was 30.0.2) so the GPUI test-support build resolves; the shared lockfile means the release binary also uses wgpu 30.0.1. Rendering should be re-checked on X11.
 
