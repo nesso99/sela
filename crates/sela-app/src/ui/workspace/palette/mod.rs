@@ -854,6 +854,18 @@ impl Workspace {
             .justify_center()
             .pt(px(80.))
             .bg(gpui_kit::hsla(0., 0., 0., 0.35))
+            // Occlude so backdrop clicks do not reach sidebar / chrome
+            // underneath (e.g. New connection). Close on the root mouse-down;
+            // the panel's own .occlude() keeps inside clicks from reaching here.
+            .occlude()
+            .on_mouse_down(gpui_kit::MouseButton::Left, {
+                let this = this.clone();
+                move |_, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.close_palette(window, cx);
+                    });
+                }
+            })
             .child(
                 div()
                     .id("command-palette")
@@ -868,17 +880,8 @@ impl Workspace {
                     .rounded(px(6.))
                     .bg(cx.theme().background)
                     .shadow_md()
-                    // Stop clicks on the panel (search, rows, header) from
-                    // reaching the backdrop / parent dismiss path (PAL-07).
+                    // Keep panel clicks from bubbling to the root dismiss handler.
                     .occlude()
-                    .on_mouse_down_out({
-                        let this = this.clone();
-                        move |_, window, cx| {
-                            this.update(cx, |workspace, cx| {
-                                workspace.close_palette(window, cx);
-                            });
-                        }
-                    })
                     .on_action({
                         let this = this.clone();
                         move |_: &super::super::PaletteSelectUp, _, cx| {

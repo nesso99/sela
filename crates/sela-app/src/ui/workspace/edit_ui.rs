@@ -300,6 +300,15 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// PreviewChanges action path: skip while a text input has focus (paste).
+    pub(super) fn handle_preview_changes(&mut self, window: &Window, cx: &mut Context<Self>) {
+        // secondary-shift-v must not steal paste in text fields.
+        if self.text_input_focused(window, cx) {
+            return;
+        }
+        self.toggle_preview_sheet(cx);
+    }
+
     pub(super) fn toggle_preview_sheet(&mut self, cx: &mut Context<Self>) {
         let Some(view) = self.active_view_mut() else {
             return;

@@ -503,8 +503,51 @@ impl Workspace {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_focus_grid(
+        &mut self,
+        row: usize,
+        col: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.active_view() else {
+            return;
+        };
+        view.grid.update(cx, |state, cx| {
+            state.set_selected_cell(row, col, cx);
+        });
+        view.grid.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_focus_filter_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Open the filter bar so a text input in the grid scope has focus.
+        // toggle_filter_bar focuses the first column field when opening.
+        if self.active_view().is_some_and(|v| v.filter_bar_open) {
+            self.toggle_filter_bar(window, cx); // close
+        }
+        self.toggle_filter_bar(window, cx); // open + focus
+    }
+
+    /// Same path as the PreviewChanges `on_action` handler (for guard coverage).
+    #[cfg(test)]
+    pub(crate) fn test_handle_preview_changes(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.handle_preview_changes(window, cx);
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_editor_focused(&self, window: &Window, cx: &App) -> bool {
         self.editor_field_focused(window, cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_text_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.text_input_focused(window, cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_connection_dialog_open(&self) -> bool {
+        self.connection_form.is_some()
     }
 
     #[cfg(test)]
@@ -535,6 +578,12 @@ impl Workspace {
         query.update(cx, |input, cx| {
             input.set_value(text, window, cx);
         });
+        self.sync_palette_query(window, cx);
+    }
+
+    /// Run the InputEvent::Change sync path after headless `window.input`.
+    #[cfg(test)]
+    pub(crate) fn test_sync_palette_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_palette_query(window, cx);
     }
 
@@ -1208,11 +1257,7 @@ impl Render for Workspace {
                 let this = this.clone();
                 move |_: &PreviewChanges, window, cx| {
                     this.update(cx, |workspace, cx| {
-                        // secondary-shift-v must not steal paste in text fields.
-                        if workspace.text_input_focused(window, cx) {
-                            return;
-                        }
-                        workspace.toggle_preview_sheet(cx);
+                        workspace.handle_preview_changes(window, cx);
                     });
                 }
             })

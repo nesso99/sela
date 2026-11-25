@@ -102,6 +102,17 @@ fn press_secondary(window: &mut Window, chord: &str, cx: &mut App) {
     window.press(chord, cx);
 }
 
+/// Type into the palette search via real window input (PAL-02 / PAL-05).
+/// Headless `window.input` updates InputState but may skip InputEvent::Change,
+/// so we sync the filter afterward (same path as the production Change handler).
+fn type_into_palette(window: &mut Window, workspace: &Entity<Workspace>, text: &str, cx: &mut App) {
+    window.click("palette-search", cx);
+    window.input(text, cx);
+    workspace.update(cx, |ws, cx| {
+        ws.test_sync_palette_query(window, cx);
+    });
+}
+
 /// PAL-01: secondary-p opens; Escape closes; focus restored; size constants.
 #[gpui_kit::test]
 async fn pal01_open_escape_focus_restore(cx: &mut TestAppContext) {
@@ -134,12 +145,16 @@ async fn pal01_open_escape_focus_restore(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// PAL-07: click outside closes; click on search keeps open; second chord toggles.
+/// PAL-07: click outside closes (+ focus restore); click on search keeps open; toggle.
 #[gpui_kit::test]
 async fn pal07_click_outside_and_toggle(cx: &mut TestAppContext) {
     let fix = open_fixture(cx).await;
     cx.update_window(fix.handle, |_, window, cx| {
         window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).test_editor_focused(window, cx),
+            "SQL editor focused before open"
+        );
         press_secondary(window, "secondary-p", cx);
         window.render_frame(cx);
         assert!(fix.workspace.read(cx).palette_is_open());
@@ -148,7 +163,7 @@ async fn pal07_click_outside_and_toggle(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(
             fix.workspace.read(cx).palette_is_open(),
-            "click on search must not close (occlude / mouse_down_out)"
+            "click on search must not close (panel occlude)"
         );
         // Click outside the panel (top-left of the root backdrop).
         window.click_at("command-palette-root", point(px(8.), px(8.)), cx);
@@ -157,6 +172,41 @@ async fn pal07_click_outside_and_toggle(cx: &mut TestAppContext) {
             !fix.workspace.read(cx).palette_is_open(),
             "click outside must close"
         );
+        assert!(
+            fix.workspace.read(cx).test_editor_focused(window, cx),
+            "click outside must restore focus to the SQL editor"
+        );
+        // Backdrop over New connection: closes palette, does not open the dialog.
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(fix.workspace.read(cx).palette_is_open());
+        let btn = window
+            .try_find("new-connection")
+            .expect("new-connection control");
+        let root = window
+            .try_find("command-palette-root")
+            .expect("command-palette-root");
+        let btn_b = btn.bounds();
+        let root_b = root.bounds();
+        let over_new = point(
+            btn_b.origin.x + btn_b.size.width / 2. - root_b.origin.x,
+            btn_b.origin.y + btn_b.size.height / 2. - root_b.origin.y,
+        );
+        window.click_at("command-palette-root", over_new, cx);
+        window.render_frame(cx);
+        assert!(
+            !fix.workspace.read(cx).palette_is_open(),
+            "backdrop click over New must close palette"
+        );
+        assert!(
+            !fix.workspace.read(cx).test_connection_dialog_open(),
+            "backdrop click must not open New connection dialog"
+        );
+        assert!(
+            fix.workspace.read(cx).test_editor_focused(window, cx),
+            "backdrop click must restore editor focus"
+        );
+        assert!(window.try_find("dialog").is_none());
         // Second secondary-p toggles closed.
         press_secondary(window, "secondary-p", cx);
         window.render_frame(cx);
@@ -186,14 +236,8 @@ async fn pal02_quick_open_focuses_existing_tab(cx: &mut TestAppContext) {
         window.render_frame(cx);
         press_secondary(window, "secondary-p", cx);
         window.render_frame(cx);
-        assert!(
-            fix.workspace.read(cx).palette_is_open(),
-            "palette must be open before setting query"
-        );
-        fix.workspace.update(cx, |ws, cx| {
-            ws.test_set_palette_query("books", window, cx);
-        });
-        window.render_frame(cx);
+        assert!(fix.workspace.read(cx).palette_is_open());
+        type_into_palette(window, &fix.workspace, "books", cx);
         window.render_frame(cx);
         window.press("enter", cx);
         window.render_frame(cx);
@@ -219,13 +263,8 @@ async fn pal02_quick_open_focuses_existing_tab(cx: &mut TestAppContext) {
         window.render_frame(cx);
         press_secondary(window, "secondary-p", cx);
         window.render_frame(cx);
-        assert!(
-            fix.workspace.read(cx).palette_is_open(),
-            "palette must be open before setting query"
-        );
-        fix.workspace.update(cx, |ws, cx| {
-            ws.test_set_palette_query("books", window, cx);
-        });
+        assert!(fix.workspace.read(cx).palette_is_open());
+        type_into_palette(window, &fix.workspace, "books", cx);
         window.render_frame(cx);
         window.press("enter", cx);
         window.render_frame(cx);
@@ -238,7 +277,7 @@ async fn pal02_quick_open_focuses_existing_tab(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// PAL-03 + PAL-05: action mode runs a real action via keyboard.
+/// PAL-03 + PAL-05: action mode runs a real action via keyboard typing.
 #[gpui_kit::test]
 async fn pal03_pal05_action_runs_toggle_theme(cx: &mut TestAppContext) {
     let fix = open_fixture(cx).await;
@@ -255,13 +294,8 @@ async fn pal03_pal05_action_runs_toggle_theme(cx: &mut TestAppContext) {
             fix.workspace.read(cx).palette_mode(),
             Some(PaletteMode::Actions)
         );
-        assert!(
-            fix.workspace.read(cx).palette_is_open(),
-            "palette must be open before setting query"
-        );
-        fix.workspace.update(cx, |ws, cx| {
-            ws.test_set_palette_query("Toggle theme", window, cx);
-        });
+        assert!(fix.workspace.read(cx).palette_is_open());
+        type_into_palette(window, &fix.workspace, "Toggle theme", cx);
         window.render_frame(cx);
         window.press("down", cx);
         window.press("up", cx);
@@ -310,14 +344,29 @@ async fn pal08_reserved_chords(cx: &mut TestAppContext) {
     cx.update_window(fix.handle, |_, window, cx| {
         window.render_frame(cx);
         let os = cx.platform_info().os;
+        let quit_chord = Keystroke::parse_with_os("secondary-q", os).expect("parse secondary-q");
+        let quit_matches = cx.all_bindings_for_input(&[quit_chord]);
+        assert!(
+            quit_matches
+                .iter()
+                .any(|b| b.action().name().ends_with("Quit") || b.action().name() == "Quit"),
+            "secondary-q must resolve to Quit; got {:?}",
+            quit_matches
+                .iter()
+                .map(|b| b.action().name())
+                .collect::<Vec<_>>()
+        );
+        // Also confirm Quit's own binding list includes secondary-q (not merely *-q).
         let quit_bindings = window.bindings_for_action(&Quit);
         assert!(
             quit_bindings.iter().any(|b| {
-                b.keystrokes()
-                    .iter()
-                    .any(|k| k.unparse(os).ends_with("-q") || k.unparse(os) == "q")
+                b.keystrokes().iter().any(|k| {
+                    k.unparse(os) == "secondary-q"
+                        || k.unparse(os) == "cmd-q"
+                        || k.unparse(os) == "ctrl-q"
+                })
             }),
-            "secondary-q must map to Quit; got {:?}",
+            "Quit must be bound to secondary-q; got {:?}",
             quit_bindings
                 .iter()
                 .map(|b| {
@@ -343,7 +392,6 @@ async fn pal08_reserved_chords(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
-
 /// PAL-09: disconnected / empty catalog shows muted empty row.
 #[gpui_kit::test]
 async fn pal09_empty_when_disconnected(cx: &mut TestAppContext) {
@@ -399,7 +447,8 @@ async fn pal11_gt_switches_to_actions(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// Preview chord does not fire while a text input (palette search) has focus.
+/// Preview: positive control on the grid, then blocked while a text input in
+/// the grid scope (filter) has focus (`text_input_focused` / handle_preview_changes).
 #[gpui_kit::test]
 async fn preview_skipped_when_input_focused(cx: &mut TestAppContext) {
     let fix = open_fixture(cx).await;
@@ -407,48 +456,68 @@ async fn preview_skipped_when_input_focused(cx: &mut TestAppContext) {
         window.render_frame(cx);
         press_secondary(window, "secondary-p", cx);
         window.render_frame(cx);
-        assert!(
-            fix.workspace.read(cx).palette_is_open(),
-            "palette must be open before setting query"
-        );
-        fix.workspace.update(cx, |ws, cx| {
-            ws.test_set_palette_query("books", window, cx);
-        });
+        type_into_palette(window, &fix.workspace, "books", cx);
         window.render_frame(cx);
         window.press("enter", cx);
         window.render_frame(cx);
     })
     .unwrap();
     cx.run_until_parked();
+    // Positive: DataTable focused + pending edit → secondary-shift-v opens Preview.
     cx.update_window(fix.handle, |_, window, cx| {
         window.render_frame(cx);
         fix.workspace
             .update(cx, |ws, cx| ws.test_inject_pending_edit(cx));
         window.render_frame(cx);
         assert!(!fix.workspace.read(cx).test_preview_open());
-        // Focus a text input, then fire Preview.
+        // col 1 = title (editable); sample books has at least one row.
         fix.workspace.update(cx, |ws, cx| {
-            ws.test_focus_sql_editor(window, cx);
+            ws.test_focus_grid(0, 1, window, cx);
         });
         window.render_frame(cx);
-        press_secondary(window, "secondary-shift-p", cx);
+        press_secondary(window, "secondary-shift-v", cx);
         window.render_frame(cx);
         assert!(
-            fix.workspace.read(cx).palette_is_open(),
-            "action palette must open so search has focus"
+            fix.workspace.read(cx).test_preview_open(),
+            "Preview must open when the grid has focus and pending edits"
         );
-        // Search is focused on open; Preview must no-op while Input has focus.
+        // Close Preview for the negative control.
+        press_secondary(window, "secondary-shift-v", cx);
+        window.render_frame(cx);
+        assert!(!fix.workspace.read(cx).test_preview_open());
+    })
+    .unwrap();
+    // Negative: filter text input in the grid scope → Preview stays closed.
+    // Chord is NoAction under FilterBar (paste); also call the same
+    // handle_preview_changes path the Workspace on_action uses so the
+    // text_input_focused guard is covered (removing it makes this fail).
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_focus_filter_bar(window, cx);
+        });
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).test_text_input_focused(window, cx),
+            "filter field must be focused"
+        );
         press_secondary(window, "secondary-shift-v", cx);
         window.render_frame(cx);
         assert!(
             !fix.workspace.read(cx).test_preview_open(),
-            "Preview must not run while palette search has focus"
+            "chord must not open Preview while a filter field has focus"
         );
-        assert!(fix.workspace.read(cx).palette_is_open());
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_handle_preview_changes(window, cx);
+        });
+        window.render_frame(cx);
+        assert!(
+            !fix.workspace.read(cx).test_preview_open(),
+            "text_input_focused guard must block Preview with a filter field focused"
+        );
     })
     .unwrap();
 }
-
 /// PAL-07: open connection dialog swallows palette chords.
 #[gpui_kit::test]
 async fn pal07_dialog_eats_palette_chords(cx: &mut TestAppContext) {
@@ -681,12 +750,8 @@ async fn pal12_safe_mode_cycle_ssh_connect_outcome(cx: &mut TestAppContext) {
         .update(|cx| fix.workspace.read(cx).test_view_error())
         .expect("SSH reconnect should surface an error");
     assert!(
-        err.contains("SSH")
-            || err.contains("ssh")
-            || err.contains("Connection")
-            || err.contains("connect")
-            || err.contains("refused"),
-        "expected SSH/connect failure, got: {err}"
+        err.starts_with("SSH:") || err.contains("SSH:"),
+        "expected SSH: prefix on reconnect failure, got: {err}"
     );
     // Mode stayed Confirm through the failed SSH reconnect; pending kept.
     cx.update(|cx| {
