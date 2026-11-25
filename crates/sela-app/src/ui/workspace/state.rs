@@ -99,11 +99,11 @@ impl Workspace {
         self.clear_connection_banner_error();
         self.workspace_status = None;
         let password = match self.secrets.get_optional(&saved.id) {
-            Ok(Some(password)) => password,
-            Ok(None) => {
-                // Duplicate (and any row with no keychain item) has no secret.
-                // Network engines must ask; SQLite has no password field.
-                if needs_password_prompt(saved.engine) {
+            Ok(optional) => {
+                // Only Duplicate (needs_password) asks when no secret exists.
+                // Empty-password / trust / peer rows have needs_password false and
+                // connect with "" even when the keychain item is absent after restart.
+                if saved.should_prompt_for_password(optional.as_deref()) {
                     if let Some(window) = window {
                         self.open_form(Some(saved), window, cx);
                         return;
@@ -117,7 +117,7 @@ impl Workspace {
                     cx.notify();
                     return;
                 }
-                String::new()
+                optional.unwrap_or_default()
             }
             Err(err) => {
                 let message = format!("Could not read the password from the OS keychain: {err}");
@@ -162,6 +162,15 @@ impl Workspace {
                     // Successful connect must not leave a prior auth failure banner.
                     this.clear_connection_banner_error();
                     this.workspace_status = None;
+                    if let Some(conn) = this.connections.iter_mut().find(|item| item.id == saved_id)
+                    {
+                        if conn.needs_password {
+                            conn.clear_needs_password();
+                            if let Err(err) = this.store.save(&this.connections) {
+                                status = format!("{status} · {err}");
+                            }
+                        }
+                    }
                     if let Some(view) = this.active_view_mut() {
                         view.status = status;
                     }
@@ -461,10 +470,13 @@ impl Workspace {
     ) {
         let id = draft.connection.id.clone();
         let persistence = self.secrets.set(&id, &draft.password);
+        let mut connection = draft.connection;
+        // Save always clears the Duplicate prompt flag (empty or non-empty secret).
+        connection.clear_needs_password();
         if let Some(existing) = self.connections.iter_mut().find(|item| item.id == id) {
-            *existing = draft.connection;
+            *existing = connection;
         } else {
-            self.connections.push(draft.connection);
+            self.connections.push(connection);
         }
         let status_note = match persistence {
             PasswordPersistence::Keychain => {
@@ -743,11 +755,6 @@ fn sample_database_path(store: &sela_config::ConfigStore) -> PathBuf {
         .join("sample.sqlite")
 }
 
-/// Network engines need a typed password when no keychain/memory secret exists.
-pub(super) fn needs_password_prompt(engine: Engine) -> bool {
-    engine != Engine::Sqlite
-}
-
 /// Banner text when tabs are open: active tab error, else workspace boot error.
 pub(super) fn resolve_banner_error(
     boot_error: Option<&str>,
@@ -816,10 +823,28 @@ mod tests {
     }
 
     #[test]
-    fn network_engines_need_password_prompt_sqlite_does_not() {
-        assert!(needs_password_prompt(Engine::Postgres));
-        assert!(needs_password_prompt(Engine::Mysql));
-        assert!(!needs_password_prompt(Engine::Sqlite));
+    fn empty_password_restart_does_not_prompt_duplicate_does() {
+        // Fresh CachingSecrets after set("") → None (restart). Flag decides prompt.
+        use sela_config::{CachingSecrets, MemorySecretStore, PasswordPersistence};
+        use sela_core::SavedConnection;
+
+        let mut conn = SavedConnection::new(Engine::Postgres);
+        let secrets = CachingSecrets::new(MemorySecretStore::default());
+        assert_eq!(secrets.set(&conn.id, ""), PasswordPersistence::Empty);
+        assert_eq!(secrets.get_optional(&conn.id).unwrap().as_deref(), Some(""));
+
+        let restarted = CachingSecrets::new(MemorySecretStore::default());
+        assert_eq!(restarted.get_optional(&conn.id).unwrap(), None);
+        assert!(
+            !conn.should_prompt_for_password(restarted.get_optional(&conn.id).unwrap().as_deref())
+        );
+
+        conn.needs_password = true;
+        assert!(
+            conn.should_prompt_for_password(restarted.get_optional(&conn.id).unwrap().as_deref())
+        );
+        conn.clear_needs_password();
+        assert!(!conn.should_prompt_for_password(None));
     }
 
     #[test]

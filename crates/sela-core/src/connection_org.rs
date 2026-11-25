@@ -70,6 +70,8 @@ pub fn next_duplicate_name<'a>(
 ///
 /// Copies engine, host, port, user, database, file, TLS, record_history, color,
 /// label, group, and safe mode. Assigns a new id and [`next_duplicate_name`].
+/// Sets [`SavedConnection::needs_password`] so connect asks for a secret (the
+/// password is never copied and no keychain item is written).
 pub fn duplicate_connection(
     source: &SavedConnection,
     existing_names: impl IntoIterator<Item = impl AsRef<str>>,
@@ -81,6 +83,7 @@ pub fn duplicate_connection(
     let mut copy = source.clone();
     copy.id = uuid::Uuid::new_v4().to_string();
     copy.name = next_duplicate_name(&source.name, names.iter().map(|s| s.as_str()));
+    copy.needs_password = true;
     copy
 }
 
@@ -197,8 +200,19 @@ mod tests {
         assert_eq!(copy.label, "prod");
         assert_eq!(copy.group, "Work");
         assert_eq!(copy.safe_mode, crate::SafeMode::Confirm);
+        assert!(copy.needs_password);
+        assert!(!source.needs_password);
         // Password is not a field on SavedConnection; duplicate does not
         // create a keychain item (caller must not copy secrets).
+    }
+
+    #[test]
+    fn duplicate_still_prompts_when_secret_absent() {
+        let source = SavedConnection::new(Engine::Postgres);
+        let copy = duplicate_connection(&source, ["x"]);
+        assert!(copy.should_prompt_for_password(None));
+        assert!(!copy.should_prompt_for_password(Some("")));
+        assert!(!copy.should_prompt_for_password(Some("secret")));
     }
 
     #[test]

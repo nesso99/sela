@@ -88,6 +88,10 @@ fn default_true() -> bool {
     true
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Per-connection write guard (M2-4). Missing JSON field loads as [`SafeMode::Off`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -177,6 +181,11 @@ pub struct SavedConnection {
     /// Write guard for the editor and grid commit. Missing = Off.
     #[serde(default, skip_serializing_if = "SafeMode::is_default")]
     pub safe_mode: SafeMode,
+    /// When true, connect asks for a password if none is in the keychain/memory
+    /// (Duplicate). Missing field loads as false so trust/peer and empty-password
+    /// rows keep connecting after restart.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub needs_password: bool,
 }
 
 impl<'de> Deserialize<'de> for SavedConnection {
@@ -215,6 +224,9 @@ impl<'de> Deserialize<'de> for SavedConnection {
             /// Missing field means Off (M2-4). No schema_version bump.
             #[serde(default)]
             safe_mode: SafeMode,
+            /// Missing field means false (pre-Duplicate rows / trust auth).
+            #[serde(default)]
+            needs_password: bool,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -237,6 +249,7 @@ impl<'de> Deserialize<'de> for SavedConnection {
             label: raw.label,
             group: raw.group,
             safe_mode: raw.safe_mode,
+            needs_password: raw.needs_password,
         })
     }
 }
@@ -268,7 +281,20 @@ impl SavedConnection {
             label: String::new(),
             group: String::new(),
             safe_mode: SafeMode::Off,
+            needs_password: false,
         }
+    }
+
+    /// Connect should open the password dialog only for rows marked after
+    /// Duplicate when no secret is present. Absent secret + false keeps the
+    /// empty-password / trust-auth path.
+    pub fn should_prompt_for_password(&self, secret: Option<&str>) -> bool {
+        self.needs_password && secret.is_none()
+    }
+
+    /// Cleared on Save and on a successful connect.
+    pub fn clear_needs_password(&mut self) {
+        self.needs_password = false;
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -665,5 +691,51 @@ mod tests {
             safe_mode_driven_by_color(ConnectionColor::None, true, SafeMode::Confirm),
             SafeMode::Confirm
         );
+    }
+
+    #[test]
+    fn empty_password_after_restart_does_not_prompt() {
+        // Intentional empty password (trust/peer): keychain has no item after
+        // restart (`get_optional` → None). Without needs_password, connect with "".
+        let conn = SavedConnection::new(Engine::Postgres);
+        assert!(!conn.needs_password);
+        assert!(!conn.should_prompt_for_password(None));
+        assert!(!conn.should_prompt_for_password(Some("")));
+    }
+
+    #[test]
+    fn save_clears_needs_password() {
+        let mut conn = SavedConnection::new(Engine::Mysql);
+        conn.needs_password = true;
+        conn.clear_needs_password();
+        assert!(!conn.needs_password);
+        assert!(!conn.should_prompt_for_password(None));
+    }
+
+    #[test]
+    fn needs_password_missing_loads_false_and_omits_on_save() {
+        let raw = r#"{
+            "id": "c1",
+            "name": "Trust",
+            "engine": "postgres",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "username": "sela",
+            "database": "sample"
+        }"#;
+        let conn: SavedConnection = serde_json::from_str(raw).unwrap();
+        assert!(!conn.needs_password);
+        let text = serde_json::to_string(&conn).unwrap();
+        assert!(
+            !text.contains("needs_password"),
+            "false must omit needs_password on save: {text}"
+        );
+
+        let mut flagged = conn;
+        flagged.needs_password = true;
+        let flagged_text = serde_json::to_string(&flagged).unwrap();
+        assert!(flagged_text.contains("\"needs_password\":true"));
+        let back: SavedConnection = serde_json::from_str(&flagged_text).unwrap();
+        assert!(back.needs_password);
     }
 }
