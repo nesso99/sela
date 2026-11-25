@@ -1,0 +1,6 @@
+id,title,note,blob,flag
+1,"a,b",\N,deadbeef,true
+2,"say ""hi""
+there","","",false
+3,café,NULL,00,\N
+4,"cronly",plain,ff,true

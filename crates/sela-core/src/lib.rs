@@ -11,11 +11,14 @@ mod connection_color;
 mod connection_org;
 mod connection_url;
 mod copy_format;
+mod csv_import;
 mod error;
+mod export;
 mod filter;
 mod history;
 mod result_window;
 mod safe_mode;
+mod schema_source;
 mod selection;
 mod session;
 mod sql;
@@ -37,7 +40,20 @@ pub use copy_format::{
     escape_csv_field, escape_sql_string, extract_selection_matrix, format_selection,
     value_to_copy_cell, CopyCell, CopyError, CopyFormat, CopyScalarKind,
 };
+pub use csv_import::{
+    buf_reader_from_str, cursor_from_str, decide_import_gate, ensure_import_allowed,
+    import_csv_into, map_record, parse_import_field, peek_utf8_bom, read_utf8_source, require_utf8,
+    strip_utf8_bom, value_to_csv_field, CollectingImportSink, ColumnMapping, CsvImportOptions,
+    CsvImporter, ImportError, ImportRow, ImportRowError, ImportRowSink, TransactionalImportSink,
+};
 pub use error::DbError;
+pub use export::{
+    encode_binary, escape_csv_field_delim, export_query, export_rows,
+    export_rows_with_progress_counter, format_csv_cell, format_json_cell,
+    value_to_export_sql_literal, BinaryEncoding, CsvExportOptions, CsvExporter, ExportError,
+    ExportFormat, JsonExportMode, JsonExportOptions, JsonExporter, SqlInsertExportOptions,
+    SqlInsertExporter,
+};
 pub use filter::{
     bool_filter_menu_index, bool_filter_menu_value, build_table_count, build_table_page,
     build_table_select, display_bound_sql, escape_like, escape_like_meta, filter_drafts_are_empty,
@@ -56,6 +72,7 @@ pub use safe_mode::{
     classify_statement_safety, decide_editor_gate, decide_grid_commit_gate, decide_history_rerun,
     EditorGate, GridCommitGate, HistoryRerunGate, NoWhereKind, StatementSafety,
 };
+pub use schema_source::{SchemaSourceError, StaticTableSchema, TableSchemaSource};
 pub use selection::{step_result_index, CellPos, SelectionRect};
 pub use session::{
     default_page_size, default_sql_row_cap, exact_table_rows, preview_table, run_user_sql,

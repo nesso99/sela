@@ -122,7 +122,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | US-09 | I cancel a long-running query | Stop button and Cmd+.; server receives cancel within ~1 s; UI never freezes | Done (M1-2b) |
 | US-10 | I find a past query | History stores SQL, connection, time, rows, duration; full-text search; reopen in a new tab | Not started |
 | US-11 | I inspect table structure | Structure tab: columns (type, nullable, default, comment), indexes, FKs, full DDL; Data/Structure shortcut | Done (M1-6) |
-| US-12 | I export data | Export result or whole table as CSV, JSON, SQL INSERT; background with progress and cancel; not limited to current page | Not started |
+| US-12 | I export data | Export result or whole table as CSV, JSON, SQL INSERT; background with progress and cancel; not limited to current page | Partial (core streaming export/import; UI after UX spec) |
 | US-13 | I see correctly typed values | NULL ≠ empty string; NUMERIC keeps digits; UUID, JSON, timestamptz correct; BLOB short hex + full view | Mostly done |
 | US-14 | I copy data | Multi-cell selection; copy as TSV, CSV, JSON, or INSERT | Done (M1-7; full-table export remains US-12) |
 

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- M3-3 export / CSV import core (US-12): streaming CSV, JSON (array or NDJSON), and batched SQL INSERT writers in `sela-core` that take an injectable `io::Write`, report row progress, and honour `CancellationToken`. CSV import streams from an injectable `io::Read`, maps headers via `TableSchemaSource`, reports per-row errors with line numbers, gates on safe mode, and feeds `ChangeSet` / `ImportRowSink`. Default CSV NULL is `\N` (provisional; configurable). No UI in this change — see [export-import.md](docs/user/export-import.md) and [v0.3-test-plan.md](docs/qa/v0.3-test-plan.md) (`EX-*` / `IM-*`).
 - Headless GPUI UI tests for high-risk flows (#93): `gpui_kit::TestAppContext` harness in `crates/sela-app/src/ui/ui_tests/`, run with `./scripts/ui-tests.sh` (Xvfb optional on Linux). Covers connection-dialog Enter/Save/Cancel and password masking, cell-editor Space / empty accept / Duplicate+Copy as INSERT, and table-tab reload after SQL on Save/reconnect and on plain tab switch (#98).
 - `wgpu` is pinned to `=30.0.1` (was 30.0.2) so the GPUI test-support build resolves; the shared lockfile means the release binary also uses wgpu 30.0.1. Rendering should be re-checked on X11.
 

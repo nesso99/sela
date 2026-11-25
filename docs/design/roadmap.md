@@ -110,12 +110,12 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 
 ## M3 · Connectivity and data
 
-| ID | Work | Done when |
-| --- | --- | --- |
-| M3-1 | SSH tunnel (russh): password, key + passphrase, agent, `~/.ssh/config`, known_hosts | US-02; openssh container test |
-| M3-2 | Schema + alias autocomplete; optional MIT tree-sitter SQL grammar for muted keyword/comment highlight | US-08 complete |
-| M3-3 | Export CSV/JSON/SQL with background progress; CSV import | US-12 |
-| M3-4 | Command palette + quick open table | Every primary action reachable from palette |
+| ID | Work | Done when | Status |
+| --- | --- | --- | --- |
+| M3-1 | SSH tunnel (russh): password, key + passphrase, agent, `~/.ssh/config`, known_hosts | US-02; openssh container test | |
+| M3-2 | Schema + alias autocomplete; optional MIT tree-sitter SQL grammar for muted keyword/comment highlight | US-08 complete | |
+| M3-3 | Export CSV/JSON/SQL with background progress; CSV import | US-12 | Core streaming writers/readers + golden tests done; UI after UX spec |
+| M3-4 | Command palette + quick open table | Every primary action reachable from palette | |
 
 ---
 

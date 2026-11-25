@@ -1,6 +1,6 @@
 # Copying grid data
 
-Select cells in the results grid, then copy them to the clipboard. This covers US-14 (clipboard copy of a selection). Full-table export is a later milestone.
+Select cells in the results grid, then copy them to the clipboard. This covers US-14 (clipboard copy of a selection). Full-result / full-table export and CSV import are M3-3 — see [export-import.md](./export-import.md).
 
 ## Selecting
 
@@ -32,4 +32,4 @@ SQL NULL copies as the keyword `NULL` in TSV/CSV/INSERT (and as JSON `null`). A 
 
 If the selection includes rows that are not loaded yet, copy is refused and the status bar shows how many rows are missing (scroll or narrow the selection). Unset cells on an Insert or Duplicate overlay row are not “not loaded”: copy succeeds and leaves those columns out (INSERT omits them so a DEFAULT / identity can apply; JSON omits the key; TSV/CSV write an empty field). INSERT is also refused when a selected cell is a decode error or unsupported type, or (on MySQL/SQLite) a non-finite number; the status bar names that column.
 
-Copy uses rows already present in the result window. Full-table export remains a later milestone.
+Copy uses rows already present in the result window. Streaming export of a whole result or table (not limited to the loaded window) is covered in [export-import.md](./export-import.md).

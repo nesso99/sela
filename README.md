@@ -36,7 +36,9 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Query history (FTS, per-connection scope) | Done (M1-5) |
 | Grid selection + copy (TSV/CSV/JSON/INSERT); light/dark/system themes | Done (M1-7) |
 | Safe mode (editor) | Done (M2-4) — [safe mode](docs/user/safe-mode.md) |
-| Inline edit, connection color, SSH, export | Planned — edit/preview in [docs/design/ux](docs/design/ux/README.md); SSH and export later on the [roadmap](docs/design/roadmap.md) |
+| Inline edit, connection color / groups | Done (M2) — [safe mode](docs/user/safe-mode.md), [connecting](docs/user/connecting.md) |
+| SSH tunnel | Planned (M3-1) — [roadmap](docs/design/roadmap.md) |
+| Export CSV/JSON/SQL + CSV import | Core done (M3-3); UI after UX spec — [export-import](docs/user/export-import.md) |
 
 ## Documentation
 
@@ -49,6 +51,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Filtering & sorting | [docs/user/filtering.md](docs/user/filtering.md) |
 | Query history | [docs/user/query-history.md](docs/user/query-history.md) |
 | Copying grid data | [docs/user/copying.md](docs/user/copying.md) |
+| Export / CSV import | [docs/user/export-import.md](docs/user/export-import.md) |
 | Themes | [docs/user/themes.md](docs/user/themes.md) |
 | FAQ | [docs/user/faq.md](docs/user/faq.md) |
 | Architecture | [docs/dev/architecture.md](docs/dev/architecture.md) |
