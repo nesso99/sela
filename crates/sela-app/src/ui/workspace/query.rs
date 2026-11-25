@@ -573,6 +573,8 @@ impl Workspace {
             d.sorts = sorts.clone();
         });
         view.live_row_cap = None;
+        view.post_commit_reload = false;
+        view.cell_inspect = None;
         view.status = "Running…".into();
         view.grid.update(cx, |state, cx| {
             let delegate = state.delegate_mut();
@@ -1006,6 +1008,8 @@ impl Workspace {
             let Some(view) = self.view_mut(tab_id) else {
                 return;
             };
+            view.post_commit_reload = false;
+            view.cell_inspect = None;
             let rows = view.grid.read(cx).delegate().result.total_rows();
             view.page_len = rows;
             view.total_rows = Some(rows as u64);
@@ -1108,6 +1112,7 @@ impl Workspace {
                 // Successful post-commit reload: keep the Committed status line
                 // (08-preview-commit.md). Do not overwrite with the row-count line (#81).
                 if let Some(view) = self.view_mut(tab_id) {
+                    view.cell_inspect = None;
                     let ms = view
                         .query_started
                         .map(|t| t.elapsed().as_millis())
@@ -1140,6 +1145,8 @@ impl Workspace {
             }
             Ok(Some(StatementOutcome::Executed(executed))) => {
                 if let Some(view) = self.view_mut(tab_id) {
+                    view.post_commit_reload = false;
+                    view.cell_inspect = None;
                     view.page_len = 0;
                     view.total_rows = None;
                     view.paged = false;
@@ -1158,7 +1165,11 @@ impl Workspace {
                     });
                 }
             }
-            Ok(None) => {}
+            Ok(None) => {
+                if let Some(view) = self.view_mut(tab_id) {
+                    view.post_commit_reload = false;
+                }
+            }
             Err(err) if matches!(err, DbError::Cancelled { .. }) => {
                 self.apply_cancelled(tab_id, err, cx);
             }
@@ -1370,27 +1381,42 @@ mod tests {
     }
 
     #[test]
-    fn post_commit_reload_keeps_committed_status() {
+    fn post_commit_reload_keeps_committed_then_clears_for_next_load() {
+        // apply_outcome(Rows) uses status_after_rows_load then sets the flag false.
         let committed = "Committed · 1 statements · 12 ms";
-        let reload = format_status_line(RowCountKind::Unknown, None, 5, false, 2, None);
+        let reload = format_status_line(RowCountKind::Exact, Some(5), 5, false, 2, None);
         assert_eq!(
             status_after_rows_load(true, committed, reload.clone()),
             committed
         );
+        // After the flag clears, the next rows load uses the ordinary sentence.
         assert_eq!(
             status_after_rows_load(false, committed, reload.clone()),
-            reload
+            "5 rows · 2 ms"
+        );
+        // Cancel / Executed / Ok(None) / new Run also clear the flag so a later
+        // load cannot resurrect a stale Committed line.
+        assert_eq!(
+            status_after_rows_load(false, "Cancelled · 0 rows · 1 ms · stopped", reload),
+            "5 rows · 2 ms"
         );
     }
 
     #[test]
-    fn data_pane_status_is_row_count_not_structure() {
-        // #75: leaving Structure must restore the Data row-count line.
+    fn data_pane_status_restores_row_count_via_shared_formatter() {
+        // #75: show_table_data → refresh_status_from_state → format_status_line.
         let structure = "Structure · public.big";
         let data = format_status_line(RowCountKind::Estimated, Some(12_400), 100, false, 18, None);
         assert!(structure.starts_with("Structure · "));
         assert_eq!(data, "~12400 rows · 18 ms");
         assert!(!data.starts_with("Structure · "));
+        // Guard: Query failed must not be overwritten (should_refresh_data_pane_status).
+        assert!(super::super::structure::should_refresh_data_pane_status(
+            data.as_str()
+        ));
+        assert!(!super::super::structure::should_refresh_data_pane_status(
+            "Query failed · SQLSTATE 42P01"
+        ));
     }
 
     #[test]

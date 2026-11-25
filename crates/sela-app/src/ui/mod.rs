@@ -11,10 +11,16 @@ use std::rc::Rc;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     actions, px, size, Action, Bounds, Global, KeyBinding, KeyBindingContextPredicate, Menu,
-    MenuItem, TitlebarOptions, WeakEntity, WindowBounds, WindowDecorations, WindowOptions,
+    MenuItem, NoAction, TitlebarOptions, WeakEntity, WindowBounds, WindowDecorations,
+    WindowOptions,
 };
 
 pub use workspace::Workspace;
+
+/// Key context on the result grid (`DataTable`). Space → inspect.
+pub(crate) const DATA_TABLE_KEY_CONTEXT: &str = "DataTable";
+/// Key context wrapping the in-cell editor Input. Space → character, not inspect.
+pub(crate) const CELL_EDITOR_KEY_CONTEXT: &str = "CellEditor";
 
 /// Weak handle so app-level Quit (menu / Cmd+Q with no focus path) reaches the workspace.
 struct QuitWorkspace(WeakEntity<Workspace>);
@@ -259,7 +265,12 @@ pub fn run() {
             // M2-1 / M2-3 grid editing (DataTable context; not SqlEditor).
             bind_secondary(cx, "enter", Box::new(EditCell), Some("DataTable"));
             // Space inspects; Enter edits (01-main-window.md / 07-grid-editing.md).
-            cx.bind_keys([KeyBinding::new("space", InspectCell, Some("DataTable"))]);
+            // CellEditor NoAction lets Space reach the Input as a character on
+            // Linux, where key bindings win over character input (#78).
+            cx.bind_keys([
+                KeyBinding::new("space", InspectCell, Some(DATA_TABLE_KEY_CONTEXT)),
+                KeyBinding::new("space", NoAction, Some(CELL_EDITOR_KEY_CONTEXT)),
+            ]);
             bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("DataTable"));
             bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("CellEditor"));
             bind_secondary(cx, "enter", Box::new(AcceptCellEditor), Some("CellEditor"));
@@ -383,5 +394,18 @@ fn bind_secondary(
         context.and_then(|ctx| KeyBindingContextPredicate::parse(ctx).ok().map(Rc::new));
     if let Ok(binding) = KeyBinding::load(keystrokes, action, predicate, false, None, cx) {
         cx.bind_keys([binding]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CELL_EDITOR_KEY_CONTEXT, DATA_TABLE_KEY_CONTEXT};
+
+    #[test]
+    fn space_inspect_contexts_match_grid_and_editor() {
+        // DataTable Space → InspectCell; CellEditor Space → NoAction so the
+        // Input receives the character (Linux binding-before-input, #78).
+        assert_eq!(DATA_TABLE_KEY_CONTEXT, "DataTable");
+        assert_eq!(CELL_EDITOR_KEY_CONTEXT, "CellEditor");
     }
 }

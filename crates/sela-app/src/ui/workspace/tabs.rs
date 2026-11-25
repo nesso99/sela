@@ -337,18 +337,28 @@ impl Workspace {
                             // Re-paint so selection_rect wash updates for the range.
                             state.refresh(cx);
                         });
+                        // Close inspect when the focused cell changes.
+                        if let Some(view) = _this.views.get_mut(&id) {
+                            view.cell_inspect = None;
+                        }
                     }
                     TableEvent::SelectRow(_) | TableEvent::SelectColumn(_) => {
                         grid.update(cx, |state, cx| {
                             state.delegate_mut().clear_selection_range();
                             state.refresh(cx);
                         });
+                        if let Some(view) = _this.views.get_mut(&id) {
+                            view.cell_inspect = None;
+                        }
                     }
                     TableEvent::ClearSelection => {
                         grid.update(cx, |state, cx| {
                             state.delegate_mut().clear_selection_range();
                             state.refresh(cx);
                         });
+                        if let Some(view) = _this.views.get_mut(&id) {
+                            view.cell_inspect = None;
+                        }
                     }
                     _ => {}
                 }

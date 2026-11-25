@@ -538,6 +538,7 @@ impl Workspace {
                                 }
                             }
                             view.error = None;
+                            view.cell_inspect = None;
                             view.status = format!("Committed · {statements} statements · {ms} ms");
                             view.post_commit_reload = true;
                         }

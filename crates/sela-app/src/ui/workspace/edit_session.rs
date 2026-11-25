@@ -107,6 +107,9 @@ pub(crate) struct CellEditor {
     pub original_display: String,
     /// Whether the cell was NULL when the editor opened.
     pub started_as_null: bool,
+    /// Whether the cell was unset (absent from an insert) when the editor opened.
+    /// An empty accept on an unset cell is a no-op — leave the column out (#77).
+    pub started_unset: bool,
     /// Set only by the ghost NULL button. Distinguishes explicit NULL from an
     /// empty text accept that must store `''` (#77).
     pub forced_null: bool,
@@ -157,9 +160,11 @@ impl PendingCounts {
 pub(crate) struct OverlayRow {
     pub insert_id: u64,
     pub duplicated: bool,
-    /// When `Some(row)`, paint directly under that server row (Duplicate).
-    /// When `None`, paint after the loaded page (Insert).
-    pub after_server_row: Option<usize>,
+    /// Source row PK for Duplicate placement. When that PK is on the current
+    /// page, the overlay paints under it; otherwise at the end of the page.
+    /// `None` (blank Insert) always paints after the loaded page.
+    /// Stable across paging/filtering — never a page index (07-grid-editing.md).
+    pub after_source_pk: Option<Vec<Value>>,
 }
 
 /// One visual grid row: a server page row or an overlay insert/duplicate.
@@ -169,46 +174,68 @@ pub(crate) enum VisualRowRef {
     Overlay { overlay_ix: usize },
 }
 
-/// Build the visual order: each duplicate sits under its source server row;
-/// blank inserts stay after the loaded page (07-grid-editing.md).
-pub(crate) fn visual_row_map(server_count: usize, overlays: &[OverlayRow]) -> Vec<VisualRowRef> {
-    let mut out = Vec::with_capacity(server_count + overlays.len());
-    for server_ix in 0..server_count {
-        out.push(VisualRowRef::Server { row_ix: server_ix });
-        for (overlay_ix, overlay) in overlays.iter().enumerate() {
-            if overlay.after_server_row == Some(server_ix) {
-                out.push(VisualRowRef::Overlay { overlay_ix });
-            }
-        }
-    }
-    for (overlay_ix, overlay) in overlays.iter().enumerate() {
-        if overlay.after_server_row.is_none() {
-            out.push(VisualRowRef::Overlay { overlay_ix });
-        }
-    }
-    out
+/// Resolve each overlay to a page-local `after_server_row` for the current page.
+/// Missing / off-page PKs become `None` (end of page). Never drops an overlay.
+pub(crate) fn resolve_overlay_anchors(
+    overlays: &[OverlayRow],
+    page_pks: &[Option<Vec<Value>>],
+) -> Vec<Option<usize>> {
+    overlays
+        .iter()
+        .map(|overlay| {
+            overlay.after_source_pk.as_ref().and_then(|pk| {
+                page_pks
+                    .iter()
+                    .position(|page_pk| page_pk.as_ref() == Some(pk))
+            })
+        })
+        .collect()
 }
 
-/// Same mapping when only the `after_server_row` anchors are available (paint).
-pub(crate) fn visual_row_map_from_anchors(
+/// Build the visual order from resolved page anchors (`None` = end of page).
+///
+/// Empty `after_server_rows` returns the identity map. An out-of-range
+/// `Some(ix)` (≥ `server_count`) is treated as end-of-page — never dropped.
+pub(crate) fn visual_row_map(
     server_count: usize,
     after_server_rows: &[Option<usize>],
 ) -> Vec<VisualRowRef> {
+    if after_server_rows.is_empty() {
+        return (0..server_count)
+            .map(|row_ix| VisualRowRef::Server { row_ix })
+            .collect();
+    }
     let mut out = Vec::with_capacity(server_count + after_server_rows.len());
+    let mut placed = vec![false; after_server_rows.len()];
     for server_ix in 0..server_count {
         out.push(VisualRowRef::Server { row_ix: server_ix });
         for (overlay_ix, after) in after_server_rows.iter().enumerate() {
             if *after == Some(server_ix) {
                 out.push(VisualRowRef::Overlay { overlay_ix });
+                placed[overlay_ix] = true;
             }
         }
     }
     for (overlay_ix, after) in after_server_rows.iter().enumerate() {
-        if after.is_none() {
-            out.push(VisualRowRef::Overlay { overlay_ix });
+        if placed[overlay_ix] {
+            continue;
+        }
+        // None, or Some(out of range): end of page — never drop.
+        match after {
+            None | Some(_) => out.push(VisualRowRef::Overlay { overlay_ix }),
         }
     }
     out
+}
+
+/// Overlays + current-page PKs → visual order (Duplicate under source when present).
+pub(crate) fn visual_row_map_for_overlays(
+    server_count: usize,
+    overlays: &[OverlayRow],
+    page_pks: &[Option<Vec<Value>>],
+) -> Vec<VisualRowRef> {
+    let anchors = resolve_overlay_anchors(overlays, page_pks);
+    visual_row_map(server_count, &anchors)
 }
 
 /// Per-tab editing session.
@@ -638,22 +665,13 @@ impl EditSession {
     ) -> Result<(), &'static str> {
         self.cell_editable(&column, server_value, row_deleted)?;
         let kind = self.column_kind(&column);
+        // Unset (absent from an insert) is not NULL: empty draft, is_null false.
+        // Real NULL stays is_null so an empty accept can store '' on text (#77).
+        let started_unset = server_value.is_none();
         let (draft, is_null) = match server_value {
-            None | Some(Value::Null) => (String::new(), true),
+            None => (String::new(), false),
+            Some(Value::Null) => (String::new(), true),
             Some(v) => (v.display().into_owned(), false),
-        };
-        // Unset PK on overlay: empty draft, not NULL, placeholder "Required" in UI.
-        let (draft, is_null) = if matches!(row, EditRowId::Overlay { .. })
-            && server_value.is_none()
-            && self
-                .changeset
-                .as_ref()
-                .is_some_and(|cs| cs.pk_columns().iter().any(|c| c == &column))
-            && !self.is_generated(&column)
-        {
-            (String::new(), false)
-        } else {
-            (draft, is_null)
         };
         let original_display = draft.clone();
         let started_as_null = is_null;
@@ -667,6 +685,7 @@ impl EditSession {
             is_null,
             original_display,
             started_as_null,
+            started_unset,
             forced_null: false,
             pk,
             old_value,
@@ -702,6 +721,13 @@ impl EditSession {
             .as_ref()
             .ok_or_else(|| "No open editor.".to_string())?
             .clone();
+        // Empty accept on an unset insert cell: leave the column out of INSERT
+        // (DEFAULT applies). Ghost NULL still forces an explicit NULL (#77).
+        if editor.started_unset && editor.draft.is_empty() && !editor.forced_null && !editor.is_null
+        {
+            self.editor = None;
+            return Ok(());
+        }
         // Text: empty field is `''`, not NULL. Opening on NULL leaves `is_null`
         // until accept; a plain empty accept (not the ghost NULL button) stores
         // the empty string and marks the cell dirty (07-grid-editing.md / #77).
@@ -767,7 +793,7 @@ impl EditSession {
         self.overlay.push(OverlayRow {
             insert_id: id,
             duplicated: false,
-            after_server_row: None,
+            after_source_pk: None,
         });
         self.commit_failed = false;
         Ok(id)
@@ -775,13 +801,14 @@ impl EditSession {
 
     /// Duplicate a server row: copy non-generated values; leave PK unset.
     ///
-    /// `after_server_row` is the focused server row index so the overlay paints
-    /// directly under that row (07-grid-editing.md / #79).
+    /// `after_source_pk` is the source row's primary key so the overlay paints
+    /// under that row when it is on the current page, otherwise at the end
+    /// (07-grid-editing.md / #79). Anchored by stable row identity, not a page index.
     pub fn duplicate_server_row(
         &mut self,
         columns: &[(String, Value)],
         pk_columns: &[String],
-        after_server_row: usize,
+        after_source_pk: Vec<Value>,
     ) -> Result<u64, String> {
         self.mutation_allowed()?;
         let mut values = BTreeMap::new();
@@ -799,7 +826,7 @@ impl EditSession {
         self.overlay.push(OverlayRow {
             insert_id: id,
             duplicated: true,
-            after_server_row: Some(after_server_row),
+            after_source_pk: Some(after_source_pk),
         });
         self.commit_failed = false;
         Ok(id)
@@ -1285,7 +1312,7 @@ mod tests {
                     ("pages".into(), Value::Int(310)),
                 ],
                 &["id".into()],
-                2,
+                vec![Value::Int(3)],
             )
             .unwrap();
         assert_eq!(session.row_marker_for_overlay(dup), RowMarker::Duplicated);
@@ -1296,9 +1323,18 @@ mod tests {
             Some(&Value::text("Hobbit"))
         );
         let dup_overlay = session.overlay.iter().find(|o| o.insert_id == dup).unwrap();
-        assert_eq!(dup_overlay.after_server_row, Some(2));
-        // Insert stays after the page; duplicate sits under server row 2.
-        let map = visual_row_map(4, &session.overlay);
+        assert_eq!(
+            dup_overlay.after_source_pk.as_deref(),
+            Some([Value::Int(3)].as_slice())
+        );
+        // Insert stays after the page; duplicate sits under server row 2 (pk=3).
+        let page_pks = [
+            Some(vec![Value::Int(1)]),
+            Some(vec![Value::Int(2)]),
+            Some(vec![Value::Int(3)]),
+            Some(vec![Value::Int(4)]),
+        ];
+        let map = visual_row_map_for_overlays(4, &session.overlay, &page_pks);
         assert_eq!(
             map,
             vec![
@@ -1327,7 +1363,7 @@ mod tests {
                     ("title".into(), Value::text("a")),
                 ],
                 &["id".into()],
-                0,
+                vec![Value::Int(1)],
             )
             .unwrap();
         session
@@ -1337,11 +1373,16 @@ mod tests {
                     ("title".into(), Value::text("c")),
                 ],
                 &["id".into()],
-                2,
+                vec![Value::Int(3)],
             )
             .unwrap();
-        // overlay: [insert, dup@0, dup@2]
-        let map = visual_row_map(3, &session.overlay);
+        // overlay: [insert, dup@pk1, dup@pk3]
+        let page_pks = [
+            Some(vec![Value::Int(1)]),
+            Some(vec![Value::Int(2)]),
+            Some(vec![Value::Int(3)]),
+        ];
+        let map = visual_row_map_for_overlays(3, &session.overlay, &page_pks);
         assert_eq!(
             map,
             vec![
@@ -1353,6 +1394,78 @@ mod tests {
                 VisualRowRef::Overlay { overlay_ix: 0 },
             ]
         );
+    }
+
+    #[test]
+    fn out_of_range_anchor_places_overlay_at_end() {
+        // Page shrunk / short last page: never drop the overlay.
+        let map = visual_row_map(3, &[Some(50), None]);
+        assert_eq!(
+            map,
+            vec![
+                VisualRowRef::Server { row_ix: 0 },
+                VisualRowRef::Server { row_ix: 1 },
+                VisualRowRef::Server { row_ix: 2 },
+                VisualRowRef::Overlay { overlay_ix: 0 },
+                VisualRowRef::Overlay { overlay_ix: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn anchor_pk_missing_from_page_places_at_end() {
+        let overlays = [OverlayRow {
+            insert_id: 1,
+            duplicated: true,
+            after_source_pk: Some(vec![Value::Int(99)]),
+        }];
+        let page_pks = [Some(vec![Value::Int(1)]), Some(vec![Value::Int(2)])];
+        let anchors = resolve_overlay_anchors(&overlays, &page_pks);
+        assert_eq!(anchors, vec![None]);
+        let map = visual_row_map_for_overlays(2, &overlays, &page_pks);
+        assert_eq!(
+            map,
+            vec![
+                VisualRowRef::Server { row_ix: 0 },
+                VisualRowRef::Server { row_ix: 1 },
+                VisualRowRef::Overlay { overlay_ix: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn visual_row_map_identity_when_no_overlays() {
+        assert_eq!(
+            visual_row_map(3, &[]),
+            vec![
+                VisualRowRef::Server { row_ix: 0 },
+                VisualRowRef::Server { row_ix: 1 },
+                VisualRowRef::Server { row_ix: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_accept_on_unset_insert_cell_is_noop() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let id = session.insert_blank_row().unwrap();
+        // title is unset on the blank insert (DEFAULT would apply).
+        session
+            .begin_edit(
+                EditRowId::Overlay { insert_id: id },
+                "title".into(),
+                1,
+                None,
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(session.editor.as_ref().unwrap().started_unset);
+        assert!(!session.editor.as_ref().unwrap().is_null);
+        session.accept_editor().unwrap();
+        assert!(session.overlay_value(id, "title").is_none());
     }
 
     #[test]

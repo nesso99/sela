@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Status bar restores the Data row-count line when switching Structure → Data (#75).
+- Status bar restores the Data row-count line when switching Structure → Data (#75); does not overwrite a `Query failed` status.
 - Cell editor ghost NULL control at the right edge of the inline editor (#76).
-- Accepting an empty text editor opened on NULL stores `''` and marks the cell dirty (#77).
-- Space opens the cell inspect popover (column, type, full `Value::display()`) (#78).
-- Duplicate overlay inserts directly under the source row, not at the bottom of the page (#79).
+- Accepting an empty text editor opened on NULL stores `''` and marks the cell dirty; empty accept on an unset insert cell leaves the column out so DEFAULT applies (#77).
+- Space opens the cell inspect popover (column, type, full `Value::display()`); Space inside the cell editor inserts a space character (`NoAction` in the `CellEditor` context) (#78).
+- Duplicate overlay inserts directly under the source row, keyed by source primary key so paging/filtering never drops it; copy/select/touch use visual row indices (#79).
 - Dirty-triangle and gutter-mark tooltips (`Edited · was …`, `Edited row`, `New row`, `Duplicated row`, `Deleted row`) (#80).
-- Commit success status `Committed · N statements · … ms` is kept after the post-commit page reload (#81).
+- Commit success status `Committed · N statements · … ms` is kept after the post-commit page reload; the reload flag clears on cancel, Executed, `Ok(None)`, and a new load (#81).
+- Inspect popover closes on selection change, edit, reload, commit, or pane switch; unset cells show `Unset` instead of `…`.
 - Enter in the Import URL field no longer panics with a re-entrant `ConnectionForm` update; the subscription calls import on the form already being updated (#84).
 - Enter on a safe-mode confirm (`Run this write?` and related) cancels like the quit dialog and does not type into the SQL editor (#83).
 - Connection password field is masked by default, including after Import URL (#85).

@@ -8,11 +8,28 @@ use gpui_kit::{Context, Focusable as _, Window};
 use sela_core::{RelationKind, RowState, TabId, TableStructure, Value};
 
 use super::edit_session::{
-    visual_row_map, EditRowId, EditSession, ReadOnlyReason, RowMarker, VisualRowRef,
+    resolve_overlay_anchors, visual_row_map, visual_row_map_for_overlays, EditRowId, EditSession,
+    OverlayRow, ReadOnlyReason, RowMarker, VisualRowRef,
 };
 use super::tab_view::CellInspect;
 use super::{GridSource, Workspace};
 use crate::ui::grid::{EditPaintRow, EditPaintState, OverlayPaintRow};
+
+/// Visual order for the current page, resolving duplicate anchors by source PK.
+fn visual_rows_for(
+    result: &sela_core::ResultWindow,
+    overlays: &[OverlayRow],
+    pk_cols: &[String],
+) -> Vec<VisualRowRef> {
+    let server_count = result.total_rows();
+    if overlays.is_empty() {
+        return visual_row_map(server_count, &[]);
+    }
+    let page_pks: Vec<_> = (0..server_count)
+        .map(|i| extract_pk(result, i, pk_cols))
+        .collect();
+    visual_row_map_for_overlays(server_count, overlays, &page_pks)
+}
 
 impl Workspace {
     /// Relation kind from the loaded catalog, defaulting to Table.
@@ -188,6 +205,9 @@ impl Workspace {
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return;
         };
+        if let Some(view) = self.view_mut(tab_id) {
+            view.cell_inspect = None;
+        }
         let Some(view) = self.views.get(&tab_id) else {
             return;
         };
@@ -213,14 +233,30 @@ impl Workspace {
                 return;
             }
         };
-        let server_rows = view.grid.read(cx).delegate().result.total_rows();
-        let overlays = view
+        let pk_cols = view
             .edit
             .as_ref()
-            .map(|e| e.overlay.as_slice())
-            .unwrap_or(&[]);
-        let visual = visual_row_map(server_rows, overlays);
-        let Some(resolved) = visual.get(row).copied() else {
+            .and_then(|e| e.changeset.as_ref())
+            .map(|cs| cs.pk_columns().to_vec())
+            .unwrap_or_default();
+        let (resolved, column) = {
+            let state = view.grid.read(cx);
+            let overlays = view
+                .edit
+                .as_ref()
+                .map(|e| e.overlay.as_slice())
+                .unwrap_or(&[]);
+            let visual = visual_rows_for(&state.delegate().result, overlays, &pk_cols);
+            let resolved = visual.get(row).copied();
+            let column = state
+                .delegate()
+                .result
+                .columns()
+                .get(col)
+                .map(|c| c.name.clone());
+            (resolved, column)
+        };
+        let Some(resolved) = resolved else {
             return;
         };
         let edit_row = match resolved {
@@ -236,14 +272,6 @@ impl Workspace {
                 EditRowId::Overlay { insert_id }
             }
         };
-        let column = view
-            .grid
-            .read(cx)
-            .delegate()
-            .result
-            .columns()
-            .get(col)
-            .map(|c| c.name.clone());
         let Some(column) = column else {
             return;
         };
@@ -399,7 +427,7 @@ impl Workspace {
         if !matches!(view.table_pane, super::TablePane::Data) {
             return;
         }
-        // Do not inspect while the cell editor is open.
+        // Do not inspect while the cell editor is open (Space must type a space).
         if view.edit.as_ref().is_some_and(|e| e.editor.is_some()) {
             return;
         }
@@ -409,13 +437,18 @@ impl Workspace {
             _ => return,
         };
         let delegate = view.grid.read(cx).delegate();
-        let server_rows = delegate.result.total_rows();
         let overlays = view
             .edit
             .as_ref()
             .map(|e| e.overlay.as_slice())
             .unwrap_or(&[]);
-        let visual = visual_row_map(server_rows, overlays);
+        let pk_cols = view
+            .edit
+            .as_ref()
+            .and_then(|e| e.changeset.as_ref())
+            .map(|cs| cs.pk_columns().to_vec())
+            .unwrap_or_default();
+        let visual = visual_rows_for(&delegate.result, overlays, &pk_cols);
         let Some(resolved) = visual.get(row).copied() else {
             return;
         };
@@ -464,7 +497,7 @@ impl Workspace {
                 None => CellInspect {
                     column,
                     type_name,
-                    body: "…".into(),
+                    body: inspect_body_for_absent_value().into(),
                     decode_error: false,
                 },
             },
@@ -565,18 +598,23 @@ impl Workspace {
                 return;
             }
         };
-        let (columns, server_row_ix) = {
+        let (columns, source_pk) = {
             let Some(view) = self.views.get(&tab_id) else {
                 return;
             };
             let delegate = view.grid.read(cx).delegate();
-            let server_rows = delegate.result.total_rows();
             let overlays = view
                 .edit
                 .as_ref()
                 .map(|e| e.overlay.as_slice())
                 .unwrap_or(&[]);
-            let visual = visual_row_map(server_rows, overlays);
+            let pk_columns = view
+                .edit
+                .as_ref()
+                .and_then(|e| e.changeset.as_ref())
+                .map(|cs| cs.pk_columns().to_vec())
+                .unwrap_or_default();
+            let visual = visual_rows_for(&delegate.result, overlays, &pk_columns);
             let Some(VisualRowRef::Server { row_ix }) = visual.get(row).copied() else {
                 if let Some(view) = self.view_mut(tab_id) {
                     view.status = "Select a row first.".into();
@@ -590,13 +628,20 @@ impl Workspace {
                 .iter()
                 .map(|c| c.name.clone())
                 .collect();
+            let Some(source_pk) = extract_pk(&delegate.result, row_ix, &pk_columns) else {
+                if let Some(view) = self.view_mut(tab_id) {
+                    view.status = "Select a row first.".into();
+                }
+                cx.notify();
+                return;
+            };
             match delegate.result.row(row_ix) {
                 RowState::Ready(cells) => (
                     names
                         .into_iter()
                         .zip(cells.iter().cloned())
                         .collect::<Vec<_>>(),
-                    row_ix,
+                    source_pk,
                 ),
                 RowState::Loading => {
                     if let Some(view) = self.view_mut(tab_id) {
@@ -616,7 +661,7 @@ impl Workspace {
             .unwrap_or_default();
         if let Some(view) = self.view_mut(tab_id) {
             if let Some(edit) = view.edit.as_mut() {
-                if let Err(e) = edit.duplicate_server_row(&columns, &pk_columns, server_row_ix) {
+                if let Err(e) = edit.duplicate_server_row(&columns, &pk_columns, source_pk) {
                     view.status = e;
                 }
             } else {
@@ -657,13 +702,21 @@ impl Workspace {
             let Some(view) = self.views.get(&tab_id) else {
                 return;
             };
-            let server_rows = view.grid.read(cx).delegate().result.total_rows();
+            let delegate = view.grid.read(cx).delegate();
             let overlays = view
                 .edit
                 .as_ref()
                 .map(|e| e.overlay.as_slice())
                 .unwrap_or(&[]);
-            visual_row_map(server_rows, overlays).get(row).copied()
+            let pk_cols = view
+                .edit
+                .as_ref()
+                .and_then(|e| e.changeset.as_ref())
+                .map(|cs| cs.pk_columns().to_vec())
+                .unwrap_or_default();
+            visual_rows_for(&delegate.result, overlays, &pk_cols)
+                .get(row)
+                .copied()
         };
         match resolved {
             Some(VisualRowRef::Overlay { overlay_ix }) => {
@@ -722,6 +775,11 @@ impl Workspace {
 }
 
 /// Build the Space inspect popover payload from a full [`Value`] (not truncated).
+/// Inspect body when the cell has no value (unset insert column).
+pub(crate) fn inspect_body_for_absent_value() -> &'static str {
+    "Unset"
+}
+
 pub(crate) fn cell_inspect_for_value(column: &str, type_name: &str, value: &Value) -> CellInspect {
     CellInspect {
         column: column.to_string(),
@@ -797,7 +855,11 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
             },
         );
     }
-    for overlay in &edit.overlay {
+    let page_pks: Vec<_> = (0..result.total_rows())
+        .map(|i| extract_pk(result, i, &pk_cols))
+        .collect();
+    let overlay_anchors = resolve_overlay_anchors(&edit.overlay, &page_pks);
+    for (overlay, after_server_row) in edit.overlay.iter().zip(overlay_anchors) {
         let marker = edit.row_marker_for_overlay(overlay.insert_id);
         let mut values = BTreeMap::new();
         if let Some(cs) = &edit.changeset {
@@ -815,7 +877,7 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
             insert_id: overlay.insert_id,
             marker,
             values,
-            after_server_row: overlay.after_server_row,
+            after_server_row,
             required_unset: edit
                 .changeset
                 .as_ref()
@@ -844,6 +906,12 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
 mod tests {
     use super::cell_inspect_for_value;
     use sela_core::Value;
+
+    #[test]
+    fn inspect_unset_body_is_unset_not_ellipsis() {
+        assert_eq!(super::inspect_body_for_absent_value(), "Unset");
+        assert_ne!(super::inspect_body_for_absent_value(), "…");
+    }
 
     #[test]
     fn inspect_uses_full_display_not_truncated() {

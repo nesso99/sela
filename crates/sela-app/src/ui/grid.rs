@@ -23,14 +23,16 @@ use gpui_kit::{div, px, App, IntoElement, MouseButton, SharedString, Window};
 use std::collections::BTreeMap;
 
 use sela_core::{
-    CellPos, CellView, QueryPage, ResultWindow, RowState, SelectionRect, SortDirection, SortSpec,
+    value_to_copy_cell, CellPos, CellView, CopyCell, QueryPage, ResultWindow, RowState,
+    SelectionRect, SortDirection, SortSpec,
 };
 
 use super::theme::SelaPalette;
-use super::workspace::edit_session::{
-    visual_row_map_from_anchors, EditRowId, RowMarker, VisualRowRef,
+use super::workspace::edit_session::{visual_row_map, EditRowId, RowMarker, VisualRowRef};
+use super::{
+    CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, SetCellNull,
+    CELL_EDITOR_KEY_CONTEXT,
 };
-use super::{CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, SetCellNull};
 
 /// Paint state synced from [`super::workspace::edit_session::EditSession`].
 #[derive(Debug, Clone, Default)]
@@ -103,14 +105,52 @@ pub struct GridDelegate {
 }
 
 impl GridDelegate {
-    fn visual_rows(&self) -> Vec<VisualRowRef> {
+    pub(crate) fn visual_rows(&self) -> Vec<VisualRowRef> {
         let anchors: Vec<Option<usize>> = self
             .edit_paint
             .overlays
             .iter()
             .map(|o| o.after_server_row)
             .collect();
-        visual_row_map_from_anchors(self.result.total_rows(), &anchors)
+        visual_row_map(self.result.total_rows(), &anchors)
+    }
+
+    /// Copy cells for a visual (screen) row index — resolves overlays via
+    /// [`Self::visual_rows`] so mid-page duplicates do not shift server rows.
+    pub(crate) fn copy_row_cells(&self, visual_row: usize) -> Option<Vec<CopyCell>> {
+        let col_count = self.result.columns().len().max(1);
+        match self.visual_rows().get(visual_row).copied()? {
+            VisualRowRef::Server { row_ix } => match self.result.row(row_ix) {
+                RowState::Ready(cells) => Some(cells.iter().map(value_to_copy_cell).collect()),
+                RowState::Loading => Some(vec![CopyCell::NotLoaded; col_count]),
+            },
+            VisualRowRef::Overlay { overlay_ix } => {
+                let overlay = self.edit_paint.overlays.get(overlay_ix)?;
+                Some(
+                    self.result
+                        .columns()
+                        .iter()
+                        .map(|col| match overlay.values.get(&col.name) {
+                            // Unset insert cells are absent from the overlay map.
+                            None => CopyCell::Null,
+                            Some(display) => {
+                                if display.is_empty() {
+                                    // Distinguish '' from NULL via paint? Display of
+                                    // Null is typically empty too — treat stored
+                                    // empty display as text '' for TSV copy.
+                                    CopyCell::Value(String::new(), sela_core::CopyScalarKind::Text)
+                                } else {
+                                    CopyCell::Value(
+                                        display.clone(),
+                                        sela_core::CopyScalarKind::Text,
+                                    )
+                                }
+                            }
+                        })
+                        .collect(),
+                )
+            }
+        }
     }
 
     fn render_overlay_td(
@@ -198,7 +238,7 @@ impl GridDelegate {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .key_context("CellEditor")
+                            .key_context(CELL_EDITOR_KEY_CONTEXT)
                             .child(Input::new(input).h(px(22.)))
                             .child(
                                 Button::new(("ghost-null-ov", visual_row))
@@ -404,7 +444,7 @@ impl GridDelegate {
 
     /// Select every loaded cell (Ctrl/Cmd+A).
     pub fn select_all_cells(&mut self) {
-        let rows = self.result.total_rows();
+        let rows = self.visual_rows().len();
         let cols = self.result.columns().len();
         if rows == 0 || cols == 0 {
             self.clear_selection_range();
@@ -432,7 +472,7 @@ impl GridDelegate {
         d_row: isize,
         d_col: isize,
     ) -> Option<(usize, usize)> {
-        let rows = self.result.total_rows();
+        let rows = self.visual_rows().len();
         let cols = self.result.columns().len();
         if rows == 0 || cols == 0 {
             return None;
@@ -452,7 +492,7 @@ impl GridDelegate {
 
     /// Resolve the rectangle to copy from DataTable selection + our range.
     pub fn copy_rect(&self, selection: TableSelection) -> Option<SelectionRect> {
-        let rows = self.result.total_rows();
+        let rows = self.visual_rows().len();
         let cols = self.result.columns().len();
         if rows == 0 || cols == 0 {
             return None;
@@ -718,7 +758,7 @@ impl TableDelegate for GridDelegate {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .key_context("CellEditor")
+                            .key_context(CELL_EDITOR_KEY_CONTEXT)
                             .child(Input::new(input).h(px(22.)))
                             .child(
                                 Button::new(("ghost-null", row_ix))
@@ -796,7 +836,23 @@ impl TableDelegate for GridDelegate {
         _: &mut Window,
         cx: &mut gpui_kit::Context<TableState<Self>>,
     ) {
-        self.pending_pages = self.result.touch(visible_range);
+        // Viewport indices are visual; touch only the underlying server rows.
+        let visual = self.visual_rows();
+        let end = visible_range.end.min(visual.len());
+        let start = visible_range.start.min(end);
+        let mut server_start = usize::MAX;
+        let mut server_end = 0usize;
+        for resolved in &visual[start..end] {
+            if let VisualRowRef::Server { row_ix } = *resolved {
+                server_start = server_start.min(row_ix);
+                server_end = server_end.max(row_ix + 1);
+            }
+        }
+        self.pending_pages = if server_start < server_end {
+            self.result.touch(server_start..server_end)
+        } else {
+            Vec::new()
+        };
         if !self.pending_pages.is_empty() {
             cx.notify();
         }
@@ -1133,6 +1189,38 @@ mod tests {
             .copy_rect(TableSelection::Cell(0, 0))
             .expect("copy all");
         assert_eq!(copy.normalized(), (0, 2, 0, 1));
+    }
+
+    #[test]
+    fn copy_after_duplicate_uses_visual_row_not_screen_as_server() {
+        // Duplicate under server row 1 → visual [0, 1, dup, 2].
+        // Copying screen row 2 must yield server row 1's values (the source),
+        // not server row 2 (#79 regression from page-index copy).
+        let mut grid = GridDelegate::empty();
+        grid.show_page(multi_page());
+        let mut values = BTreeMap::new();
+        values.insert("id".into(), String::new());
+        values.insert("title".into(), "b".into());
+        grid.edit_paint.overlays.push(OverlayPaintRow {
+            insert_id: 1,
+            marker: RowMarker::Duplicated,
+            values,
+            after_server_row: Some(1),
+            required_unset: vec!["id".into()],
+            generated: Vec::new(),
+        });
+        assert_eq!(grid.visual_rows().len(), 4);
+        let screen_2 = grid.copy_row_cells(2).expect("dup row");
+        let server_1 = grid.copy_row_cells(1).expect("source");
+        // Title column matches the duplicated source (server row 1 → "b").
+        assert_eq!(screen_2[1], server_1[1]);
+        assert_eq!(screen_2[1], value_to_copy_cell(&Value::Text("b".into())));
+        // Screen row 3 is still server row 2 ("c"), not shifted off the page.
+        let screen_3 = grid.copy_row_cells(3).expect("last server");
+        assert_eq!(screen_3[1], value_to_copy_cell(&Value::Text("c".into())));
+        // Select-all / copy_rect clamp to visual count (includes the overlay).
+        grid.select_all_cells();
+        assert_eq!(grid.selection_rect.expect("all").normalized(), (0, 3, 0, 1));
     }
 
     #[test]
