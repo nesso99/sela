@@ -414,6 +414,7 @@ mod tests {
     use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
     use rust_decimal::Decimal;
     use sela_core::{run_user_sql, ChangePlan, ChangeSet, StatementOutcome, TableRef, Value};
+    use sqlx::Connection;
     use std::collections::BTreeMap;
     use std::str::FromStr;
 
@@ -1496,13 +1497,14 @@ mod tests {
         assert_eq!(result.statements_executed, 1);
 
         // CAN-02: cancel while blocked on a row lock — no partial commit.
+        // MySQL rejects prepared `BEGIN` (error 1295); use Connection::begin.
         let lock_pool = sqlx::MySqlPool::connect(&url).await.expect("lock pool");
         let mut lock_conn = lock_pool.acquire().await.expect("lock conn");
-        sqlx::query("BEGIN").execute(&mut *lock_conn).await.unwrap();
+        let mut lock_tx = lock_conn.begin().await.expect("lock BEGIN");
         crate::query(&format!(
             "SELECT id FROM {qschema}.sela_opt68 WHERE id = 1 FOR UPDATE"
         ))
-        .execute(&mut *lock_conn)
+        .execute(&mut *lock_tx)
         .await
         .unwrap();
         let mut cs = ChangeSet::try_new(
@@ -1539,10 +1541,7 @@ mod tests {
             "cancel took {:?}",
             started.elapsed()
         );
-        sqlx::query("ROLLBACK")
-            .execute(&mut *lock_conn)
-            .await
-            .unwrap();
+        lock_tx.rollback().await.expect("lock ROLLBACK");
         drop(lock_conn);
         lock_pool.close().await;
         let page = session
