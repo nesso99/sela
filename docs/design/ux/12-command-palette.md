@@ -13,7 +13,7 @@ M3-4. One surface, two modes. Fuzzy open for tables and for actions. Maps to QA 
 
 **Conflict:** `secondary-shift-p` was Preview SQL in M2 ([08-preview-commit.md](./08-preview-commit.md)). Preview moves to **`secondary-shift-v`** (preView). The Preview **button** on the pending bar is unchanged. Documented in [README.md](./README.md).
 
-`secondary-space` stays Spotlight-free. `secondary-q` still quits (**PAL-08**). `ctrl-space` is the autocomplete manual trigger in the editor ([03-sql-editor.md](./03-sql-editor.md)); the palette does not bind it.
+`secondary-q` still quits (**PAL-08**). On macOS, `secondary-space` (Command+Space) stays Spotlight-free. On Linux and Windows, `secondary-space` is the same chord as `ctrl-space`, and that chord is bound only to `ShowSqlCompletions` in the `SqlEditor` context ([03-sql-editor.md](./03-sql-editor.md)); the palette does not bind it.
 
 ## One surface
 
@@ -96,7 +96,7 @@ Focus trapped while open.
 5. **PAL-05** — Keyboard-only open → type → move → Enter → Escape.
 6. **PAL-06** — Dimmed + reason; Enter on dimmed is a no-op.
 7. **PAL-07** — Click outside closes; second `secondary-p` toggles; focus restored.
-8. **PAL-08** — Does not steal `secondary-space` / `secondary-q`; `ctrl-space` remains editor autocomplete.
+8. **PAL-08** — Does not steal `secondary-q`; does not bind `secondary-space` / `ctrl-space` (those stay `ShowSqlCompletions` in `SqlEditor` only).
 9. **PAL-09** — Disconnected empty state, no hang.
 10. **PAL-10** — Schema-qualified duplicates disambiguated.
 
