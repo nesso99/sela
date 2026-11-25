@@ -15,6 +15,7 @@ Mark each item done or **N/A**:
 - [ ] **Memory / perf** — no large clones on hot paths; caches bounded; if grid/result code changed, note `grid_bench` numbers.
 - [ ] **Engines** — all 3 engines covered, or the limitation documented.
 - [ ] **Tests** — observable behavior covered; one regression test per bug fixed.
+- [ ] **UI test** — if this PR touches `crates/sela-app/src/ui/**`, a headless test in `ui_tests` is added or extended, or the PR body says why that isn't possible.
 - [ ] **Docs / backlog** — design docs / README / CHANGELOG updated when behavior or plans change.
 - [ ] **Behavior change?** — CHANGELOG + relevant docs updated in this PR.
 - [ ] **fmt / clippy / CI** — `cargo fmt`, `clippy -D warnings`, tests, and CI green (including `cargo deny` when dependencies or license config change).

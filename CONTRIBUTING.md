@@ -2,7 +2,7 @@
 
 # Contributing to Sela
 
-Sela is open source under **GPL-3.0-or-later** (see [`LICENSE`](./LICENSE)). Product and technical docs: [PRD](./docs/design/PRD.md), [SPECS](./docs/design/SPECS.md), [roadmap](./docs/design/roadmap.md).
+Sela is open source under **GPL-3.0-or-later** (see [`LICENSE`](./LICENSE)). Team workflow, roles and release flow: [AGENTS.md](./AGENTS.md). Product and technical docs: [PRD](./docs/design/PRD.md), [SPECS](./docs/design/SPECS.md), [roadmap](./docs/design/roadmap.md).
 
 ## Language
 
@@ -13,7 +13,8 @@ All project text — docs, source comments, UI strings, commit messages, and pul
 1. Fork the repository and create a topic branch from `main`.
 2. Make a focused change with tests for any observable behavior you touch.
 3. Open a pull request against `main`. Fill in the PR template checklist (tick each item or mark **N/A**).
-4. Maintainers review the PR. It is **squash-merged** only after approval **and** green CI.
+4. Maintainers review the PR. It is **squash-merged** only after approval **and** green CI, and never while `main` is red.
+5. PRs touching `crates/sela-app/src/ui/**` add or extend a headless UI test (see below) or explain why not.
 
 Prefer small, independent PRs that match the milestone order in [roadmap.md](./docs/design/roadmap.md).
 
@@ -68,6 +69,7 @@ Use the same items as [`.github/pull_request_template.md`](./.github/pull_reques
 - [ ] **Memory / perf** — no large clones on hot paths; caches bounded; if grid/result code changed, note `grid_bench` numbers.
 - [ ] **Engines** — all 3 engines covered, or the limitation documented.
 - [ ] **Tests** — observable behavior covered; one regression test per bug fixed.
+- [ ] **UI test** — if this PR touches `crates/sela-app/src/ui/**`, a headless test in `ui_tests` is added or extended, or the PR body says why that isn't possible.
 - [ ] **Docs / backlog** — design docs / README / CHANGELOG updated when behavior or plans change.
 - [ ] **Behavior change?** — CHANGELOG + relevant docs updated in this PR.
 - [ ] **fmt / clippy / CI** — `cargo fmt`, `clippy -D warnings`, tests, and CI green (including `cargo deny` when dependencies or license config change).
