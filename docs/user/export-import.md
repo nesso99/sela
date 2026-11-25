@@ -10,7 +10,8 @@ Writers take any `std::io::Write` (tests inject a `Vec<u8>` or `Cursor`; the app
 | --- | --- |
 | **CSV** | RFC 4180 quoting; configurable delimiter, header, and NULL text. Default NULL is `\N` so it stays distinct from `''` and from the text `NULL` (provisional until the UX spec). Binary cells are lowercase hex or Base64. |
 | **JSON** | Array of objects, or NDJSON (one object per line). SQL NULL is JSON `null`; the text `NULL` is a JSON string. |
-| **SQL INSERT** | Dialect-quoted identifiers and literals for Postgres, MySQL, and SQLite; batched `INSERT` statements. Decode/unsupported cells are refused (column named). MySQL/SQLite refuse non-finite floats; Postgres emits `'NaN'` / `'Infinity'` / `'-Infinity'`. Binary uses `'\x…'` (Postgres) or `X'…'` (MySQL/SQLite). |
+| **SQL INSERT** | Dialect-quoted identifiers and literals for Postgres, MySQL, and SQLite. Statements are batched: flush at **100 rows** or about **1 MiB** of statement text, whichever comes first (`SqlInsertExportOptions::batch_size` / `batch_max_bytes`). Decode/unsupported cells are refused (column named). MySQL/SQLite refuse non-finite floats; Postgres emits `'NaN'` / `'Infinity'` / `'-Infinity'`. Binary uses `'\x…'` (Postgres) or `X'…'` (MySQL/SQLite). |
+| **JSON key order** | Object keys follow the export column order (stable). They are not sorted alphabetically and do not depend on `serde_json` map iteration. |
 
 Clipboard copy of a selection (US-14) stays in [copying.md](./copying.md) and still uses the keyword `NULL` in CSV.
 

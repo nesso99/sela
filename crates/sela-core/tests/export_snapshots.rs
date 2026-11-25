@@ -2,12 +2,16 @@
 //!
 //! Expected files live under `tests/export_snapshots/`. Normalize CRLF so a
 //! Windows checkout still matches (see `.gitattributes`).
+//!
+//! JSON keys are emitted in column order (not `serde_json::Map` iteration order),
+//! so workspace `preserve_order` features cannot change the fixtures.
 
 use std::path::PathBuf;
 
 use sela_core::{
     export_rows, BinaryEncoding, CsvExportOptions, Dialect, ExportFormat, JsonExportMode,
-    JsonExportOptions, SqlInsertExportOptions, Value,
+    JsonExportOptions, SqlInsertExportOptions, Value, SQL_INSERT_DEFAULT_BATCH_BYTES,
+    SQL_INSERT_DEFAULT_BATCH_ROWS,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -126,7 +130,78 @@ fn ex03_sql_insert_golden_all_dialects() {
             dialect,
             table: "public.books".into(),
             batch_size: 2,
+            batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
         }));
         assert_snapshot(name, &text);
+    }
+}
+
+/// EX-03: flush at the row cap (100 by default) even when under the byte budget.
+#[test]
+fn ex03_sql_insert_flushes_at_row_cap() {
+    let cols = vec!["id".into()];
+    let rows: Vec<Vec<Value>> = (1..=SQL_INSERT_DEFAULT_BATCH_ROWS + 3)
+        .map(|i| vec![Value::Int(i as i64)])
+        .collect();
+    let mut out = Vec::new();
+    export_rows(
+        &mut out,
+        &cols,
+        rows,
+        &ExportFormat::SqlInsert(SqlInsertExportOptions {
+            dialect: Dialect::Sqlite,
+            table: "t".into(),
+            batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
+            batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
+        }),
+        &CancellationToken::new(),
+        |_| {},
+    )
+    .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert_snapshot("batch_rows.sqlite.sql", &text);
+    assert_eq!(text.matches("INSERT INTO").count(), 2);
+    // First statement has 100 value rows; second has 3.
+    let first = text.split("INSERT INTO").nth(1).unwrap();
+    assert_eq!(first.matches("\n(").count(), SQL_INSERT_DEFAULT_BATCH_ROWS);
+}
+
+/// EX-03: flush when the pending statement would exceed ~1 MiB, even under the row cap.
+#[test]
+fn ex03_sql_insert_flushes_at_byte_cap() {
+    // Wide text so a handful of rows exceed a small byte budget.
+    let wide = "x".repeat(200);
+    let cols = vec!["id".into(), "payload".into()];
+    let rows: Vec<Vec<Value>> = (1..=5)
+        .map(|i| vec![Value::Int(i), Value::text(wide.clone())])
+        .collect();
+    let mut out = Vec::new();
+    export_rows(
+        &mut out,
+        &cols,
+        rows,
+        &ExportFormat::SqlInsert(SqlInsertExportOptions {
+            dialect: Dialect::Postgres,
+            table: "public.wide".into(),
+            batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
+            // Tight budget: prefix + two wide rows fits; a third forces a flush.
+            batch_max_bytes: 500,
+        }),
+        &CancellationToken::new(),
+        |_| {},
+    )
+    .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert_snapshot("batch_bytes.postgres.sql", &text);
+    assert!(
+        text.matches("INSERT INTO").count() >= 2,
+        "byte budget should split into multiple INSERT statements:\n{text}"
+    );
+    for stmt in text.split("INSERT INTO").skip(1) {
+        let bytes = format!("INSERT INTO{stmt}").len();
+        assert!(
+            bytes <= 500 + 250,
+            "statement roughly within budget (allow one oversized row): {bytes} bytes\nINSERT INTO{stmt}"
+        );
     }
 }

@@ -350,7 +350,7 @@ Safe mode per connection: Off / Confirm writes / Read-only (`safe_mode` on `Save
 ### M3-3 export / import (core)
 
 - Writers: `CsvExporter` / `JsonExporter` / `SqlInsertExporter` and `export_rows` / `export_query` take `std::io::Write` and a `CancellationToken`; progress is rows written. Never buffer the whole result.
-- CSV NULL default `\N` (provisional; configurable). JSON: array or NDJSON. SQL INSERT: dialect quoting, batched statements, full binary literals.
+- CSV NULL default `\N` (provisional; configurable). JSON: array or NDJSON with keys in column order. SQL INSERT: dialect quoting; flush at 100 rows or ~1 MiB of statement text (whichever first); full binary literals.
 - Import: `CsvImporter` / `import_csv_into` take `std::io::Read`; column mapping via `TableSchemaSource`; rows feed `ImportRowSink` (`ChangeSet` or test sinks). Safe mode via `decide_import_gate`.
 - Clipboard copy (US-14) remains in `copy_format` and is unchanged.
 

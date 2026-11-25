@@ -1,6 +1,6 @@
 [
-  {"blob":"deadbeef","flag":true,"id":1,"note":null,"title":"a,b"},
-  {"blob":"","flag":false,"id":2,"note":"","title":"say \"hi\"\nthere"},
-  {"blob":"00","flag":null,"id":3,"note":"NULL","title":"café"},
-  {"blob":"ff","flag":true,"id":4,"note":"plain","title":"cr\ronly"}
+  {"id":1,"title":"a,b","note":null,"blob":"deadbeef","flag":true},
+  {"id":2,"title":"say \"hi\"\nthere","note":"","blob":"","flag":false},
+  {"id":3,"title":"café","note":"NULL","blob":"00","flag":null},
+  {"id":4,"title":"cr\ronly","note":"plain","blob":"ff","flag":true}
 ]

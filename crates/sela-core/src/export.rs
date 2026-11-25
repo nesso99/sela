@@ -81,14 +81,27 @@ impl Default for JsonExportOptions {
     }
 }
 
+/// Default row cap for one SQL `INSERT` statement ([`STREAM_BATCH_SIZE`] = 100).
+pub const SQL_INSERT_DEFAULT_BATCH_ROWS: usize = STREAM_BATCH_SIZE;
+
+/// Default byte budget for one SQL `INSERT` statement (~1 MiB of statement text).
+pub const SQL_INSERT_DEFAULT_BATCH_BYTES: usize = 1024 * 1024;
+
 /// SQL `INSERT` export options (dialect-correct quoting; batched statements).
+///
+/// A statement is flushed when **either** [`Self::batch_size`] rows accumulate
+/// **or** the pending statement text would exceed [`Self::batch_max_bytes`]
+/// (whichever comes first). Defaults: 100 rows / 1 MiB.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlInsertExportOptions {
     pub dialect: Dialect,
     /// `schema.table` or bare `table`.
     pub table: String,
-    /// Rows per `INSERT` statement (default [`STREAM_BATCH_SIZE`]).
+    /// Max rows per `INSERT` statement (default [`SQL_INSERT_DEFAULT_BATCH_ROWS`]).
     pub batch_size: usize,
+    /// Max bytes of statement text (prefix + VALUES) before flushing
+    /// (default [`SQL_INSERT_DEFAULT_BATCH_BYTES`]).
+    pub batch_max_bytes: usize,
 }
 
 impl SqlInsertExportOptions {
@@ -96,7 +109,8 @@ impl SqlInsertExportOptions {
         Self {
             dialect,
             table: table.into(),
-            batch_size: STREAM_BATCH_SIZE,
+            batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
+            batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
         }
     }
 }
@@ -210,6 +224,30 @@ pub fn format_json_cell(value: &Value, binary: BinaryEncoding) -> serde_json::Va
             .unwrap_or_else(|_| serde_json::Value::String(text.to_string())),
         other => serde_json::Value::String(other.display().into_owned()),
     }
+}
+
+/// Build one JSON object with keys in `columns` order (stable across builds).
+fn format_json_object_row(
+    columns: &[String],
+    row: &[Value],
+    binary: BinaryEncoding,
+) -> Result<String, ExportError> {
+    let mut out = String::from('{');
+    for (i, key) in columns.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let key_json =
+            serde_json::to_string(key).map_err(|err| ExportError::Io(err.to_string()))?;
+        out.push_str(&key_json);
+        out.push(':');
+        let cell = row.get(i).unwrap_or(&Value::Null);
+        let value_json = serde_json::to_string(&format_json_cell(cell, binary))
+            .map_err(|err| ExportError::Io(err.to_string()))?;
+        out.push_str(&value_json);
+    }
+    out.push('}');
+    Ok(out)
 }
 
 /// Dialect-correct SQL literal for one value (full binary; never truncated).
@@ -445,13 +483,10 @@ impl<W: Write> JsonExporter<W> {
             self.writer.write_all(b"[\n")?;
             self.started = true;
         }
-        let mut obj = serde_json::Map::new();
-        for (i, key) in self.columns.iter().enumerate() {
-            let cell = row.get(i).unwrap_or(&Value::Null);
-            obj.insert(key.clone(), format_json_cell(cell, self.options.binary));
-        }
-        let text = serde_json::to_string(&serde_json::Value::Object(obj))
-            .map_err(|err| ExportError::Io(err.to_string()))?;
+        // Emit keys in column order. Do not use `serde_json::Map`: workspace
+        // features may enable `preserve_order`, which would make key order
+        // differ across `cargo test -p sela-core` vs `cargo test --workspace`.
+        let text = format_json_object_row(&self.columns, row, self.options.binary)?;
         match self.options.mode {
             JsonExportMode::Array => {
                 if self.rows_written > 0 {
@@ -496,7 +531,11 @@ pub struct SqlInsertExporter<W: Write> {
     options: SqlInsertExportOptions,
     quoted_table: String,
     quoted_columns: Vec<String>,
+    /// Cached `INSERT INTO … (cols) VALUES` prefix length for byte budgeting.
+    prefix_len: usize,
     pending: Vec<String>,
+    /// Bytes of VALUES rows already pending (including commas/newlines between them).
+    pending_values_bytes: usize,
     rows_written: u64,
     header_done: bool,
 }
@@ -509,7 +548,9 @@ impl<W: Write> SqlInsertExporter<W> {
             options,
             quoted_table,
             quoted_columns: Vec::new(),
+            prefix_len: 0,
             pending: Vec::new(),
+            pending_values_bytes: 0,
             rows_written: 0,
             header_done: false,
         })
@@ -525,6 +566,12 @@ impl<W: Write> SqlInsertExporter<W> {
             quoted.push(quote_ident(self.options.dialect, name)?);
         }
         self.quoted_columns = quoted;
+        // "INSERT INTO {table} ({cols}) VALUES\n"
+        self.prefix_len = "INSERT INTO ".len()
+            + self.quoted_table.len()
+            + " (".len()
+            + self.quoted_columns.join(", ").len()
+            + ") VALUES\n".len();
         self.header_done = true;
         Ok(())
     }
@@ -559,11 +606,37 @@ impl<W: Write> SqlInsertExporter<W> {
                 Err(other) => return Err(other),
             }
         }
-        self.pending.push(format!("({})", literals.join(", ")));
-        self.rows_written += 1;
-        let batch = self.options.batch_size.max(1);
-        if self.pending.len() >= batch {
+        let row_sql = format!("({})", literals.join(", "));
+        let max_rows = self.options.batch_size.max(1);
+        let max_bytes = self.options.batch_max_bytes.max(1);
+
+        // Bytes if we append this row: previous values + optional ",\n" + row + trailing ";\n".
+        let sep = if self.pending.is_empty() { 0 } else { 2 }; // ",\n"
+        let projected = self.prefix_len + self.pending_values_bytes + sep + row_sql.len() + 2;
+
+        // Flush first when the new row would exceed the byte budget and we already
+        // have at least one pending row. A single oversized row still ships alone.
+        if !self.pending.is_empty() && projected > max_bytes {
             self.flush_batch()?;
+        }
+
+        if self.pending.is_empty() {
+            self.pending_values_bytes = row_sql.len();
+        } else {
+            self.pending_values_bytes += 2 + row_sql.len(); // ",\n" + row
+        }
+        self.pending.push(row_sql);
+        self.rows_written += 1;
+
+        if self.pending.len() >= max_rows {
+            self.flush_batch()?;
+        } else {
+            // Also flush when the pending statement (with trailing `;\n`) hits the
+            // byte cap even without adding another row.
+            let current = self.prefix_len + self.pending_values_bytes + 2;
+            if current >= max_bytes {
+                self.flush_batch()?;
+            }
         }
         Ok(())
     }
@@ -586,6 +659,7 @@ impl<W: Write> SqlInsertExporter<W> {
         }
         self.writer.write_all(b";\n")?;
         self.pending.clear();
+        self.pending_values_bytes = 0;
         Ok(())
     }
 
@@ -928,6 +1002,7 @@ mod tests {
                 dialect: Dialect::Postgres,
                 table: "public.items".into(),
                 batch_size: 2,
+                batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
             }),
             &cancel,
             |_| {},

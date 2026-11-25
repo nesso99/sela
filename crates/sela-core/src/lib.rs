@@ -52,7 +52,7 @@ pub use export::{
     export_rows_with_progress_counter, format_csv_cell, format_json_cell,
     value_to_export_sql_literal, BinaryEncoding, CsvExportOptions, CsvExporter, ExportError,
     ExportFormat, JsonExportMode, JsonExportOptions, JsonExporter, SqlInsertExportOptions,
-    SqlInsertExporter,
+    SqlInsertExporter, SQL_INSERT_DEFAULT_BATCH_BYTES, SQL_INSERT_DEFAULT_BATCH_ROWS,
 };
 pub use filter::{
     bool_filter_menu_index, bool_filter_menu_value, build_table_count, build_table_page,
