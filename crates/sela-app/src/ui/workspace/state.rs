@@ -10,16 +10,23 @@ use gpui_kit::prelude::*;
 use gpui_kit::{px, Context, SharedString, Window};
 
 use sela_config::{
-    keychain_unavailable_dialog_warning, memory_only_password_warning, PasswordPersistence,
-    SavedConnection,
+    keychain_unavailable_dialog_warning, memory_only_password_warning, ssh_passphrase_account,
+    ssh_password_account, PasswordPersistence, SavedConnection,
 };
 use sela_core::{
     count_tabs_requiring_close_confirm, duplicate_connection, duplicate_status_message,
     DatabaseSession, DbError, Engine, LoadedSchema,
 };
-use sela_drivers::{connect, create_sample_database, load_catalog};
+use sela_drivers::{
+    connect_with_auth, create_sample_database, load_catalog, ConnectAuth, ConnectOutcome,
+    SshAuthSecrets, UnknownSshHostKeyChallenge,
+};
+use sela_ssh::{
+    db_error_is_host_key_mismatch, host_key_changed_title, unknown_host_key_body,
+    unknown_host_key_title,
+};
 
-use super::super::form::{ConnectionDraft, ConnectionForm, FormEvent};
+use super::super::form::{ConnectionDraft, ConnectionForm, FormEvent, FormSecrets};
 use super::tree::{apply_selection_to_edit_target, conn_key, parse_node, schema_key, NodeId};
 use super::{GridSource, Workspace};
 
@@ -131,66 +138,401 @@ impl Workspace {
                 return;
             }
         };
+        let auth = match self.connect_auth_for(&saved, password) {
+            Ok(auth) => auth,
+            Err(err) => {
+                if let Some(view) = self.active_view_mut() {
+                    view.error = Some(err);
+                    view.status = "Connection failed".into();
+                } else {
+                    self.boot_error = Some(err);
+                }
+                cx.notify();
+                return;
+            }
+        };
+        let via_ssh = saved.ssh.enabled;
         let saved_id = saved.id.clone();
         let saved_name = saved.name.clone();
         self.active_id = Some(saved_id.clone());
         self.selected_connection_id = Some(saved_id.clone());
         self.session = None;
+        self.session_via_ssh = false;
         self.catalog.clear();
         if let Some(view) = self.active_view_mut() {
             view.status = format!("Connecting to {saved_name}…");
         }
         self.rebuild_tree(cx);
         let tab_id = self.tabs.active().map(|tab| tab.id);
+        let workspace = cx.entity();
         self.spawn_work(
             tab_id,
             cx,
-            |_| async move { open_session(saved, password).await },
+            |_| async move { open_session_outcome(saved, auth).await },
             move |this, result, cx| match result {
-                Ok((session, catalog)) => {
-                    this.session = Some(session);
-                    this.catalog = catalog;
-                    this.expanded.insert(conn_key(&saved_id));
-                    if let Some(schema) = this.catalog.first() {
-                        this.expanded.insert(schema_key(&saved_id, &schema.name));
-                    }
-                    let count: usize = this.catalog.iter().map(|schema| schema.tables.len()).sum();
-                    let mut status = format!("Connected to {saved_name} · {count} tables");
-                    if let Some(warning) = &this.keychain_session_warning {
-                        status = format!("{status} · {warning}");
-                    }
-                    // Successful connect must not leave a prior auth failure banner.
-                    this.clear_connection_banner_error();
-                    this.workspace_status = None;
-                    if let Some(conn) = this.connections.iter_mut().find(|item| item.id == saved_id)
-                    {
-                        if conn.needs_password {
-                            conn.clear_needs_password();
-                            if let Err(err) = this.store.save(&this.connections) {
-                                status = format!("{status} · {err}");
-                            }
-                        }
-                    }
-                    if let Some(view) = this.active_view_mut() {
-                        view.status = status;
-                    }
-                    this.rebuild_tree(cx);
-                    // Load the active table tab now that the session is ready.
-                    this.on_tab_activated(None, cx);
+                Ok(ConnectSession::Ready { session, catalog }) => {
+                    this.finish_successful_connect(
+                        session,
+                        catalog,
+                        &saved_id,
+                        &saved_name,
+                        via_ssh,
+                        cx,
+                    );
+                }
+                Ok(ConnectSession::UnknownHostKey(challenge)) => {
+                    let _ = workspace;
+                    this.show_unknown_host_key_dialog(challenge, saved_id, saved_name, via_ssh, cx);
                 }
                 Err(err) => {
-                    this.session = None;
-                    this.catalog.clear();
-                    if let Some(view) = this.active_view_mut() {
-                        view.status = "Connection failed".into();
-                        view.error = Some(err.to_string());
-                    } else {
-                        this.boot_error = Some(err.to_string());
-                    }
-                    this.rebuild_tree(cx);
+                    this.handle_connect_failure(err, cx);
                 }
             },
         );
+    }
+
+    fn connect_auth_for(
+        &self,
+        saved: &SavedConnection,
+        db_password: String,
+    ) -> Result<ConnectAuth, String> {
+        let mut auth = ConnectAuth {
+            db_password,
+            ssh: SshAuthSecrets::default(),
+            ssh_paths: None,
+        };
+        if !saved.ssh.enabled {
+            return Ok(auth);
+        }
+        let ssh_password = self
+            .secrets
+            .get_optional(&ssh_password_account(&saved.id))
+            .map_err(|err| {
+                format!("Could not read the SSH password from the OS keychain: {err}")
+            })?;
+        let ssh_passphrase = self
+            .secrets
+            .get_optional(&ssh_passphrase_account(&saved.id))
+            .map_err(|err| {
+                format!("Could not read the SSH passphrase from the OS keychain: {err}")
+            })?;
+        auth.ssh = SshAuthSecrets {
+            password: ssh_password.filter(|s| !s.is_empty()),
+            passphrase: ssh_passphrase.filter(|s| !s.is_empty()),
+        };
+        Ok(auth)
+    }
+
+    fn finish_successful_connect(
+        &mut self,
+        session: Arc<dyn DatabaseSession>,
+        catalog: Vec<LoadedSchema>,
+        saved_id: &str,
+        saved_name: &str,
+        via_ssh: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.session = Some(session);
+        self.session_via_ssh = via_ssh;
+        self.catalog = catalog;
+        self.expanded.insert(conn_key(saved_id));
+        if let Some(schema) = self.catalog.first() {
+            self.expanded.insert(schema_key(saved_id, &schema.name));
+        }
+        let count: usize = self.catalog.iter().map(|schema| schema.tables.len()).sum();
+        let mut status = format!("Connected to {saved_name} · {count} tables");
+        if let Some(warning) = &self.keychain_session_warning {
+            status = format!("{status} · {warning}");
+        }
+        self.clear_connection_banner_error();
+        self.workspace_status = None;
+        if let Some(conn) = self.connections.iter_mut().find(|item| item.id == saved_id) {
+            if conn.needs_password {
+                conn.clear_needs_password();
+                if let Err(err) = self.store.save(&self.connections) {
+                    status = format!("{status} · {err}");
+                }
+            }
+        }
+        if let Some(view) = self.active_view_mut() {
+            view.status = status;
+        }
+        self.rebuild_tree(cx);
+        self.on_tab_activated(None, cx);
+    }
+
+    fn handle_connect_failure(&mut self, err: DbError, cx: &mut Context<Self>) {
+        self.session = None;
+        self.session_via_ssh = false;
+        self.catalog.clear();
+        if db_error_is_host_key_mismatch(&err) {
+            // SSH-07: hard-error dialog; OK dismisses only.
+            let message = err.to_string();
+            let this = cx.entity();
+            // Prefer a window from the entity when available; fall back to banner.
+            if let Some(view) = self.active_view_mut() {
+                view.status = "Connection failed".into();
+                view.error = Some(message.clone());
+            } else {
+                self.boot_error = Some(message.clone());
+            }
+            // Open the dialog when we have a window via a deferred notify path.
+            self.pending_host_key_mismatch = Some(message);
+            let _ = this;
+            self.rebuild_tree(cx);
+            cx.notify();
+            return;
+        }
+        if let Some(view) = self.active_view_mut() {
+            view.status = "Connection failed".into();
+            view.error = Some(err.to_string());
+        } else {
+            self.boot_error = Some(err.to_string());
+        }
+        self.rebuild_tree(cx);
+    }
+
+    /// Show the SSH-07 hard-error dialog (no override).
+    pub(super) fn show_host_key_mismatch_dialog_if_pending(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(body) = self.pending_host_key_mismatch.take() else {
+            return;
+        };
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            alert
+                .title(host_key_changed_title())
+                .description(body.clone())
+                .ok_text("OK")
+                .on_ok(|_, _, _| true)
+        });
+    }
+
+    fn show_unknown_host_key_dialog(
+        &mut self,
+        challenge: Box<UnknownSshHostKeyChallenge>,
+        saved_id: String,
+        saved_name: String,
+        via_ssh: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Defer to a pending slot so we can open the dialog with a Window on the
+        // next frame (spawn_work callbacks may not have a window).
+        self.pending_unknown_host_key = Some(super::PendingUnknownHostKey {
+            challenge,
+            saved_id,
+            saved_name,
+            via_ssh,
+        });
+        cx.notify();
+    }
+
+    /// Present the SSH-18 first-seen host key confirm when one is pending.
+    pub(super) fn show_unknown_host_key_dialog_if_pending(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.pending_unknown_host_key.take() else {
+            return;
+        };
+        let super::PendingUnknownHostKey {
+            challenge,
+            saved_id,
+            saved_name,
+            via_ssh,
+        } = pending;
+        let host = challenge.host.clone();
+        let fingerprint = challenge.fingerprint.clone();
+        let body = unknown_host_key_body(&host, &fingerprint);
+        let challenge_slot = std::sync::Arc::new(std::sync::Mutex::new(Some(challenge)));
+        let this = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let this_cancel = this.clone();
+            let this_accept = this.clone();
+            let challenge_cancel = challenge_slot.clone();
+            let challenge_accept = challenge_slot.clone();
+            let challenge_enter = challenge_slot.clone();
+            let this_enter = this.clone();
+            alert
+                .title(unknown_host_key_title())
+                .description(body.clone())
+                // Enter / Escape cancel (quit-style; Cancel is primary).
+                .on_ok(move |_, _, cx| {
+                    reject_pending_host_key(&challenge_enter);
+                    this_enter.update(cx, |workspace, cx| {
+                        workspace.handle_connect_failure(
+                            DbError::ssh("SSH host key was not accepted."),
+                            cx,
+                        );
+                    });
+                    true
+                })
+                .on_cancel({
+                    let challenge_esc = challenge_slot.clone();
+                    let this_esc = this.clone();
+                    move |_, _, cx| {
+                        reject_pending_host_key(&challenge_esc);
+                        this_esc.update(cx, |workspace, cx| {
+                            workspace.handle_connect_failure(
+                                DbError::ssh("SSH host key was not accepted."),
+                                cx,
+                            );
+                        });
+                        true
+                    }
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("ssh-host-key-cancel")
+                                .label("Cancel")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    reject_pending_host_key(&challenge_cancel);
+                                    this_cancel.update(cx, |workspace, cx| {
+                                        workspace.handle_connect_failure(
+                                            DbError::ssh("SSH host key was not accepted."),
+                                            cx,
+                                        );
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child({
+                            let saved_id = saved_id.clone();
+                            let saved_name = saved_name.clone();
+                            Button::new("ssh-host-key-accept")
+                                .label("Accept & save")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let Some(ch) = challenge_accept
+                                        .lock()
+                                        .ok()
+                                        .and_then(|mut slot| slot.take())
+                                    else {
+                                        return;
+                                    };
+                                    let saved_id = saved_id.clone();
+                                    let saved_name = saved_name.clone();
+                                    this_accept.update(cx, |workspace, cx| {
+                                        workspace.accept_unknown_host_key(
+                                            ch, saved_id, saved_name, via_ssh, cx,
+                                        );
+                                    });
+                                })
+                        }),
+                )
+        });
+    }
+
+    fn accept_unknown_host_key(
+        &mut self,
+        challenge: Box<UnknownSshHostKeyChallenge>,
+        saved_id: String,
+        saved_name: String,
+        via_ssh: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Test-connection path: Accept writes known_hosts and updates the Test line.
+        if let Some((form, generation, test_via_ssh)) = self.pending_test_after_host_key.take() {
+            let started = std::time::Instant::now();
+            cx.spawn(async move |this, async_cx| {
+                let result =
+                    sela_drivers::drive(async move { challenge.accept_and_remember().await }).await;
+                let ms = started.elapsed().as_millis() as u64;
+                this.update(async_cx, |workspace, cx| {
+                    if workspace.connection_test_generation != generation {
+                        return;
+                    }
+                    match result {
+                        Ok(session) => {
+                            drop(session);
+                            form.update(cx, |form, cx| {
+                                form.set_test_result(
+                                    super::super::form::ssh::TestResult::Success {
+                                        ms,
+                                        via_ssh: test_via_ssh,
+                                    },
+                                    cx,
+                                );
+                            });
+                        }
+                        Err(err) => {
+                            form.update(cx, |form, cx| {
+                                form.set_test_result(
+                                    super::super::form::ssh::TestResult::Failure(err.to_string()),
+                                    cx,
+                                );
+                            });
+                        }
+                    }
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
+        let tab_id = self.tabs.active().map(|tab| tab.id);
+        self.spawn_work(
+            tab_id,
+            cx,
+            |_| async move {
+                let session = challenge.accept_and_remember().await?;
+                let catalog = load_catalog(session.as_ref()).await?;
+                Ok(ConnectSession::Ready {
+                    session: Arc::from(session),
+                    catalog,
+                })
+            },
+            move |this, result, cx| match result {
+                Ok(ConnectSession::Ready { session, catalog }) => {
+                    this.finish_successful_connect(
+                        session,
+                        catalog,
+                        &saved_id,
+                        &saved_name,
+                        via_ssh,
+                        cx,
+                    );
+                }
+                Ok(ConnectSession::UnknownHostKey(_)) => {
+                    this.handle_connect_failure(
+                        DbError::ssh("SSH host key challenge recurred unexpectedly."),
+                        cx,
+                    );
+                }
+                Err(err) => this.handle_connect_failure(err, cx),
+            },
+        );
+    }
+
+    /// When a tunneled session's DB connection dies, surface SSH-11 copy.
+    pub(super) fn note_possible_ssh_tunnel_drop(&mut self, err: &DbError, cx: &mut Context<Self>) {
+        if !self.session_via_ssh {
+            return;
+        }
+        if !matches!(
+            err,
+            DbError::Connection { .. } | DbError::Internal { .. } | DbError::Query { .. }
+        ) {
+            return;
+        }
+        // Drop the DB session; tabs and pending edits stay (SSH-11).
+        self.session = None;
+        self.session_via_ssh = false;
+        self.catalog.clear();
+        if let Some(view) = self.active_view_mut() {
+            view.error = Some("SSH tunnel closed. The connection was dropped.".into());
+            view.status = "SSH tunnel closed.".into();
+        } else {
+            self.boot_error = Some("SSH tunnel closed. The connection was dropped.".into());
+            self.workspace_status = Some("SSH tunnel closed.".into());
+        }
+        self.rebuild_tree(cx);
+        cx.notify();
     }
 
     /// Clears the connection-error banner sources (boot + active tab).
@@ -401,28 +743,61 @@ impl Workspace {
                 }
             }
         }
+        let (ssh_password, ssh_passphrase) = match existing.as_ref() {
+            Some(connection) => {
+                let ssh_pw = self
+                    .secrets
+                    .get(&ssh_password_account(&connection.id))
+                    .unwrap_or_default();
+                let ssh_pp = self
+                    .secrets
+                    .get(&ssh_passphrase_account(&connection.id))
+                    .unwrap_or_default();
+                (ssh_pw, ssh_pp)
+            }
+            None => (String::new(), String::new()),
+        };
         let title: SharedString = if existing.is_some() {
             "Edit connection".into()
         } else {
             "New connection".into()
         };
         let form = cx.new(|cx| {
-            ConnectionForm::new(
-                existing,
-                password,
-                warning,
-                keychain_unavailable,
+            ConnectionForm::with_secrets(
+                FormSecrets {
+                    existing,
+                    password,
+                    ssh_password,
+                    ssh_passphrase,
+                    warning,
+                    keychain_unavailable,
+                },
                 window,
                 cx,
             )
         });
+        self.connection_form = Some(form.clone());
         let subscription =
             cx.subscribe_in(&form, window, |this, _, event, window, cx| match event {
                 FormEvent::Submit(draft) => {
-                    this.save_draft((**draft).clone(), Some(window), cx);
+                    this.connection_form = None;
+                    this.save_draft((**draft).clone(), true, Some(window), cx);
                     window.close_dialog(cx);
                 }
-                FormEvent::Cancel => window.close_dialog(cx),
+                FormEvent::SaveOnly(draft) => {
+                    this.connection_form = None;
+                    this.save_draft((**draft).clone(), false, Some(window), cx);
+                    window.close_dialog(cx);
+                }
+                FormEvent::Test(draft) => {
+                    this.run_connection_test((**draft).clone(), cx);
+                }
+                FormEvent::Cancel => {
+                    if let Some(form) = this.connection_form.take() {
+                        form.update(cx, |form, cx| form.cancel_test(cx));
+                    }
+                    window.close_dialog(cx);
+                }
             });
         self._subscriptions.push(subscription);
         window.open_dialog(cx, move |dialog, _, _| {
@@ -437,6 +812,101 @@ impl Workspace {
                 .on_ok(|_, _, _| false)
                 .child(form.clone())
         });
+    }
+
+    fn run_connection_test(&mut self, draft: ConnectionDraft, cx: &mut Context<Self>) {
+        let generation = self
+            .connection_form
+            .as_ref()
+            .map(|form| form.read(cx).test_generation())
+            .unwrap_or(0);
+        self.connection_test_generation = generation;
+        let via_ssh = draft.connection.ssh.enabled;
+        let mut auth = ConnectAuth {
+            db_password: draft.password,
+            ssh: SshAuthSecrets {
+                password: if draft.ssh_password.is_empty() {
+                    None
+                } else {
+                    Some(draft.ssh_password)
+                },
+                passphrase: if draft.ssh_passphrase.is_empty() {
+                    None
+                } else {
+                    Some(draft.ssh_passphrase)
+                },
+            },
+            ssh_paths: None,
+        };
+        // Prefer injectable paths from the open form (UI tests).
+        if let Some(form) = &self.connection_form {
+            if let Ok(paths) = form.read(cx).ssh_paths_or_default() {
+                // Only override when the form has an explicit test override.
+                let _ = paths;
+            }
+            auth.ssh_paths = form.read(cx).ssh_paths_override_for_test();
+        }
+        let connection = draft.connection;
+        let started = std::time::Instant::now();
+        let form = self.connection_form.clone();
+        cx.spawn(async move |this, async_cx| {
+            let result =
+                sela_drivers::drive(async move { connect_with_auth(&connection, auth).await })
+                    .await;
+            let ms = started.elapsed().as_millis() as u64;
+            this.update(async_cx, |workspace, cx| {
+                let Some(form) = form else {
+                    return;
+                };
+                if workspace.connection_test_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(ConnectOutcome::Ready(session)) => {
+                        // Drop the test session immediately (does not replace workspace).
+                        drop(session);
+                        form.update(cx, |form, cx| {
+                            form.set_test_result(
+                                super::super::form::ssh::TestResult::Success { ms, via_ssh },
+                                cx,
+                            );
+                        });
+                    }
+                    Ok(ConnectOutcome::UnknownSshHostKey(challenge)) => {
+                        // Test path: stash challenge and open dialog on next paint.
+                        workspace.pending_unknown_host_key = Some(super::PendingUnknownHostKey {
+                            challenge,
+                            saved_id: String::new(),
+                            saved_name: String::new(),
+                            via_ssh,
+                        });
+                        workspace.pending_test_after_host_key = Some((form, generation, via_ssh));
+                        cx.notify();
+                    }
+                    Err(err) => {
+                        if db_error_is_host_key_mismatch(&err) {
+                            workspace.pending_host_key_mismatch = Some(err.to_string());
+                            form.update(cx, |form, cx| {
+                                form.set_test_result(
+                                    super::super::form::ssh::TestResult::Failure(err.to_string()),
+                                    cx,
+                                );
+                            });
+                            cx.notify();
+                        } else {
+                            form.update(cx, |form, cx| {
+                                form.set_test_result(
+                                    super::super::form::ssh::TestResult::Failure(err.to_string()),
+                                    cx,
+                                );
+                            });
+                        }
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Duplicate the selected (or active) connection without copying the password.
@@ -471,11 +941,19 @@ impl Workspace {
     pub(super) fn save_draft(
         &mut self,
         draft: ConnectionDraft,
+        reconnect: bool,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
         let id = draft.connection.id.clone();
         let persistence = self.secrets.set(&id, &draft.password);
+        // SSH secrets: same keychain path as the DB password (SSH-13).
+        let _ = self
+            .secrets
+            .set(&ssh_password_account(&id), &draft.ssh_password);
+        let ssh_pp = self
+            .secrets
+            .set(&ssh_passphrase_account(&id), &draft.ssh_passphrase);
         let mut connection = draft.connection;
         // Save always clears the Duplicate prompt flag (empty or non-empty secret).
         connection.clear_needs_password();
@@ -497,7 +975,16 @@ impl Workspace {
             PasswordPersistence::Empty => {
                 // Empty secret does not clear a prior memory-only warning for
                 // other connections; only clear when this write was intentional empty.
-                None
+                // Still surface memory-only when only SSH secrets fell back.
+                if matches!(ssh_pp, PasswordPersistence::MemoryOnly(_)) {
+                    let warning = memory_only_password_warning(
+                        "The OS keychain is unavailable for SSH secrets.",
+                    );
+                    self.keychain_session_warning = Some(warning.clone());
+                    Some(warning)
+                } else {
+                    None
+                }
             }
         };
         if let Some(view) = self.active_view_mut() {
@@ -516,9 +1003,12 @@ impl Workspace {
                 self.boot_error = Some(err.to_string());
             }
         }
-        self.session = None;
         self.rebuild_tree(cx);
-        self.connect_id(id, window, cx);
+        if reconnect {
+            self.session = None;
+            self.session_via_ssh = false;
+            self.connect_id(id, window, cx);
+        }
     }
 
     pub(super) fn confirm_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -613,6 +1103,7 @@ impl Workspace {
             self.close_tabs_for_connection(&id, cx);
         }
         self.session = None;
+        self.session_via_ssh = false;
         self.catalog.clear();
         self.active_id = None;
         self.clear_all_structure_caches();
@@ -738,13 +1229,40 @@ impl Workspace {
     }
 }
 
-async fn open_session(
+enum ConnectSession {
+    Ready {
+        session: Arc<dyn DatabaseSession>,
+        catalog: Vec<LoadedSchema>,
+    },
+    UnknownHostKey(Box<UnknownSshHostKeyChallenge>),
+}
+
+async fn open_session_outcome(
     saved: SavedConnection,
-    password: String,
-) -> Result<(Arc<dyn DatabaseSession>, Vec<LoadedSchema>), DbError> {
-    let session = connect(&saved, &password).await?;
-    let catalog = load_catalog(session.as_ref()).await?;
-    Ok((Arc::from(session), catalog))
+    auth: ConnectAuth,
+) -> Result<ConnectSession, DbError> {
+    match connect_with_auth(&saved, auth).await? {
+        ConnectOutcome::Ready(session) => {
+            let catalog = load_catalog(session.as_ref()).await?;
+            Ok(ConnectSession::Ready {
+                session: Arc::from(session),
+                catalog,
+            })
+        }
+        ConnectOutcome::UnknownSshHostKey(challenge) => {
+            Ok(ConnectSession::UnknownHostKey(challenge))
+        }
+    }
+}
+
+fn reject_pending_host_key(
+    slot: &std::sync::Arc<std::sync::Mutex<Option<Box<UnknownSshHostKeyChallenge>>>>,
+) {
+    if let Ok(mut guard) = slot.lock() {
+        if let Some(ch) = guard.take() {
+            let _ = ch.reject();
+        }
+    }
 }
 
 async fn ensure_sample(path: &std::path::Path) -> Result<PathBuf, DbError> {

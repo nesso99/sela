@@ -46,6 +46,14 @@ impl DialogHost {
                     });
                     window.close_dialog(cx);
                 }
+                FormEvent::SaveOnly(draft) => {
+                    events.lock().expect("events").push(HostEvent::Submitted {
+                        name: draft.connection.name.clone(),
+                        host: draft.connection.host.clone(),
+                    });
+                    window.close_dialog(cx);
+                }
+                FormEvent::Test(_) => {}
                 FormEvent::Cancel => {
                     events.lock().expect("events").push(HostEvent::Cancelled);
                     window.close_dialog(cx);

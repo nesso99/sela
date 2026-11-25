@@ -1,9 +1,13 @@
 //! Create and edit a saved connection. The password never enters the JSON file.
 
+pub(crate) mod ssh;
+
+use std::fmt;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     div, px, Context, Entity, EventEmitter, IntoElement, MouseButton, Render, Subscription, Window,
@@ -11,19 +15,72 @@ use gpui_kit::{
 
 use sela_core::{
     parse_connection_url, safe_mode_driven_by_color, ConnectionColor, Engine, SafeMode,
-    SavedConnection, TlsMode, TlsSettings,
+    SavedConnection, SshAuthMethod, SshSettings, TlsMode, TlsSettings,
 };
+use sela_ssh::SshPaths;
 
 use super::theme::SelaPalette;
+use ssh::TestResult;
+
+/// Inputs for [`ConnectionForm::with_secrets`] (keeps the constructor arity low).
+pub struct FormSecrets {
+    pub existing: Option<SavedConnection>,
+    pub password: String,
+    pub ssh_password: String,
+    pub ssh_passphrase: String,
+    pub warning: Option<String>,
+    pub keychain_unavailable: bool,
+}
 
 #[derive(Clone)]
 pub struct ConnectionDraft {
     pub connection: SavedConnection,
     pub password: String,
+    /// SSH bastion password (keychain `{id}:ssh-password`). Never logged.
+    pub ssh_password: String,
+    /// Private-key passphrase (keychain `{id}:ssh-passphrase`). Never logged.
+    pub ssh_passphrase: String,
+}
+
+impl fmt::Debug for ConnectionDraft {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectionDraft")
+            .field("connection", &self.connection)
+            .field(
+                "password",
+                &if self.password.is_empty() {
+                    ""
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field(
+                "ssh_password",
+                &if self.ssh_password.is_empty() {
+                    ""
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field(
+                "ssh_passphrase",
+                &if self.ssh_passphrase.is_empty() {
+                    ""
+                } else {
+                    "<redacted>"
+                },
+            )
+            .finish()
+    }
 }
 
 pub enum FormEvent {
+    /// Save & connect (primary).
     Submit(Box<ConnectionDraft>),
+    /// Save without dropping the live session or reconnecting.
+    SaveOnly(Box<ConnectionDraft>),
+    /// Test with the form values; does not write JSON or the keychain.
+    Test(Box<ConnectionDraft>),
     Cancel,
 }
 
@@ -54,12 +111,30 @@ pub struct ConnectionForm {
     ca_path: Entity<InputState>,
     client_cert_path: Entity<InputState>,
     client_key_path: Entity<InputState>,
+    // SSH (Postgres / MySQL only; absent for SQLite).
+    ssh_enabled: bool,
+    ssh_auth: SshAuthMethod,
+    ssh_host: Entity<InputState>,
+    ssh_port: Entity<InputState>,
+    ssh_user: Entity<InputState>,
+    ssh_password: Entity<InputState>,
+    ssh_private_key_path: Entity<InputState>,
+    ssh_passphrase: Entity<InputState>,
+    /// Injectable paths for UI tests (never the real ~/.ssh in tests).
+    ssh_paths_override: Option<SshPaths>,
+    pending_private_key_path: Option<String>,
+    test_result: TestResult,
+    /// Generation bumped when Test starts; stale completions are ignored.
+    test_generation: u64,
     _import_url_subscription: Option<Subscription>,
 }
 
 impl EventEmitter<FormEvent> for ConnectionForm {}
 
 impl ConnectionForm {
+    /// Open a new/edit form. SSH secrets default empty; prefer
+    /// [`Self::with_secrets`] when loading from the keychain.
+    #[cfg(test)]
     pub fn new(
         existing: Option<SavedConnection>,
         password: String,
@@ -68,6 +143,30 @@ impl ConnectionForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::with_secrets(
+            FormSecrets {
+                existing,
+                password,
+                ssh_password: String::new(),
+                ssh_passphrase: String::new(),
+                warning,
+                keychain_unavailable,
+            },
+            window,
+            cx,
+        )
+    }
+
+    /// Like [`Self::new`], with SSH password / passphrase from the keychain.
+    pub fn with_secrets(secrets: FormSecrets, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let FormSecrets {
+            existing,
+            password,
+            ssh_password,
+            ssh_passphrase,
+            warning,
+            keychain_unavailable,
+        } = secrets;
         let engine = existing
             .as_ref()
             .map(|item| item.engine)
@@ -79,6 +178,11 @@ impl ConnectionForm {
             String::new()
         } else {
             seed.port.to_string()
+        };
+        let ssh_port = if seed.ssh.port == 0 {
+            "22".to_string()
+        } else {
+            seed.ssh.port.to_string()
         };
         Self {
             existing_id: existing.map(|item| item.id),
@@ -153,6 +257,44 @@ impl ConnectionForm {
                     .placeholder("/path/to/client.key (PEM, unencrypted)")
                     .default_value(seed.tls.client_key_path)
             }),
+            ssh_enabled: seed.ssh.enabled,
+            ssh_auth: seed.ssh.auth,
+            ssh_host: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("bastion.example.com")
+                    .default_value(seed.ssh.host)
+            }),
+            ssh_port: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("22")
+                    .default_value(ssh_port)
+            }),
+            ssh_user: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("ubuntu")
+                    .default_value(seed.ssh.user)
+            }),
+            ssh_password: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("SSH password")
+                    .default_value(ssh_password)
+            }),
+            ssh_private_key_path: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("~/.ssh/id_ed25519")
+                    .default_value(seed.ssh.private_key_path)
+            }),
+            ssh_passphrase: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("Passphrase")
+                    .default_value(ssh_passphrase)
+            }),
+            ssh_paths_override: None,
+            pending_private_key_path: None,
+            test_result: TestResult::Idle,
+            test_generation: 0,
             _import_url_subscription: None,
         }
     }
@@ -206,10 +348,14 @@ impl ConnectionForm {
         }
         if engine == Engine::Sqlite {
             self.tls_mode = TlsMode::Disable;
+            // SSH section is absent for SQLite — turn off so a prior toggle does not
+            // linger in the draft if the user switches back incorrectly.
+            self.ssh_enabled = false;
         } else if previous_engine == Engine::Sqlite {
             // SQLite forced Disable; Prefer is the default for new network connections.
             self.tls_mode = TlsMode::Prefer;
         }
+        self.clear_test_result();
         cx.notify();
     }
 
@@ -218,6 +364,7 @@ impl ConnectionForm {
             return;
         }
         self.tls_mode = mode;
+        self.clear_test_result();
         cx.notify();
     }
 
@@ -250,6 +397,17 @@ impl ConnectionForm {
         if trimmed.is_empty() {
             return;
         }
+        // Snapshot SSH fields so Import URL never fills or clears them (SSH-19).
+        let ssh_snapshot = (
+            self.ssh_enabled,
+            self.ssh_auth,
+            Self::value(&self.ssh_host, cx),
+            Self::value(&self.ssh_port, cx),
+            Self::value(&self.ssh_user, cx),
+            Self::value(&self.ssh_password, cx),
+            Self::value(&self.ssh_private_key_path, cx),
+            Self::value(&self.ssh_passphrase, cx),
+        );
         match parse_connection_url(trimmed) {
             Ok(imported) => {
                 Self::set_value(&self.import_url, String::new(), window, cx);
@@ -272,6 +430,17 @@ impl ConnectionForm {
                     // Recognised sslmode only — never wipe CA / client cert paths.
                     self.tls_mode = mode;
                 }
+                // Restore SSH (set_engine may have cleared enabled for SQLite).
+                if imported.engine != Engine::Sqlite {
+                    self.ssh_enabled = ssh_snapshot.0;
+                    self.ssh_auth = ssh_snapshot.1;
+                    Self::set_value(&self.ssh_host, ssh_snapshot.2, window, cx);
+                    Self::set_value(&self.ssh_port, ssh_snapshot.3, window, cx);
+                    Self::set_value(&self.ssh_user, ssh_snapshot.4, window, cx);
+                    Self::set_value(&self.ssh_password, ssh_snapshot.5, window, cx);
+                    Self::set_value(&self.ssh_private_key_path, ssh_snapshot.6, window, cx);
+                    Self::set_value(&self.ssh_passphrase, ssh_snapshot.7, window, cx);
+                }
                 let mut note =
                     "Filled from the URL. The password is only in the password field.".to_string();
                 for extra in imported.notes {
@@ -293,7 +462,8 @@ impl ConnectionForm {
         cx.notify();
     }
 
-    fn submit(&mut self, cx: &mut Context<Self>) {
+    /// Build a draft from the form. On validation failure sets `error` and returns None.
+    fn build_draft(&mut self, cx: &mut Context<Self>) -> Option<ConnectionDraft> {
         let mut connection = SavedConnection::new(self.engine);
         if let Some(id) = &self.existing_id {
             connection.id = id.clone();
@@ -316,12 +486,13 @@ impl ConnectionForm {
             connection.username.clear();
             connection.database.clear();
             connection.tls = TlsSettings::default();
+            connection.ssh = SshSettings::default();
         } else {
             match port_text.parse::<u16>() {
                 Ok(0) | Err(_) => {
                     self.error = Some("Port must be a number from 1 to 65535.".into());
                     cx.notify();
-                    return;
+                    return None;
                 }
                 Ok(port) => connection.port = port,
             }
@@ -331,17 +502,90 @@ impl ConnectionForm {
                 client_cert_path: Self::value(&self.client_cert_path, cx).trim().to_string(),
                 client_key_path: Self::value(&self.client_key_path, cx).trim().to_string(),
             };
+            let ssh_port_text = Self::value(&self.ssh_port, cx).trim().to_string();
+            let ssh_port = if !self.ssh_enabled {
+                22
+            } else {
+                match ssh_port_text.parse::<u16>() {
+                    Ok(0) | Err(_) => {
+                        self.error = Some("SSH port must be a number from 1 to 65535.".into());
+                        cx.notify();
+                        return None;
+                    }
+                    Ok(port) => port,
+                }
+            };
+            connection.ssh = if self.ssh_enabled {
+                SshSettings {
+                    enabled: true,
+                    host: Self::value(&self.ssh_host, cx).trim().to_string(),
+                    port: ssh_port,
+                    user: Self::value(&self.ssh_user, cx).trim().to_string(),
+                    auth: self.ssh_auth,
+                    private_key_path: Self::value(&self.ssh_private_key_path, cx)
+                        .trim()
+                        .to_string(),
+                }
+            } else {
+                SshSettings::default()
+            };
         }
         if let Err(message) = connection.validate() {
             self.error = Some(message);
             cx.notify();
-            return;
+            return None;
         }
-        let password = Self::value(&self.password, cx);
-        cx.emit(FormEvent::Submit(Box::new(ConnectionDraft {
+        self.error = None;
+        Some(ConnectionDraft {
             connection,
-            password,
-        })));
+            password: Self::value(&self.password, cx),
+            ssh_password: Self::value(&self.ssh_password, cx),
+            ssh_passphrase: Self::value(&self.ssh_passphrase, cx),
+        })
+    }
+
+    fn submit(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.build_draft(cx) else {
+            return;
+        };
+        cx.emit(FormEvent::Submit(Box::new(draft)));
+    }
+
+    fn save_only(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.build_draft(cx) else {
+            return;
+        };
+        cx.emit(FormEvent::SaveOnly(Box::new(draft)));
+    }
+
+    fn request_test(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.build_draft(cx) else {
+            return;
+        };
+        self.test_generation = self.test_generation.wrapping_add(1);
+        self.test_result = TestResult::Testing;
+        cx.notify();
+        cx.emit(FormEvent::Test(Box::new(draft)));
+    }
+
+    /// Cancel an in-flight Test (closing the dialog).
+    pub fn cancel_test(&mut self, cx: &mut Context<Self>) {
+        self.test_generation = self.test_generation.wrapping_add(1);
+        self.test_result = TestResult::Idle;
+        cx.notify();
+    }
+
+    pub fn test_generation(&self) -> u64 {
+        self.test_generation
+    }
+
+    pub fn is_testing(&self) -> bool {
+        matches!(self.test_result, TestResult::Testing)
+    }
+
+    /// Injectable SSH paths for headless UI tests (None → system default).
+    pub(crate) fn ssh_paths_override_for_test(&self) -> Option<SshPaths> {
+        self.ssh_paths_override.clone()
     }
 
     /// Test helpers: read field values and mask state without logging secrets.
@@ -355,6 +599,12 @@ impl ConnectionForm {
             "username" => Self::value(&self.username, cx),
             "database" => Self::value(&self.database, cx),
             "password" => Self::value(&self.password, cx),
+            "ssh_host" => Self::value(&self.ssh_host, cx),
+            "ssh_port" => Self::value(&self.ssh_port, cx),
+            "ssh_user" => Self::value(&self.ssh_user, cx),
+            "ssh_password" => Self::value(&self.ssh_password, cx),
+            "ssh_private_key_path" => Self::value(&self.ssh_private_key_path, cx),
+            "ssh_passphrase" => Self::value(&self.ssh_passphrase, cx),
             other => panic!("unknown form field: {other}"),
         }
     }
@@ -365,8 +615,84 @@ impl ConnectionForm {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_ssh_passphrase_masked(&self, cx: &gpui_kit::App) -> bool {
+        self.ssh_passphrase.read(cx).presentation().is_masked()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_ssh_enabled(&self) -> bool {
+        self.ssh_enabled
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_ssh_auth(&self) -> SshAuthMethod {
+        self.ssh_auth
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_import_note(&self) -> Option<&str> {
         self.import_note.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_result_line(&self) -> Option<String> {
+        match &self.test_result {
+            TestResult::Idle => None,
+            TestResult::Testing => Some("Testing…".into()),
+            TestResult::Success { ms, via_ssh } => Some(TestResult::success_line(*ms, *via_ssh)),
+            TestResult::Failure(msg) => Some(msg.clone()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_ssh_paths(&mut self, paths: SshPaths) {
+        self.ssh_paths_override = Some(paths);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_ssh_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.set_ssh_enabled(enabled, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_ssh_auth(&mut self, auth: SshAuthMethod, cx: &mut Context<Self>) {
+        self.set_ssh_auth(auth, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_field(
+        &mut self,
+        name: &str,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = match name {
+            "ssh_host" => &self.ssh_host,
+            "ssh_port" => &self.ssh_port,
+            "ssh_user" => &self.ssh_user,
+            "ssh_password" => &self.ssh_password,
+            "ssh_private_key_path" => &self.ssh_private_key_path,
+            "ssh_passphrase" => &self.ssh_passphrase,
+            "name" => &self.name,
+            "host" => &self.host,
+            "port" => &self.port,
+            "username" => &self.username,
+            "database" => &self.database,
+            other => panic!("unknown form field: {other}"),
+        };
+        Self::set_value(input, value.to_string(), window, cx);
+        self.clear_test_result();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_build_draft(&mut self, cx: &mut Context<Self>) -> Option<ConnectionDraft> {
+        self.build_draft(cx)
     }
 
     /// Fill the minimum valid Postgres fields so Save can succeed in UI tests.
@@ -389,9 +715,19 @@ impl Render for ConnectionForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
         self.ensure_import_url_subscription(window, cx);
+        self.flush_pending_private_key_path(window, cx);
         let network = self.engine != Engine::Sqlite;
+        let testing = self.is_testing();
         let palette = SelaPalette::for_mode(cx.theme().mode);
         let selected_color_label = self.color.label();
+        let test_line = match &self.test_result {
+            TestResult::Idle => None,
+            TestResult::Testing => Some(("muted", "Testing…".to_string())),
+            TestResult::Success { ms, via_ssh } => {
+                Some(("success", TestResult::success_line(*ms, *via_ssh)))
+            }
+            TestResult::Failure(msg) => Some(("error", msg.clone())),
+        };
         v_flex()
             .w_full()
             .gap_2()
@@ -478,6 +814,19 @@ impl Render for ConnectionForm {
             )
             .child(label("Group", cx))
             .child(Input::new(&self.group).id("group-input"))
+            .child(label("Safe mode", cx))
+            .child(h_flex().gap_1().children(
+                SafeMode::all()
+                    .iter()
+                    .copied()
+                    .map(|mode| safe_mode_button(this.clone(), mode, self.safe_mode)),
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.safe_mode.helper()),
+            )
             .when(network, |form| {
                 form.child(label("Host", cx))
                     .child(Input::new(&self.host).id("host-input"))
@@ -487,41 +836,59 @@ impl Render for ConnectionForm {
                     .child(Input::new(&self.username).id("username-input"))
                     .child(label("Database", cx))
                     .child(Input::new(&self.database).id("database-input"))
-                    .child(label("SSL mode", cx))
-                    .child(h_flex().gap_1().children(
-                        TlsMode::all()
-                            .iter()
-                            .copied()
-                            .map(|mode| tls_mode_button(this.clone(), mode, self.tls_mode)),
-                    ))
-                    .when(self.tls_mode == TlsMode::Prefer, |form| {
-                        form.child(
+                    .child(label("Password", cx))
+                    .child(
+                        Input::new(&self.password)
+                            .id("password-input")
+                            .content_type(InputContentType::Password)
+                            .mask_toggle(),
+                    )
+            })
+            .when(network, |form| {
+                form.child(self.render_ssh_section(this.clone(), cx))
+            })
+            .when(network, |form| {
+                form.child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(
-                                    "prefer may fall back to unencrypted; use require or verify-full for remote servers",
-                                ),
+                                .child("TLS"),
                         )
-                    })
-                    .child(label("CA certificate path", cx))
-                    .child(Input::new(&self.ca_path))
-                    .child(label("Client certificate path", cx))
-                    .child(Input::new(&self.client_cert_path))
-                    .child(label("Client key path", cx))
-                    .child(Input::new(&self.client_key_path))
+                        .child(label("SSL mode", cx))
+                        .child(h_flex().gap_1().children(
+                            TlsMode::all()
+                                .iter()
+                                .copied()
+                                .map(|mode| tls_mode_button(this.clone(), mode, self.tls_mode)),
+                        ))
+                        .when(self.tls_mode == TlsMode::Prefer, |tls| {
+                            tls.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "prefer may fall back to unencrypted; use require or verify-full for remote servers",
+                                    ),
+                            )
+                        })
+                        .child(label("CA certificate path", cx))
+                        .child(Input::new(&self.ca_path))
+                        .child(label("Client certificate path", cx))
+                        .child(Input::new(&self.client_cert_path))
+                        .child(label("Client key path", cx))
+                        .child(Input::new(&self.client_key_path)),
+                )
             })
             .when(!network, |form| {
                 form.child(label("SQLite file", cx))
                     .child(Input::new(&self.file_path))
-            })
-            .when(network, |form| {
-                form.child(label("Password", cx)).child(
-                    Input::new(&self.password)
-                        .id("password-input")
-                        .content_type(InputContentType::Password)
-                        .mask_toggle(),
-                )
             })
             .child({
                 let this = this.clone();
@@ -544,27 +911,14 @@ impl Render for ConnectionForm {
                         "Stores SQL you run on this connection in history.sqlite on this computer.",
                     ),
             )
-            .child(label("Safe mode", cx))
-            .child(h_flex().gap_1().children(
-                SafeMode::all()
-                    .iter()
-                    .copied()
-                    .map(|mode| safe_mode_button(this.clone(), mode, self.safe_mode)),
-            ))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(self.safe_mode.helper()),
-            )
             .child(
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(if self.keychain_unavailable {
-                        "The OS keychain is unavailable, so the password will not be saved after you quit. It is kept in memory for this session only and is never written to the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only.".to_string()
+                        "The OS keychain is unavailable, so the password will not be saved after you quit. It is kept in memory for this session only and is never written to the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only. SSH passwords and key passphrases use the same keychain.".to_string()
                     } else {
-                        "Passwords are stored in the OS keychain, not in the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only.".to_string()
+                        "Passwords are stored in the OS keychain, not in the connections file. Certificate paths are plain text. Client keys must be unencrypted PEM for now. TLS options apply to PostgreSQL and MySQL only. SSH passwords and key passphrases use the same keychain.".to_string()
                     }),
             )
             .when_some(self.import_note.clone(), |form, note| {
@@ -586,29 +940,73 @@ impl Render for ConnectionForm {
             .when_some(self.error.clone(), |form, error| {
                 form.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
+            .when_some(test_line, |form, (kind, text)| {
+                let color = match kind {
+                    "success" => palette.status_success,
+                    "error" => palette.status_error,
+                    _ => cx.theme().muted_foreground,
+                };
+                form.child(
+                    div()
+                        .id("test-result")
+                        .text_sm()
+                        .text_color(color)
+                        .child(text),
+                )
+            })
             .child(
-                h_flex().gap_2().justify_end().pt_2().child({
-                    let this = this.clone();
-                    Button::new("cancel")
-                        .label("Cancel")
-                        .ghost()
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |_form, cx| cx.emit(FormEvent::Cancel));
-                        })
-                }).child({
-                    let this = this.clone();
-                    Button::new("save-connection")
-                        .label("Save connection")
-                        .primary()
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |form, cx| form.submit(cx));
-                        })
-                }),
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .pt_2()
+                    .child({
+                        let this = this.clone();
+                        Button::new("cancel")
+                            .label("Cancel")
+                            .ghost()
+                            .disabled(testing)
+                            .on_click(move |_, _, cx| {
+                                this.update(cx, |form, cx| {
+                                    form.cancel_test(cx);
+                                    cx.emit(FormEvent::Cancel);
+                                });
+                            })
+                    })
+                    .child({
+                        let this = this.clone();
+                        Button::new("test-connection")
+                            .label(if testing { "Testing…" } else { "Test" })
+                            .disabled(testing)
+                            .on_click(move |_, _, cx| {
+                                this.update(cx, |form, cx| form.request_test(cx));
+                            })
+                    })
+                    .child({
+                        let this = this.clone();
+                        Button::new("save-only")
+                            .label("Save")
+                            .disabled(testing)
+                            .on_click(move |_, _, cx| {
+                                this.update(cx, |form, cx| form.save_only(cx));
+                            })
+                    })
+                    .child({
+                        let this = this.clone();
+                        // Keep id `save-connection` so existing UI tests keep working;
+                        // label matches UX 05 (Save & connect).
+                        Button::new("save-connection")
+                            .label("Save & connect")
+                            .primary()
+                            .disabled(testing)
+                            .on_click(move |_, _, cx| {
+                                this.update(cx, |form, cx| form.submit(cx));
+                            })
+                    }),
             )
     }
 }
 
-fn label(text: &str, cx: &gpui_kit::App) -> impl IntoElement {
+pub(super) fn label(text: &str, cx: &gpui_kit::App) -> impl IntoElement {
     div()
         .text_xs()
         .text_color(cx.theme().muted_foreground)

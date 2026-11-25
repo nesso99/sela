@@ -68,6 +68,25 @@ pub(super) enum PendingCloseTabs {
     Disconnect,
 }
 
+/// First-seen SSH host key waiting for Accept & save / Cancel (SSH-18).
+pub(super) struct PendingUnknownHostKey {
+    pub(super) challenge: Box<sela_drivers::UnknownSshHostKeyChallenge>,
+    pub(super) saved_id: String,
+    pub(super) saved_name: String,
+    pub(super) via_ssh: bool,
+}
+
+impl std::fmt::Debug for PendingUnknownHostKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingUnknownHostKey")
+            .field("saved_id", &self.saved_id)
+            .field("saved_name", &self.saved_name)
+            .field("via_ssh", &self.via_ssh)
+            .field("fingerprint", &self.challenge.fingerprint)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct Workspace {
     store: ConfigStore,
     tab_store: TabStore,
@@ -82,6 +101,8 @@ pub struct Workspace {
     connections: Vec<SavedConnection>,
     active_id: Option<String>,
     session: Option<Arc<dyn DatabaseSession>>,
+    /// True when the live session was opened through an SSH tunnel (SSH-11 banner).
+    session_via_ssh: bool,
     catalog: Vec<LoadedSchema>,
     expanded: HashSet<String>,
     tree: Entity<TreeState>,
@@ -122,6 +143,16 @@ pub struct Workspace {
     close_tabs_confirm_open: bool,
     /// Action to run after the user confirms closing tabs with typed SQL / busy work.
     pending_close_tabs: Option<PendingCloseTabs>,
+    /// SSH-18 first-seen host key waiting for a Window to open the confirm.
+    pending_unknown_host_key: Option<PendingUnknownHostKey>,
+    /// SSH-07 changed host key body waiting for a Window to open the alert.
+    pending_host_key_mismatch: Option<String>,
+    /// Connection form currently open (for Test result updates).
+    connection_form: Option<Entity<super::form::ConnectionForm>>,
+    /// Generation of the in-flight Test (stale completions ignored).
+    connection_test_generation: u64,
+    /// After Accept & save during Test: resume the Test result line.
+    pending_test_after_host_key: Option<(Entity<super::form::ConnectionForm>, u64, bool)>,
     /// Updated each frame from `window.window_decorations()` for the CSD title bar.
     client_decorations: bool,
     _subscriptions: Vec<Subscription>,
@@ -225,6 +256,7 @@ impl Workspace {
             connections,
             active_id: None,
             session: None,
+            session_via_ssh: false,
             catalog: Vec::new(),
             expanded: HashSet::new(),
             tree,
@@ -254,6 +286,11 @@ impl Workspace {
             close_tab_confirm_open: false,
             close_tabs_confirm_open: false,
             pending_close_tabs: None,
+            pending_unknown_host_key: None,
+            pending_host_key_mismatch: None,
+            connection_form: None,
+            connection_test_generation: 0,
+            pending_test_after_host_key: None,
             client_decorations: false,
             _subscriptions: vec![
                 tree_events,
@@ -406,6 +443,9 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // SSH-07 / SSH-18 dialogs are queued from async connect/test completions.
+        self.show_host_key_mismatch_dialog_if_pending(window, cx);
+        self.show_unknown_host_key_dialog_if_pending(window, cx);
         let this = cx.entity();
         let connected = self.session.is_some();
         let can_next = self.can_go_next();

@@ -24,13 +24,30 @@ Click another saved connection in the sidebar to switch. Sela cancels queries on
 
 ## SSH tunnel (PostgreSQL and MySQL)
 
-Postgres and MySQL connections can reach the database through an SSH bastion (local port forward). SQLite does not use SSH (the form will hide it once the dialog lands; enabling SSH on a SQLite row is rejected on validate).
+Postgres and MySQL connections can reach the database through an SSH bastion (local port forward). On the connection dialog, turn on **Use SSH tunnel** (after Password, before TLS). The section is **absent** for SQLite — not a disabled checkbox. Enabling SSH on a SQLite row is also rejected on validate.
 
-Auth methods: bastion password, private key (optional passphrase), or ssh-agent. Import from `~/.ssh/config` is an explicit host picker that fills resolved Host / Port / User / key path into the saved connection (connect does not re-read the config). `ProxyJump` and `ProxyCommand` are not supported.
+| Field | Notes |
+| --- | --- |
+| Host / Port / User | Bastion as seen from this machine. Port defaults to 22. |
+| Auth | **Private key** (default), **Password**, or **SSH agent**. |
+| Private key / Passphrase | Path may use `~`. Browse opens a file picker. Passphrase is optional and masked. |
+| Import from `~/.ssh/config` | Host-alias picker. Fills Host / Port / User / IdentityFile (switches Auth to Private key). Does not read passwords. |
 
-Host keys: a matching `known_hosts` entry is required for a silent connect. A **changed** host key is always refused. A **first-seen** host key returns a typed challenge with a fingerprint so the UI can ask before writing `known_hosts` (core API is ready; dialog UX follows the v0.3 UX spec).
+Remote Host/Port stay the database address **as seen from the bastion**. The local ephemeral listen address is never shown. Import URL fills only database fields and never changes SSH settings.
 
-SSH passwords and key passphrases use the same OS keychain path as database passwords (accounts `{connection-id}:ssh-password` and `{connection-id}:ssh-passphrase`). They are never written to `connections.json`.
+`ProxyJump` and `ProxyCommand` are not supported. Saved JSON stores resolved values (not the Host alias), with no secrets and no `schema_version` bump. Omit `ssh` when the toggle is off.
+
+**Host keys** (`~/.ssh/known_hosts`, or `%USERPROFILE%\.ssh\known_hosts` on Windows):
+
+- Matching entry → connect.
+- **First-seen** → confirm with SHA256 fingerprint; **Cancel** is primary; **Accept & save** appends the key and continues the same Test/connect.
+- **Changed** → hard error dialog (no Replace / Continue). Fix `known_hosts` manually, then try again.
+
+SSH passwords and key passphrases use the same OS keychain path as database passwords (accounts `{connection-id}:ssh-password` and `{connection-id}:ssh-passphrase`). They are never written to `connections.json`. Delete connection removes those secrets. Duplicate copies SSH host settings but not SSH secrets.
+
+**Test** dials the form values through the tunnel when SSH is on. Success: `Connected in {ms} ms (via SSH).` It does not write JSON or the keychain. Closing the dialog cancels an in-flight test.
+
+If the tunnel drops mid-session, Sela shows `SSH tunnel closed. The connection was dropped.`, sets status to `SSH tunnel closed.`, drops the DB session, and keeps tabs and pending edits so you can reconnect.
 
 The local forwarded port binds on `127.0.0.1` and is reachable by other processes on the same machine for as long as the connection stays open.
 
