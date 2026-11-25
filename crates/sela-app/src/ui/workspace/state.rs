@@ -182,7 +182,15 @@ impl Workspace {
                 }
                 Ok(ConnectSession::UnknownHostKey(challenge)) => {
                     let _ = workspace;
-                    this.show_unknown_host_key_dialog(challenge, saved_id, saved_name, via_ssh, cx);
+                    this.show_unknown_host_key_dialog(
+                        challenge,
+                        super::HostKeyOrigin::Connect {
+                            saved_id,
+                            saved_name,
+                            via_ssh,
+                        },
+                        cx,
+                    );
                 }
                 Err(err) => {
                     this.handle_connect_failure(err, cx);
@@ -313,19 +321,12 @@ impl Workspace {
     fn show_unknown_host_key_dialog(
         &mut self,
         challenge: Box<UnknownSshHostKeyChallenge>,
-        saved_id: String,
-        saved_name: String,
-        via_ssh: bool,
+        origin: super::HostKeyOrigin,
         cx: &mut Context<Self>,
     ) {
         // Defer to a pending slot so we can open the dialog with a Window on the
         // next frame (spawn_work callbacks may not have a window).
-        self.pending_unknown_host_key = Some(super::PendingUnknownHostKey {
-            challenge,
-            saved_id,
-            saved_name,
-            via_ssh,
-        });
+        self.pending_unknown_host_key = Some(super::PendingUnknownHostKey { challenge, origin });
         cx.notify();
     }
 
@@ -338,16 +339,12 @@ impl Workspace {
         let Some(pending) = self.pending_unknown_host_key.take() else {
             return;
         };
-        let super::PendingUnknownHostKey {
-            challenge,
-            saved_id,
-            saved_name,
-            via_ssh,
-        } = pending;
+        let super::PendingUnknownHostKey { challenge, origin } = pending;
         let host = challenge.host.clone();
         let fingerprint = challenge.fingerprint.clone();
         let body = unknown_host_key_body(&host, &fingerprint);
         let challenge_slot = std::sync::Arc::new(std::sync::Mutex::new(Some(challenge)));
+        let origin_slot = std::sync::Arc::new(std::sync::Mutex::new(Some(origin)));
         let this = cx.entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this_cancel = this.clone();
@@ -355,6 +352,9 @@ impl Workspace {
             let challenge_cancel = challenge_slot.clone();
             let challenge_accept = challenge_slot.clone();
             let challenge_enter = challenge_slot.clone();
+            let origin_cancel = origin_slot.clone();
+            let origin_accept = origin_slot.clone();
+            let origin_enter = origin_slot.clone();
             let this_enter = this.clone();
             alert
                 .title(unknown_host_key_title())
@@ -362,24 +362,21 @@ impl Workspace {
                 // Enter / Escape cancel (quit-style; Cancel is primary).
                 .on_ok(move |_, _, cx| {
                     reject_pending_host_key(&challenge_enter);
+                    let origin = take_host_key_origin(&origin_enter);
                     this_enter.update(cx, |workspace, cx| {
-                        workspace.handle_connect_failure(
-                            DbError::ssh("SSH host key was not accepted."),
-                            cx,
-                        );
+                        workspace.finish_host_key_reject(origin, cx);
                     });
                     true
                 })
                 .on_cancel({
                     let challenge_esc = challenge_slot.clone();
+                    let origin_esc = origin_slot.clone();
                     let this_esc = this.clone();
                     move |_, _, cx| {
                         reject_pending_host_key(&challenge_esc);
+                        let origin = take_host_key_origin(&origin_esc);
                         this_esc.update(cx, |workspace, cx| {
-                            workspace.handle_connect_failure(
-                                DbError::ssh("SSH host key was not accepted."),
-                                cx,
-                            );
+                            workspace.finish_host_key_reject(origin, cx);
                         });
                         true
                     }
@@ -392,18 +389,14 @@ impl Workspace {
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     reject_pending_host_key(&challenge_cancel);
+                                    let origin = take_host_key_origin(&origin_cancel);
                                     this_cancel.update(cx, |workspace, cx| {
-                                        workspace.handle_connect_failure(
-                                            DbError::ssh("SSH host key was not accepted."),
-                                            cx,
-                                        );
+                                        workspace.finish_host_key_reject(origin, cx);
                                     });
                                     window.close_dialog(cx);
                                 }),
                         )
-                        .child({
-                            let saved_id = saved_id.clone();
-                            let saved_name = saved_name.clone();
+                        .child(
                             Button::new("ssh-host-key-accept")
                                 .label("Accept & save")
                                 .on_click(move |_, window, cx| {
@@ -415,109 +408,160 @@ impl Workspace {
                                     else {
                                         return;
                                     };
-                                    let saved_id = saved_id.clone();
-                                    let saved_name = saved_name.clone();
+                                    let Some(origin) = take_host_key_origin(&origin_accept) else {
+                                        return;
+                                    };
                                     this_accept.update(cx, |workspace, cx| {
-                                        workspace.accept_unknown_host_key(
-                                            ch, saved_id, saved_name, via_ssh, cx,
-                                        );
+                                        workspace.accept_unknown_host_key(ch, origin, cx);
                                     });
-                                })
-                        }),
+                                }),
+                        ),
                 )
         });
+    }
+
+    /// Reject during Test only updates the form Test line; Connect rejects fail the connect.
+    fn finish_host_key_reject(
+        &mut self,
+        origin: Option<super::HostKeyOrigin>,
+        cx: &mut Context<Self>,
+    ) {
+        let is_test = origin.as_ref().is_some_and(|o| o.is_test());
+        match super::route_unknown_host_key(is_test, super::HostKeyDecision::Reject) {
+            super::HostKeyRoute::TestReject => {
+                let Some(super::HostKeyOrigin::Test {
+                    form, generation, ..
+                }) = origin
+                else {
+                    return;
+                };
+                if self.connection_test_generation != generation {
+                    return;
+                }
+                form.update(cx, |form, cx| {
+                    form.set_test_result(
+                        super::super::form::ssh::TestResult::Failure(
+                            "SSH host key was not accepted.".into(),
+                        ),
+                        cx,
+                    );
+                });
+            }
+            super::HostKeyRoute::ConnectReject => {
+                self.handle_connect_failure(DbError::ssh("SSH host key was not accepted."), cx);
+            }
+            super::HostKeyRoute::TestAccept | super::HostKeyRoute::ConnectAccept => {
+                unreachable!("Reject decision cannot route to Accept");
+            }
+        }
     }
 
     fn accept_unknown_host_key(
         &mut self,
         challenge: Box<UnknownSshHostKeyChallenge>,
-        saved_id: String,
-        saved_name: String,
-        via_ssh: bool,
+        origin: super::HostKeyOrigin,
         cx: &mut Context<Self>,
     ) {
-        // Test-connection path: Accept writes known_hosts and updates the Test line.
-        if let Some((form, generation, test_via_ssh)) = self.pending_test_after_host_key.take() {
-            let started = std::time::Instant::now();
-            cx.spawn(async move |this, async_cx| {
-                let result =
-                    sela_drivers::drive(async move { challenge.accept_and_remember().await }).await;
-                let ms = started.elapsed().as_millis() as u64;
-                this.update(async_cx, |workspace, cx| {
-                    if workspace.connection_test_generation != generation {
-                        return;
-                    }
-                    match result {
-                        Ok(session) => {
-                            drop(session);
-                            form.update(cx, |form, cx| {
-                                form.set_test_result(
-                                    super::super::form::ssh::TestResult::Success {
-                                        ms,
-                                        via_ssh: test_via_ssh,
-                                    },
-                                    cx,
-                                );
-                            });
+        match super::route_unknown_host_key(origin.is_test(), super::HostKeyDecision::Accept) {
+            super::HostKeyRoute::TestAccept => {
+                let super::HostKeyOrigin::Test {
+                    form,
+                    generation,
+                    via_ssh,
+                } = origin
+                else {
+                    return;
+                };
+                let started = std::time::Instant::now();
+                cx.spawn(async move |this, async_cx| {
+                    let result =
+                        sela_drivers::drive(async move { challenge.accept_and_remember().await })
+                            .await;
+                    let ms = started.elapsed().as_millis() as u64;
+                    this.update(async_cx, |workspace, cx| {
+                        if workspace.connection_test_generation != generation {
+                            return;
                         }
-                        Err(err) => {
-                            form.update(cx, |form, cx| {
-                                form.set_test_result(
-                                    super::super::form::ssh::TestResult::Failure(err.to_string()),
-                                    cx,
-                                );
-                            });
+                        match result {
+                            Ok(session) => {
+                                drop(session);
+                                form.update(cx, |form, cx| {
+                                    form.set_test_result(
+                                        super::super::form::ssh::TestResult::Success {
+                                            ms,
+                                            via_ssh,
+                                        },
+                                        cx,
+                                    );
+                                });
+                            }
+                            Err(err) => {
+                                form.update(cx, |form, cx| {
+                                    form.set_test_result(
+                                        super::super::form::ssh::TestResult::Failure(
+                                            err.to_string(),
+                                        ),
+                                        cx,
+                                    );
+                                });
+                            }
                         }
-                    }
+                    })
+                    .ok();
                 })
-                .ok();
-            })
-            .detach();
-            return;
+                .detach();
+            }
+            super::HostKeyRoute::ConnectAccept => {
+                let super::HostKeyOrigin::Connect {
+                    saved_id,
+                    saved_name,
+                    via_ssh,
+                } = origin
+                else {
+                    return;
+                };
+                let tab_id = self.tabs.active().map(|tab| tab.id);
+                self.spawn_work(
+                    tab_id,
+                    cx,
+                    |_| async move {
+                        let session = challenge.accept_and_remember().await?;
+                        let catalog = load_catalog(session.as_ref()).await?;
+                        Ok(ConnectSession::Ready {
+                            session: Arc::from(session),
+                            catalog,
+                        })
+                    },
+                    move |this, result, cx| match result {
+                        Ok(ConnectSession::Ready { session, catalog }) => {
+                            this.finish_successful_connect(
+                                session,
+                                catalog,
+                                &saved_id,
+                                &saved_name,
+                                via_ssh,
+                                cx,
+                            );
+                        }
+                        Ok(ConnectSession::UnknownHostKey(_)) => {
+                            this.handle_connect_failure(
+                                DbError::ssh("SSH host key challenge recurred unexpectedly."),
+                                cx,
+                            );
+                        }
+                        Err(err) => this.handle_connect_failure(err, cx),
+                    },
+                );
+            }
+            super::HostKeyRoute::TestReject | super::HostKeyRoute::ConnectReject => {
+                unreachable!("Accept decision cannot route to Reject");
+            }
         }
-        let tab_id = self.tabs.active().map(|tab| tab.id);
-        self.spawn_work(
-            tab_id,
-            cx,
-            |_| async move {
-                let session = challenge.accept_and_remember().await?;
-                let catalog = load_catalog(session.as_ref()).await?;
-                Ok(ConnectSession::Ready {
-                    session: Arc::from(session),
-                    catalog,
-                })
-            },
-            move |this, result, cx| match result {
-                Ok(ConnectSession::Ready { session, catalog }) => {
-                    this.finish_successful_connect(
-                        session,
-                        catalog,
-                        &saved_id,
-                        &saved_name,
-                        via_ssh,
-                        cx,
-                    );
-                }
-                Ok(ConnectSession::UnknownHostKey(_)) => {
-                    this.handle_connect_failure(
-                        DbError::ssh("SSH host key challenge recurred unexpectedly."),
-                        cx,
-                    );
-                }
-                Err(err) => this.handle_connect_failure(err, cx),
-            },
-        );
     }
 
     /// When a tunneled session's DB connection dies, surface SSH-11 copy.
     pub(super) fn note_possible_ssh_tunnel_drop(&mut self, err: &DbError, cx: &mut Context<Self>) {
-        if !self.session_via_ssh {
-            return;
-        }
-        if !matches!(
-            err,
-            DbError::Connection { .. } | DbError::Internal { .. } | DbError::Query { .. }
-        ) {
+        if !super::is_tunnel_drop(err, self.session_via_ssh) {
             return;
         }
         // Drop the DB session; tabs and pending edits stay (SSH-11).
@@ -873,14 +917,15 @@ impl Workspace {
                         });
                     }
                     Ok(ConnectOutcome::UnknownSshHostKey(challenge)) => {
-                        // Test path: stash challenge and open dialog on next paint.
+                        // Test path: origin carries the form; reject must not kill a live session.
                         workspace.pending_unknown_host_key = Some(super::PendingUnknownHostKey {
                             challenge,
-                            saved_id: String::new(),
-                            saved_name: String::new(),
-                            via_ssh,
+                            origin: super::HostKeyOrigin::Test {
+                                form,
+                                generation,
+                                via_ssh,
+                            },
                         });
-                        workspace.pending_test_after_host_key = Some((form, generation, via_ssh));
                         cx.notify();
                     }
                     Err(err) => {
@@ -1265,6 +1310,12 @@ fn reject_pending_host_key(
     }
 }
 
+fn take_host_key_origin(
+    slot: &std::sync::Arc<std::sync::Mutex<Option<super::HostKeyOrigin>>>,
+) -> Option<super::HostKeyOrigin> {
+    slot.lock().ok().and_then(|mut guard| guard.take())
+}
+
 async fn ensure_sample(path: &std::path::Path) -> Result<PathBuf, DbError> {
     if !path.exists() {
         create_sample_database(path).await?;
@@ -1395,5 +1446,49 @@ mod tests {
         let mut boot = Some("Connection failed".into());
         clear_connection_banner_sources(&mut boot, None);
         assert!(boot.is_none());
+    }
+
+    #[test]
+    fn is_tunnel_drop_matches_only_connection_and_ssh_when_via_ssh() {
+        use super::super::is_tunnel_drop;
+
+        let query = DbError::query("syntax error near SELECT");
+        let auth = DbError::auth("password authentication failed");
+        let connection = DbError::connection("connection reset");
+        let ssh = DbError::ssh("SSH tunnel closed");
+
+        // via_ssh = false: never a tunnel drop.
+        assert!(!is_tunnel_drop(&query, false));
+        assert!(!is_tunnel_drop(&auth, false));
+        assert!(!is_tunnel_drop(&connection, false));
+        assert!(!is_tunnel_drop(&ssh, false));
+
+        // via_ssh = true: only Connection and Ssh.
+        assert!(!is_tunnel_drop(&query, true));
+        assert!(!is_tunnel_drop(&auth, true));
+        assert!(is_tunnel_drop(&connection, true));
+        assert!(is_tunnel_drop(&ssh, true));
+    }
+
+    #[test]
+    fn route_unknown_host_key_covers_test_connect_accept_reject() {
+        use super::super::{route_unknown_host_key, HostKeyDecision, HostKeyRoute};
+
+        assert_eq!(
+            route_unknown_host_key(true, HostKeyDecision::Accept),
+            HostKeyRoute::TestAccept
+        );
+        assert_eq!(
+            route_unknown_host_key(true, HostKeyDecision::Reject),
+            HostKeyRoute::TestReject
+        );
+        assert_eq!(
+            route_unknown_host_key(false, HostKeyDecision::Accept),
+            HostKeyRoute::ConnectAccept
+        );
+        assert_eq!(
+            route_unknown_host_key(false, HostKeyDecision::Reject),
+            HostKeyRoute::ConnectReject
+        );
     }
 }

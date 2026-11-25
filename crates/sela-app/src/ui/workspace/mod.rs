@@ -68,23 +68,85 @@ pub(super) enum PendingCloseTabs {
     Disconnect,
 }
 
+/// Where a first-seen SSH host key challenge came from (SSH-18).
+pub(super) enum HostKeyOrigin {
+    /// Test connection: reject/accept must only touch the form Test line.
+    Test {
+        form: Entity<super::form::ConnectionForm>,
+        generation: u64,
+        via_ssh: bool,
+    },
+    /// Save & connect / sidebar connect: reject fails the connect; accept finishes it.
+    Connect {
+        saved_id: String,
+        saved_name: String,
+        via_ssh: bool,
+    },
+}
+
+impl HostKeyOrigin {
+    pub(super) fn is_test(&self) -> bool {
+        matches!(self, Self::Test { .. })
+    }
+}
+
 /// First-seen SSH host key waiting for Accept & save / Cancel (SSH-18).
 pub(super) struct PendingUnknownHostKey {
     pub(super) challenge: Box<sela_drivers::UnknownSshHostKeyChallenge>,
-    pub(super) saved_id: String,
-    pub(super) saved_name: String,
-    pub(super) via_ssh: bool,
+    pub(super) origin: HostKeyOrigin,
 }
 
 impl std::fmt::Debug for PendingUnknownHostKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingUnknownHostKey")
-            .field("saved_id", &self.saved_id)
-            .field("saved_name", &self.saved_name)
-            .field("via_ssh", &self.via_ssh)
+            .field("origin_is_test", &self.origin.is_test())
             .field("fingerprint", &self.challenge.fingerprint)
             .finish_non_exhaustive()
     }
+}
+
+/// Accept or reject a first-seen host key (SSH-18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostKeyDecision {
+    Accept,
+    Reject,
+}
+
+/// Where to route Accept / Reject for a first-seen host key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostKeyRoute {
+    /// Update the form Test line only; leave the live session alone.
+    TestReject,
+    /// Accept the key, then update the form Test line.
+    TestAccept,
+    /// Fail the connect attempt (do not touch an unrelated live session via Test).
+    ConnectReject,
+    /// Accept the key and finish connecting the workspace session.
+    ConnectAccept,
+}
+
+/// Pure routing for SSH-18 Accept / Reject × Test / Connect.
+pub(super) fn route_unknown_host_key(is_test: bool, decision: HostKeyDecision) -> HostKeyRoute {
+    match (is_test, decision) {
+        (true, HostKeyDecision::Reject) => HostKeyRoute::TestReject,
+        (true, HostKeyDecision::Accept) => HostKeyRoute::TestAccept,
+        (false, HostKeyDecision::Reject) => HostKeyRoute::ConnectReject,
+        (false, HostKeyDecision::Accept) => HostKeyRoute::ConnectAccept,
+    }
+}
+
+/// Whether a live SSH-tunneled session should be treated as dropped (SSH-11).
+///
+/// Only transport-class failures ([`DbError::Connection`], [`DbError::Ssh`]) count.
+/// Query typos and auth failures must not disconnect the user.
+pub(super) fn is_tunnel_drop(err: &sela_core::DbError, via_ssh: bool) -> bool {
+    if !via_ssh {
+        return false;
+    }
+    matches!(
+        err,
+        sela_core::DbError::Connection { .. } | sela_core::DbError::Ssh { .. }
+    )
 }
 
 pub struct Workspace {
@@ -151,8 +213,6 @@ pub struct Workspace {
     connection_form: Option<Entity<super::form::ConnectionForm>>,
     /// Generation of the in-flight Test (stale completions ignored).
     connection_test_generation: u64,
-    /// After Accept & save during Test: resume the Test result line.
-    pending_test_after_host_key: Option<(Entity<super::form::ConnectionForm>, u64, bool)>,
     /// Updated each frame from `window.window_decorations()` for the CSD title bar.
     client_decorations: bool,
     _subscriptions: Vec<Subscription>,
@@ -290,7 +350,6 @@ impl Workspace {
             pending_host_key_mismatch: None,
             connection_form: None,
             connection_test_generation: 0,
-            pending_test_after_host_key: None,
             client_decorations: false,
             _subscriptions: vec![
                 tree_events,

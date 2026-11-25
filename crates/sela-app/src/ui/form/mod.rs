@@ -127,6 +127,8 @@ pub struct ConnectionForm {
     /// Generation bumped when Test starts; stale completions are ignored.
     test_generation: u64,
     _import_url_subscription: Option<Subscription>,
+    /// Clears the Test line when any SSH/DB field changes (SSH-16).
+    _field_change_subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<FormEvent> for ConnectionForm {}
@@ -296,6 +298,7 @@ impl ConnectionForm {
             test_result: TestResult::Idle,
             test_generation: 0,
             _import_url_subscription: None,
+            _field_change_subscriptions: Vec::new(),
         }
     }
 
@@ -314,6 +317,39 @@ impl ConnectionForm {
                 }
             });
         self._import_url_subscription = Some(subscription);
+    }
+
+    /// SSH-16: any change to SSH or DB inputs clears the Test result line.
+    fn ensure_field_change_subscriptions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self._field_change_subscriptions.is_empty() {
+            return;
+        }
+        let fields = [
+            self.host.clone(),
+            self.port.clone(),
+            self.username.clone(),
+            self.database.clone(),
+            self.password.clone(),
+            self.file_path.clone(),
+            self.ca_path.clone(),
+            self.client_cert_path.clone(),
+            self.client_key_path.clone(),
+            self.ssh_host.clone(),
+            self.ssh_port.clone(),
+            self.ssh_user.clone(),
+            self.ssh_password.clone(),
+            self.ssh_private_key_path.clone(),
+            self.ssh_passphrase.clone(),
+        ];
+        for field in fields {
+            let subscription = cx.subscribe_in(&field, window, move |form, _, event, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    form.clear_test_result();
+                    cx.notify();
+                }
+            });
+            self._field_change_subscriptions.push(subscription);
+        }
     }
 
     fn value(input: &Entity<InputState>, cx: &gpui_kit::App) -> String {
@@ -687,7 +723,6 @@ impl ConnectionForm {
             other => panic!("unknown form field: {other}"),
         };
         Self::set_value(input, value.to_string(), window, cx);
-        self.clear_test_result();
     }
 
     #[cfg(test)]
@@ -715,6 +750,7 @@ impl Render for ConnectionForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
         self.ensure_import_url_subscription(window, cx);
+        self.ensure_field_change_subscriptions(window, cx);
         self.flush_pending_private_key_path(window, cx);
         let network = self.engine != Engine::Sqlite;
         let testing = self.is_testing();

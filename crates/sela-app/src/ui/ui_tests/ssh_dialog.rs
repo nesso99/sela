@@ -411,11 +411,14 @@ async fn ssh20_duplicate_copies_ssh_host_not_secrets(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// SSH-16: editing an SSH field clears the Test result line.
+/// SSH-16: typing into an SSH field clears the Test result via InputEvent::Change.
 #[gpui_kit::test]
 async fn ssh16_editing_ssh_field_clears_test_result(cx: &mut TestAppContext) {
     let (handle, host) = open_host(cx).await;
     cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Enable SSH so host/user/key fields exist, then seed a success line.
+        super::harness::click_in_dialog(window, "ssh-enabled", cx);
         window.render_frame(cx);
         let form = host.read(cx).form.clone();
         form.update(cx, |form, cx| {
@@ -430,8 +433,65 @@ async fn ssh16_editing_ssh_field_clears_test_result(cx: &mut TestAppContext) {
                 form.test_result_line().as_deref(),
                 Some("Connected in 12 ms (via SSH).")
             );
-            form.test_set_ssh_enabled(true, cx);
-            assert!(form.test_result_line().is_none());
+        });
+        window.render_frame(cx);
+        // Real keystrokes into ssh-host-input — not test_set_field.
+        super::harness::click_in_dialog(window, "ssh-host-input", cx);
+        window.input("bastion.example.com", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let form = host.read(cx).form.clone();
+        form.read_with(cx, |form, cx| {
+            assert_eq!(form.test_field("ssh_host", cx), "bastion.example.com");
+            assert!(
+                form.test_result_line().is_none(),
+                "typing SSH Host must clear the Test line"
+            );
+        });
+    })
+    .unwrap();
+}
+
+/// SSH-16: typing into a DB field also clears the Test result line.
+#[gpui_kit::test]
+async fn ssh16_editing_db_field_clears_test_result(cx: &mut TestAppContext) {
+    let (handle, host) = open_host(cx).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let form = host.read(cx).form.clone();
+        form.update(cx, |form, cx| {
+            form.set_test_result(
+                TestResult::Success {
+                    ms: 8,
+                    via_ssh: false,
+                },
+                cx,
+            );
+            assert_eq!(
+                form.test_result_line().as_deref(),
+                Some("Connected in 8 ms.")
+            );
+        });
+        window.render_frame(cx);
+        window.within("dialog").click("host-input", cx);
+        // Append a char (field may already hold a default host); Change still fires.
+        window.input("x", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let form = host.read(cx).form.clone();
+        form.read_with(cx, |form, _| {
+            assert!(
+                form.test_result_line().is_none(),
+                "typing DB Host must clear the Test line"
+            );
         });
     })
     .unwrap();
