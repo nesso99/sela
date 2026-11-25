@@ -10,7 +10,10 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, AnyElement, App, Context, Entity, Focusable as _, IntoElement, Window};
+use gpui_kit::{
+    div, px, AnyElement, App, Context, Entity, Focusable as _, IntoElement, TestSupportExt as _,
+    Window,
+};
 
 use sela_config::{ThemePreference, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use sela_core::{LoadedSchema, SafeMode};
@@ -561,6 +564,16 @@ impl Workspace {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn palette_is_open(&self) -> bool {
+        self.palette.as_ref().is_some_and(|p| p.open)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn palette_mode(&self) -> Option<PaletteMode> {
+        self.palette.as_ref().filter(|p| p.open).map(|p| p.mode)
+    }
+
     pub(super) fn open_palette(
         &mut self,
         mode: PaletteMode,
@@ -833,6 +846,7 @@ impl Workspace {
 
         div()
             .id("command-palette-root")
+            .test_support()
             .absolute()
             .inset_0()
             .flex()
@@ -840,17 +854,10 @@ impl Workspace {
             .justify_center()
             .pt(px(80.))
             .bg(gpui_kit::hsla(0., 0., 0., 0.35))
-            .on_mouse_down(gpui_kit::MouseButton::Left, {
-                let this = this.clone();
-                move |_, window, cx| {
-                    this.update(cx, |workspace, cx| {
-                        workspace.close_palette(window, cx);
-                    });
-                }
-            })
             .child(
                 div()
                     .id("command-palette")
+                    .test_support()
                     .key_context(PALETTE_KEY_CONTEXT)
                     .w(px(PALETTE_WIDTH))
                     .max_h(px(PALETTE_MAX_HEIGHT))
@@ -861,7 +868,17 @@ impl Workspace {
                     .rounded(px(6.))
                     .bg(cx.theme().background)
                     .shadow_md()
-                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, _| {})
+                    // Stop clicks on the panel (search, rows, header) from
+                    // reaching the backdrop / parent dismiss path (PAL-07).
+                    .occlude()
+                    .on_mouse_down_out({
+                        let this = this.clone();
+                        move |_, window, cx| {
+                            this.update(cx, |workspace, cx| {
+                                workspace.close_palette(window, cx);
+                            });
+                        }
+                    })
                     .on_action({
                         let this = this.clone();
                         move |_: &super::super::PaletteSelectUp, _, cx| {
@@ -909,6 +926,7 @@ impl Workspace {
                     .child(
                         v_flex()
                             .id("palette-list")
+                            .test_support()
                             .flex_1()
                             .min_h(px(0.))
                             .max_h(px(PALETTE_MAX_HEIGHT - 72.))
@@ -924,6 +942,7 @@ impl Workspace {
                                     let selected_row = ix == selected;
                                     div()
                                         .id(("palette-row", ix))
+                                        .test_support()
                                         .px_2()
                                         .py_1()
                                         .mx_1()

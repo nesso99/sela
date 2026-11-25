@@ -1,57 +1,637 @@
-//! M3-4 command palette / quick open headless UI tests (PAL-* / follow-ups).
+//! M3-4 command palette / quick open — drives the real Workspace + keybindings.
 
-use gpui_kit::component::button::Button;
-use gpui_kit::component::input::InputState;
+use std::path::PathBuf;
+use std::time::Duration;
+
 use gpui_kit::prelude::*;
-use gpui_kit::test::TestWindowExt;
-use gpui_kit::{div, px, size, Context, Entity, Focusable as _, NoAction, TestAppContext, Window};
+use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+use gpui_kit::{point, px, size, App, Entity, Keystroke, TestAppContext, Window};
+use tempfile::TempDir;
 
-use sela_core::{
-    ColumnStructure, Dialect, IndexInfo, LoadedSchema, RelationKind, TableInfo, TableStructure,
-    Value,
-};
+use sela_core::SafeMode;
+use sela_drivers::create_sample_database;
 
-use crate::ui::workspace::edit_session::{format_commit_failure, EditSession};
-use crate::ui::workspace::edit_ui::pending_bar_left_text;
-use crate::ui::workspace::palette::{
-    apply_query_edit, table_rows_from_catalog, visible_items, ActionContext, ActionEntry,
-    PaletteAction, PaletteMode, NO_TABLES_ROW, PALETTE_MAX_HEIGHT, PALETTE_WIDTH,
-};
-use crate::ui::{PreviewChanges, ToggleCommandPalette, ToggleQuickOpen};
+use crate::ui::workspace::palette::{PaletteMode, PALETTE_MAX_HEIGHT, PALETTE_WIDTH};
+use crate::ui::workspace::Workspace;
+use crate::ui::{Quit, ToggleCommandPalette, ToggleQuickOpen};
 
-fn books_catalog() -> Vec<LoadedSchema> {
-    vec![
-        LoadedSchema {
-            name: "public".into(),
-            tables: vec![
-                TableInfo {
-                    name: "books".into(),
-                    kind: RelationKind::Table,
-                },
-                TableInfo {
-                    name: "authors".into(),
-                    kind: RelationKind::Table,
-                },
-            ],
-        },
-        LoadedSchema {
-            name: "other".into(),
-            tables: vec![TableInfo {
-                name: "books".into(),
-                kind: RelationKind::Table,
-            }],
-        },
-    ]
+struct PaletteFixture {
+    _dir: TempDir,
+    db_path: PathBuf,
+    handle: gpui_kit::AnyWindowHandle,
+    workspace: Entity<Workspace>,
 }
 
-fn books_structure() -> TableStructure {
-    TableStructure {
-        schema: "public".into(),
+/// Seed sample SQLite off the GPUI test executor (sqlx/tokio cannot park there).
+fn seed_sample_db(path: &std::path::Path) {
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("seed runtime")
+            .block_on(create_sample_database(&path))
+    })
+    .join()
+    .expect("seed thread")
+    .expect("sample sqlite");
+}
+
+async fn open_fixture(cx: &mut TestAppContext) -> PaletteFixture {
+    // Real SQLite connect uses sela-drivers::drive (background tokio). Allow
+    // parking so the test scheduler accepts cross-thread wakeups.
+    cx.executor().allow_parking();
+    let dir = TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("sample.sqlite");
+    seed_sample_db(&db_path);
+    let dir_path = dir.path().to_path_buf();
+    let (handle, workspace) =
+        super::harness::open_window(cx, size(px(1180.), px(760.)), |window, cx| {
+            cx.new(|cx| Workspace::new_for_tests(&dir_path, window, cx))
+        });
+    let handle = handle.into();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let id = workspace.update(cx, |ws, cx| {
+            ws.test_seed_sqlite_connection("Sample", &db_path, cx)
+        });
+        workspace.update(cx, |ws, cx| ws.test_connect(id, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    wait_connected(cx, handle, &workspace).await;
+    // Key chords need a focus path into Workspace's on_action listeners.
+    focus_for_keys(cx, handle, &workspace);
+    PaletteFixture {
+        _dir: dir,
+        db_path,
+        handle,
+        workspace,
+    }
+}
+
+/// Give the window a focused SQL editor so global keymap actions dispatch.
+fn focus_for_keys(
+    cx: &mut TestAppContext,
+    handle: gpui_kit::AnyWindowHandle,
+    workspace: &Entity<Workspace>,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        workspace.update(cx, |ws, cx| {
+            ws.test_new_query_tab(window, cx);
+            ws.test_focus_sql_editor(window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+async fn wait_connected(
+    cx: &mut TestAppContext,
+    handle: gpui_kit::AnyWindowHandle,
+    workspace: &Entity<Workspace>,
+) {
+    cx.wait_for(handle, Duration::from_secs(8), |_, cx| {
+        workspace.read(cx).test_is_connected() && workspace.read(cx).test_catalog_table_count() > 0
+    })
+    .await;
+}
+
+fn press_secondary(window: &mut Window, chord: &str, cx: &mut App) {
+    window.press(chord, cx);
+}
+
+/// PAL-01: secondary-p opens; Escape closes; focus restored; size constants.
+#[gpui_kit::test]
+async fn pal01_open_escape_focus_restore(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    assert_eq!(PALETTE_WIDTH, 520.);
+    assert_eq!(PALETTE_MAX_HEIGHT, 420.);
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).test_editor_focused(window, cx),
+            "SQL editor should be focused before opening palette"
+        );
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(fix.workspace.read(cx).palette_is_open());
+        assert_eq!(
+            fix.workspace.read(cx).palette_mode(),
+            Some(PaletteMode::Tables)
+        );
+        assert!(window.try_find("command-palette").is_some());
+        assert!(window.try_find("palette-search").is_some());
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(!fix.workspace.read(cx).palette_is_open());
+        assert!(
+            fix.workspace.read(cx).test_editor_focused(window, cx),
+            "Escape must restore focus to the previous SQL editor"
+        );
+    })
+    .unwrap();
+}
+
+/// PAL-07: click outside closes; click on search keeps open; second chord toggles.
+#[gpui_kit::test]
+async fn pal07_click_outside_and_toggle(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(fix.workspace.read(cx).palette_is_open());
+        // Click on the search field must keep the palette open.
+        window.click("palette-search", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "click on search must not close (occlude / mouse_down_out)"
+        );
+        // Click outside the panel (top-left of the root backdrop).
+        window.click_at("command-palette-root", point(px(8.), px(8.)), cx);
+        window.render_frame(cx);
+        assert!(
+            !fix.workspace.read(cx).palette_is_open(),
+            "click outside must close"
+        );
+        // Second secondary-p toggles closed.
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(fix.workspace.read(cx).palette_is_open());
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(!fix.workspace.read(cx).palette_is_open());
+        // Cross-mode switch keeps surface open.
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert!(fix.workspace.read(cx).palette_is_open());
+        assert_eq!(
+            fix.workspace.read(cx).palette_mode(),
+            Some(PaletteMode::Actions)
+        );
+    })
+    .unwrap();
+}
+
+/// PAL-02: fuzzy filter + Enter opens/focuses Data tab (no duplicate).
+#[gpui_kit::test]
+async fn pal02_quick_open_focuses_existing_tab(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query("books", window, cx);
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!fix.workspace.read(cx).palette_is_open());
+        let tabs_after_first = fix.workspace.read(cx).test_tab_count();
+        assert!(tabs_after_first >= 1);
+        let opened = fix.workspace.read(cx).test_active_table();
+        assert!(
+            opened.as_ref().is_some_and(|(_, t)| t == "books"),
+            "expected books tab, got {opened:?}"
+        );
+        // Open the same table again — must focus, not duplicate.
+        // Refocus the SQL editor so Workspace stays on the key-dispatch path
+        // (DataTable focus alone can miss global palette chords in headless).
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_focus_sql_editor(window, cx);
+        });
+        window.render_frame(cx);
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query("books", window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            fix.workspace.read(cx).test_tab_count(),
+            tabs_after_first,
+            "opening an already-open table must not duplicate"
+        );
+    })
+    .unwrap();
+}
+
+/// PAL-03 + PAL-05: action mode runs a real action via keyboard.
+#[gpui_kit::test]
+async fn pal03_pal05_action_runs_toggle_theme(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    let before = cx
+        .update_window(fix.handle, |_, _, cx| {
+            fix.workspace.read(cx).test_theme_preference()
+        })
+        .unwrap();
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            fix.workspace.read(cx).palette_mode(),
+            Some(PaletteMode::Actions)
+        );
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query("Toggle theme", window, cx);
+        });
+        window.render_frame(cx);
+        window.press("down", cx);
+        window.press("up", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(!fix.workspace.read(cx).palette_is_open());
+        let after = fix.workspace.read(cx).test_theme_preference();
+        assert_ne!(before, after, "Toggle theme must change preference");
+    })
+    .unwrap();
+}
+
+/// PAL-06: dimmed Connect when already connected; Enter is a no-op.
+#[gpui_kit::test]
+async fn pal06_dimmed_connect_noop(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query("Connect", window, cx);
+        });
+        window.render_frame(cx);
+        let before_tabs = fix.workspace.read(cx).test_tab_count();
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "Enter on dimmed Connect must not close / run"
+        );
+        assert_eq!(fix.workspace.read(cx).test_tab_count(), before_tabs);
+        window.press("escape", cx);
+    })
+    .unwrap();
+}
+
+/// PAL-08: secondary-q → Quit; nothing binds secondary-space.
+#[gpui_kit::test]
+async fn pal08_reserved_chords(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let os = cx.platform_info().os;
+        let quit_bindings = window.bindings_for_action(&Quit);
+        assert!(
+            quit_bindings.iter().any(|b| {
+                b.keystrokes()
+                    .iter()
+                    .any(|k| k.unparse(os).ends_with("-q") || k.unparse(os) == "q")
+            }),
+            "secondary-q must map to Quit; got {:?}",
+            quit_bindings
+                .iter()
+                .map(|b| {
+                    b.keystrokes()
+                        .iter()
+                        .map(|k| k.unparse(os))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        );
+        let space = Keystroke::parse_with_os("secondary-space", os).expect("parse secondary-space");
+        let matches = cx.all_bindings_for_input(&[space]);
+        assert!(
+            matches.is_empty(),
+            "secondary-space must stay unbound; found {:?}",
+            matches
+                .iter()
+                .map(|b| b.action().name())
+                .collect::<Vec<_>>()
+        );
+        let _ = ToggleQuickOpen;
+        let _ = ToggleCommandPalette;
+    })
+    .unwrap();
+}
+
+/// PAL-09: disconnected / empty catalog shows muted empty row.
+#[gpui_kit::test]
+async fn pal09_empty_when_disconnected(cx: &mut TestAppContext) {
+    let dir = TempDir::new().expect("temp");
+    let dir_path = dir.path().to_path_buf();
+    let (handle, workspace) =
+        super::harness::open_window(cx, size(px(900.), px(700.)), |window, cx| {
+            cx.new(|cx| Workspace::new_for_tests(&dir_path, window, cx))
+        });
+    let handle = handle.into();
+    focus_for_keys(cx, handle, &workspace);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!workspace.read(cx).test_is_connected());
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(workspace.read(cx).palette_is_open());
+        assert!(window.try_find("command-palette").is_some());
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(
+            workspace.read(cx).palette_is_open(),
+            "empty hint is not runnable"
+        );
+        // focus_for_keys opens one query tab; empty hint must not open another.
+        assert_eq!(workspace.read(cx).test_tab_count(), 1);
+    })
+    .unwrap();
+}
+
+/// PAL-11: `>` switches table → action mode.
+#[gpui_kit::test]
+async fn pal11_gt_switches_to_actions(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query(">", window, cx);
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert_eq!(
+            fix.workspace.read(cx).palette_mode(),
+            Some(PaletteMode::Actions)
+        );
+    })
+    .unwrap();
+}
+
+/// Preview chord does not fire while a text input (palette search) has focus.
+#[gpui_kit::test]
+async fn preview_skipped_when_input_focused(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query("books", window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        fix.workspace
+            .update(cx, |ws, cx| ws.test_inject_pending_edit(cx));
+        window.render_frame(cx);
+        assert!(!fix.workspace.read(cx).test_preview_open());
+        // Focus a text input, then fire Preview.
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_focus_sql_editor(window, cx);
+        });
+        window.render_frame(cx);
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "action palette must open so search has focus"
+        );
+        // Search is focused on open; Preview must no-op while Input has focus.
+        press_secondary(window, "secondary-shift-v", cx);
+        window.render_frame(cx);
+        assert!(
+            !fix.workspace.read(cx).test_preview_open(),
+            "Preview must not run while palette search has focus"
+        );
+        assert!(fix.workspace.read(cx).palette_is_open());
+    })
+    .unwrap();
+}
+
+/// PAL-07: open connection dialog swallows palette chords.
+#[gpui_kit::test]
+async fn pal07_dialog_eats_palette_chords(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-connection", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.wait_for(fix.handle, Duration::from_secs(2), |window, _| {
+        window.try_find("dialog").is_some()
+    })
+    .await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(
+            !fix.workspace.read(cx).palette_is_open(),
+            "connection dialog must eat secondary-p"
+        );
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert!(!fix.workspace.read(cx).palette_is_open());
+    })
+    .unwrap();
+}
+
+/// PAL-12: Toggle safe mode cycles, persists, keeps pending, reconnects.
+#[gpui_kit::test]
+async fn pal12_toggle_safe_mode_cycle(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    let conn_id = cx
+        .update_window(fix.handle, |_, window, cx| {
+            window.render_frame(cx);
+            press_secondary(window, "secondary-p", cx);
+            window.render_frame(cx);
+            assert!(
+                fix.workspace.read(cx).palette_is_open(),
+                "palette must be open before setting query"
+            );
+            fix.workspace.update(cx, |ws, cx| {
+                ws.test_set_palette_query("books", window, cx);
+            });
+            window.render_frame(cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+            fix.workspace.read(cx).test_active_id().unwrap().to_string()
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        fix.workspace
+            .update(cx, |ws, cx| ws.test_inject_pending_edit(cx));
+        assert!(fix.workspace.read(cx).test_pending_dirty());
+        assert_eq!(
+            fix.workspace.read(cx).test_active_safe_mode(),
+            SafeMode::Off
+        );
+        // Off → Confirm
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_focus_sql_editor(window, cx);
+        });
+        window.render_frame(cx);
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query("Toggle safe mode", window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        // Label / in-memory value updates before reconnect finishes.
+        assert_eq!(
+            fix.workspace.read(cx).test_connection_safe_mode(&conn_id),
+            Some(SafeMode::Confirm)
+        );
+        assert_eq!(
+            fix.workspace.read(cx).test_active_safe_mode(),
+            SafeMode::Confirm
+        );
+        assert_eq!(
+            fix.workspace
+                .read(cx)
+                .test_safe_toolbar_segment()
+                .as_deref(),
+            Some("Safe: Confirm")
+        );
+        assert!(
+            fix.workspace.read(cx).test_pending_dirty(),
+            "pending edits must be kept across safe-mode toggle"
+        );
+        assert_eq!(
+            fix.workspace.read(cx).test_persisted_safe_mode(&conn_id),
+            Some(SafeMode::Confirm)
+        );
+    })
+    .unwrap();
+    wait_connected(cx, fix.handle, &fix.workspace).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(fix.workspace.read(cx).test_pending_dirty());
+        // Confirm → Read-only
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_focus_sql_editor(window, cx);
+        });
+        window.render_frame(cx);
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query("Toggle safe mode", window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            fix.workspace.read(cx).test_active_safe_mode(),
+            SafeMode::ReadOnly
+        );
+        assert_eq!(
+            fix.workspace
+                .read(cx)
+                .test_safe_toolbar_segment()
+                .as_deref(),
+            Some("Safe: Read-only")
+        );
+    })
+    .unwrap();
+    wait_connected(cx, fix.handle, &fix.workspace).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Read-only → Off
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_focus_sql_editor(window, cx);
+        });
+        window.render_frame(cx);
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "palette must be open before setting query"
+        );
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_palette_query("Toggle safe mode", window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            fix.workspace.read(cx).test_active_safe_mode(),
+            SafeMode::Off
+        );
+        assert!(fix.workspace.read(cx).test_pending_dirty());
+        let _ = &fix.db_path;
+    })
+    .unwrap();
+}
+
+/// Cancelled-commit pending-bar copy (carry-over from #112).
+#[gpui_kit::test]
+fn cancelled_commit_pending_bar_copy(_cx: &mut TestAppContext) {
+    use sela_core::{ColumnStructure, Dialect, IndexInfo, RelationKind, TableStructure, Value};
+
+    use crate::ui::workspace::edit_session::{format_commit_failure, EditSession};
+    use crate::ui::workspace::edit_ui::pending_bar_left_text;
+
+    let structure = TableStructure {
+        schema: "main".into(),
         table: "books".into(),
         columns: vec![
             ColumnStructure {
                 name: "id".into(),
-                type_name: "integer".into(),
+                type_name: "INTEGER".into(),
                 nullable: false,
                 default: None,
                 comment: None,
@@ -59,7 +639,7 @@ fn books_structure() -> TableStructure {
             },
             ColumnStructure {
                 name: "title".into(),
-                type_name: "text".into(),
+                type_name: "TEXT".into(),
                 nullable: true,
                 default: None,
                 comment: None,
@@ -75,493 +655,8 @@ fn books_structure() -> TableStructure {
         }],
         foreign_keys: vec![],
         ddl: String::new(),
-    }
-}
-
-/// Isolated palette surface driven like Workspace (PAL-01…PAL-11 fixtures).
-struct PaletteHost {
-    mode: PaletteMode,
-    action_entry: Option<ActionEntry>,
-    open: bool,
-    query: Entity<InputState>,
-    query_text: String,
-    selected: usize,
-    catalog: Vec<LoadedSchema>,
-    action_ctx: ActionContext,
-    last_opened_table: Option<(String, String)>,
-    last_action: Option<PaletteAction>,
-    preview_toggled: bool,
-    text_input_blocks_preview: bool,
-}
-
-impl PaletteHost {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search tables or type > for actions")
-        });
-        Self {
-            mode: PaletteMode::Tables,
-            action_entry: None,
-            open: false,
-            query,
-            query_text: String::new(),
-            selected: 0,
-            catalog: books_catalog(),
-            action_ctx: ActionContext {
-                connected: true,
-                sidebar_connection_id: Some("c1".into()),
-                live_connection_id: Some("c1".into()),
-                editor_has_sql: false,
-                query_busy: false,
-                has_exportable: false,
-                table_data_open: true,
-                read_only: false,
-                font_size: 13,
-                has_pending: true,
-                committing: false,
-                can_commit: true,
-            },
-            last_opened_table: None,
-            last_action: None,
-            preview_toggled: false,
-            text_input_blocks_preview: false,
-        }
-    }
-
-    fn items(&self) -> Vec<crate::ui::workspace::palette::PaletteItem> {
-        visible_items(
-            self.mode,
-            &self.query_text,
-            &self.catalog,
-            &std::collections::VecDeque::new(),
-            &std::collections::VecDeque::new(),
-            &self.action_ctx,
-        )
-        .into_iter()
-        .map(|(item, _)| item)
-        .collect()
-    }
-
-    fn open_mode(&mut self, mode: PaletteMode, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open && self.mode == mode {
-            self.open = false;
-            cx.notify();
-            return;
-        }
-        self.open = true;
-        self.mode = mode;
-        self.action_entry = if mode == PaletteMode::Actions {
-            Some(ActionEntry::Chord)
-        } else {
-            None
-        };
-        self.query_text.clear();
-        self.selected = 0;
-        self.query.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
-        self.query.read(cx).focus_handle(cx).focus(window, cx);
-        cx.notify();
-    }
-
-    fn sync_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.query.read(cx).value().to_string();
-        let (mode, entry, stored) = apply_query_edit(self.mode, self.action_entry, &text);
-        if mode == PaletteMode::Actions && self.mode == PaletteMode::Tables && text.starts_with('>')
-        {
-            self.query.update(cx, |input, cx| {
-                input.set_value(&stored, window, cx);
-            });
-        }
-        self.mode = mode;
-        self.action_entry = entry;
-        self.query_text = stored;
-        self.selected = 0;
-        cx.notify();
-    }
-
-    fn confirm(&mut self, cx: &mut Context<Self>) {
-        let items = self.items();
-        let Some(item) = items.get(self.selected) else {
-            return;
-        };
-        if !item.enabled() {
-            return;
-        }
-        match item {
-            crate::ui::workspace::palette::PaletteItem::Table(row) => {
-                self.last_opened_table = Some((row.schema.clone(), row.table.clone()));
-                self.open = false;
-            }
-            crate::ui::workspace::palette::PaletteItem::Action { action, .. } => {
-                self.last_action = Some(*action);
-                self.open = false;
-            }
-            crate::ui::workspace::palette::PaletteItem::EmptyHint(_) => {}
-        }
-        cx.notify();
-    }
-}
-
-impl Render for PaletteHost {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let this = cx.entity();
-        div()
-            .id("palette-host")
-            .size_full()
-            .relative()
-            .on_action({
-                let this = this.clone();
-                move |_: &ToggleQuickOpen, window, cx| {
-                    this.update(cx, |host, cx| {
-                        host.open_mode(PaletteMode::Tables, window, cx);
-                    });
-                }
-            })
-            .on_action({
-                let this = this.clone();
-                move |_: &ToggleCommandPalette, window, cx| {
-                    this.update(cx, |host, cx| {
-                        host.open_mode(PaletteMode::Actions, window, cx);
-                    });
-                }
-            })
-            .on_action({
-                let this = this.clone();
-                move |_: &PreviewChanges, _, cx| {
-                    this.update(cx, |host, cx| {
-                        if host.text_input_blocks_preview {
-                            return;
-                        }
-                        host.preview_toggled = true;
-                        cx.notify();
-                    });
-                }
-            })
-            .on_action(|_: &NoAction, _, _| {})
-            .child(Button::new("open-tables").label("Open tables").on_click({
-                let this = this.clone();
-                move |_, window, cx| {
-                    this.update(cx, |host, cx| {
-                        host.open_mode(PaletteMode::Tables, window, cx);
-                    });
-                }
-            }))
-            .child(Button::new("open-actions").label("Open actions").on_click({
-                let this = this.clone();
-                move |_, window, cx| {
-                    this.update(cx, |host, cx| {
-                        host.open_mode(PaletteMode::Actions, window, cx);
-                    });
-                }
-            }))
-            .child(Button::new("confirm-row").label("Confirm").on_click({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |host, cx| host.confirm(cx));
-                }
-            }))
-            .child(Button::new("sync-query").label("Sync").on_click({
-                let this = this.clone();
-                move |_, window, cx| {
-                    this.update(cx, |host, cx| host.sync_query(window, cx));
-                }
-            }))
-            .child(Button::new("preview-btn").label("Preview").on_click({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |host, cx| {
-                        if host.text_input_blocks_preview {
-                            return;
-                        }
-                        host.preview_toggled = true;
-                        cx.notify();
-                    });
-                }
-            }))
-            .when(self.open, |root| {
-                let items = self.items();
-                let mode = match self.mode {
-                    PaletteMode::Tables => "Tables",
-                    PaletteMode::Actions => "Actions",
-                };
-                root.child(
-                    div()
-                        .id("command-palette")
-                        .w(px(PALETTE_WIDTH))
-                        .max_h(px(PALETTE_MAX_HEIGHT))
-                        .child(div().id("palette-mode").child(mode))
-                        .child(
-                            gpui_kit::component::input::Input::new(&self.query)
-                                .id("palette-search"),
-                        )
-                        .children(items.into_iter().enumerate().map(|(ix, item)| {
-                            div().id(("palette-row", ix)).child(item.label()).when_some(
-                                item.right_label(),
-                                |row, right| {
-                                    row.child(div().id(("palette-reason", ix)).child(right))
-                                },
-                            )
-                        })),
-                )
-            })
-            .child(
-                div()
-                    .id("opened-table")
-                    .child(format!("{:?}", self.last_opened_table)),
-            )
-            .child(
-                div()
-                    .id("last-action")
-                    .child(format!("{:?}", self.last_action)),
-            )
-            .child(
-                div()
-                    .id("preview-flag")
-                    .child(if self.preview_toggled { "1" } else { "0" }),
-            )
-    }
-}
-
-/// PAL-01: open table mode; Escape / toggle closes. Overlay size constants.
-#[gpui_kit::test]
-fn pal01_open_escape_and_size(cx: &mut TestAppContext) {
-    let (handle, host) = super::harness::open_window(cx, size(px(900.), px(700.)), |window, cx| {
-        cx.new(|cx| PaletteHost::new(window, cx))
-    });
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("open-tables", cx);
-        window.render_frame(cx);
-        assert!(host.read(cx).open);
-        assert_eq!(host.read(cx).mode, PaletteMode::Tables);
-        assert!(
-            !host.read(cx).items().is_empty(),
-            "open table mode must list catalog rows"
-        );
-        assert_eq!(PALETTE_WIDTH, 520.);
-        assert_eq!(PALETTE_MAX_HEIGHT, 420.);
-        // Second secondary-p toggles closed.
-        window.click("open-tables", cx);
-        window.render_frame(cx);
-        assert!(!host.read(cx).open);
-    })
-    .unwrap();
-}
-
-/// PAL-02 + PAL-10: filter tables; confirm opens schema.table; duplicates disambiguated.
-#[gpui_kit::test]
-fn pal02_pal10_quick_open_table(cx: &mut TestAppContext) {
-    let (handle, host) = super::harness::open_window(cx, size(px(900.), px(700.)), |window, cx| {
-        cx.new(|cx| PaletteHost::new(window, cx))
-    });
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let rows = table_rows_from_catalog(&host.read(cx).catalog);
-        assert!(rows
-            .iter()
-            .any(|r| r.disambiguator.as_deref() == Some("public")));
-        assert!(rows
-            .iter()
-            .any(|r| r.disambiguator.as_deref() == Some("other")));
-        window.click("open-tables", cx);
-        window.render_frame(cx);
-        window.click("palette-search", cx);
-        window.input("authors", cx);
-        window.click("sync-query", cx);
-        window.render_frame(cx);
-        let labels: Vec<_> = host.read(cx).items().iter().map(|i| i.label()).collect();
-        assert!(labels.iter().any(|l| l.contains("authors")));
-        window.click("confirm-row", cx);
-        window.render_frame(cx);
-        assert_eq!(
-            host.read(cx)
-                .last_opened_table
-                .as_ref()
-                .map(|t| t.1.as_str()),
-            Some("authors")
-        );
-        assert!(!host.read(cx).open);
-    })
-    .unwrap();
-}
-
-/// PAL-03 + PAL-06: action list includes primaries; dimmed reasons; Enter on dimmed is no-op.
-#[gpui_kit::test]
-fn pal03_pal06_actions_and_dimmed(cx: &mut TestAppContext) {
-    let (handle, host) = super::harness::open_window(cx, size(px(900.), px(700.)), |window, cx| {
-        cx.new(|cx| PaletteHost::new(window, cx))
-    });
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("open-actions", cx);
-        window.render_frame(cx);
-        let items = host.read(cx).items();
-        let labels: Vec<_> = items.iter().map(|i| i.label()).collect();
-        for need in [
-            "New connection",
-            "Connect",
-            "Disconnect",
-            "New query tab",
-            "Run query",
-            "Refresh schema",
-            "Export…",
-            "Import CSV…",
-            "Toggle theme",
-            "Font bigger",
-            "Font smaller",
-            "Toggle safe mode",
-            "Quit",
-            "Preview SQL",
-            "Commit",
-            "Discard",
-            "Stop",
-            "Toggle filter",
-            "Toggle history",
-        ] {
-            assert!(labels.iter().any(|l| l == need), "missing {need}");
-        }
-        let connect = items
-            .iter()
-            .find(|i| i.label() == "Connect")
-            .expect("Connect");
-        assert!(!connect.enabled());
-        assert_eq!(connect.right_label().as_deref(), Some("Already connected"));
-        let export = items
-            .iter()
-            .find(|i| i.label() == "Export…")
-            .expect("Export");
-        assert_eq!(export.right_label().as_deref(), Some("Nothing to export"));
-        // Enter on dimmed Connect does nothing.
-        host.update(cx, |host, cx| {
-            host.selected = items.iter().position(|i| i.label() == "Connect").unwrap();
-            host.confirm(cx);
-        });
-        assert!(host.read(cx).open);
-        assert!(host.read(cx).last_action.is_none());
-        // Enabled New connection runs.
-        host.update(cx, |host, cx| {
-            host.selected = items
-                .iter()
-                .position(|i| i.label() == "New connection")
-                .unwrap();
-            host.confirm(cx);
-        });
-        assert_eq!(
-            host.read(cx).last_action,
-            Some(PaletteAction::NewConnection)
-        );
-        assert!(!host.read(cx).open);
-    })
-    .unwrap();
-}
-
-/// PAL-05 / PAL-07 / PAL-11: keyboard filter, mode switch via `>`, chord switches mode.
-#[gpui_kit::test]
-fn pal05_pal07_pal11_keyboard_and_mode_switch(cx: &mut TestAppContext) {
-    let (handle, host) = super::harness::open_window(cx, size(px(900.), px(700.)), |window, cx| {
-        cx.new(|cx| PaletteHost::new(window, cx))
-    });
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("open-tables", cx);
-        window.render_frame(cx);
-        window.click("palette-search", cx);
-        window.input(">", cx);
-        window.click("sync-query", cx);
-        window.render_frame(cx);
-        assert_eq!(host.read(cx).mode, PaletteMode::Actions);
-        assert_eq!(host.read(cx).query_text, "");
-        // Switch to tables chord while open keeps surface open.
-        window.click("open-tables", cx);
-        window.render_frame(cx);
-        assert!(host.read(cx).open);
-        assert_eq!(host.read(cx).mode, PaletteMode::Tables);
-        // Action chord while open switches to actions.
-        window.click("open-actions", cx);
-        window.render_frame(cx);
-        assert!(host.read(cx).open);
-        assert_eq!(host.read(cx).mode, PaletteMode::Actions);
-        // Second action chord closes.
-        window.click("open-actions", cx);
-        window.render_frame(cx);
-        assert!(!host.read(cx).open);
-    })
-    .unwrap();
-}
-
-/// PAL-08: reserved chords are not palette bindings (constants / keymap shape).
-#[gpui_kit::test]
-fn pal08_reserved_chords_not_stolen(cx: &mut TestAppContext) {
-    let (_handle, _host) =
-        super::harness::open_window(cx, size(px(700.), px(400.)), |window, cx| {
-            cx.new(|cx| PaletteHost::new(window, cx))
-        });
-    // Palette owns secondary-p / secondary-shift-p only. Quit / space stay elsewhere.
-    // Asserted by action types existing alongside Quit (bound in install_sela_keybindings).
-    let _ = ToggleQuickOpen;
-    let _ = ToggleCommandPalette;
-    let _ = crate::ui::Quit;
-}
-
-/// PAL-09: empty catalog shows muted empty row.
-#[gpui_kit::test]
-fn pal09_empty_schema_row(cx: &mut TestAppContext) {
-    let (handle, host) = super::harness::open_window(cx, size(px(900.), px(700.)), |window, cx| {
-        cx.new(|cx| PaletteHost::new(window, cx))
-    });
-    cx.update_window(handle.into(), |_, window, cx| {
-        host.update(cx, |host, _| {
-            host.catalog.clear();
-            host.action_ctx.connected = false;
-        });
-        window.click("open-tables", cx);
-        window.render_frame(cx);
-        let items = host.read(cx).items();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].label(), NO_TABLES_ROW);
-        assert!(!items[0].enabled());
-        host.update(cx, |host, cx| host.confirm(cx));
-        assert!(host.read(cx).open);
-        assert!(host.read(cx).last_opened_table.is_none());
-    })
-    .unwrap();
-}
-
-/// Preview chord must not fire while a text input has focus (paste).
-#[gpui_kit::test]
-fn preview_blocked_when_text_input_focused(cx: &mut TestAppContext) {
-    let (handle, host) = super::harness::open_window(cx, size(px(900.), px(700.)), |window, cx| {
-        cx.new(|cx| PaletteHost::new(window, cx))
-    });
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        host.update(cx, |host, _| {
-            host.text_input_blocks_preview = true;
-        });
-        window.click("preview-btn", cx);
-        window.render_frame(cx);
-        assert!(
-            !host.read(cx).preview_toggled,
-            "Preview must not run while a text input has focus"
-        );
-        host.update(cx, |host, _| {
-            host.text_input_blocks_preview = false;
-        });
-        window.click("preview-btn", cx);
-        window.render_frame(cx);
-        assert!(host.read(cx).preview_toggled);
-        // Action type stays registered for the DataTable keybinding path.
-        let _ = PreviewChanges;
-    })
-    .unwrap();
-}
-
-/// Cancelled commit pending-bar copy (carry-over from #112).
-#[gpui_kit::test]
-fn cancelled_commit_pending_bar_copy(_cx: &mut TestAppContext) {
-    let mut edit =
-        EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+    };
+    let mut edit = EditSession::from_structure(&structure, Dialect::Sqlite, RelationKind::Table);
     let pk = vec![Value::Int(1)];
     edit.changeset
         .as_mut()
@@ -573,11 +668,7 @@ fn cancelled_commit_pending_bar_copy(_cx: &mut TestAppContext) {
     let (_banner, status) = format_commit_failure(&err, 1);
     assert_eq!(status, "Commit cancelled. No changes were saved.");
     assert!(edit.note_commit_failure(gen, false, true));
-    let counts = edit.pending_counts();
-    let left = pending_bar_left_text(&edit, &counts);
-    assert!(
-        left.contains("Commit cancelled. No changes were saved."),
-        "pending bar left={left}"
-    );
+    let left = pending_bar_left_text(&edit, &edit.pending_counts());
+    assert!(left.contains("Commit cancelled. No changes were saved."));
     assert!(!left.contains("Commit failed"));
 }

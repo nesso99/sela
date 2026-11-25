@@ -36,12 +36,16 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     div, px, App, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window,
 };
+#[cfg(test)]
+use gpui_kit::Focusable as _;
 
 use super::decorations::{should_show_client_title_bar, should_suppress_title_bar_window_menu};
 
+#[cfg(test)]
+use sela_config::MemorySecretStore;
 use sela_config::{
     warn_if_mock_credential_store, CachingSecrets, ConfigStore, HistoryStore, KeyringStore,
-    SavedConnection, SettingsStore, TabStore, ThemePreference,
+    SavedConnection, SecretStore, SettingsStore, TabStore, ThemePreference,
 };
 use sela_core::{
     CopyFormat, DatabaseSession, HistoryEntry, HistoryOutcome, LoadedSchema, TabId, TabList,
@@ -80,7 +84,7 @@ pub struct Workspace {
     /// True when the status menu may offer System (window appearance available).
     system_theme_available: bool,
     result_strip_focus: FocusHandle,
-    secrets: CachingSecrets<KeyringStore>,
+    secrets: CachingSecrets<Box<dyn SecretStore>>,
     connections: Vec<SavedConnection>,
     active_id: Option<String>,
     session: Option<Arc<dyn DatabaseSession>>,
@@ -148,16 +152,64 @@ pub(super) enum TablePane {
     Structure,
 }
 
+/// Paths and secret store for a Workspace (production defaults or temp test dirs).
+pub(crate) struct WorkspacePaths {
+    pub connections: std::path::PathBuf,
+    pub tabs: std::path::PathBuf,
+    pub settings: std::path::PathBuf,
+    pub history: std::path::PathBuf,
+}
+
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let store = ConfigStore::with_path(ConfigStore::default_path());
-        let tab_store = TabStore::with_path(TabStore::default_path());
+        warn_if_mock_credential_store();
+        Self::new_with(
+            WorkspacePaths {
+                connections: ConfigStore::default_path(),
+                tabs: TabStore::default_path(),
+                settings: SettingsStore::default_path(),
+                history: HistoryStore::default_path(),
+            },
+            Box::new(KeyringStore),
+            window,
+            cx,
+        )
+    }
+
+    /// Headless UI tests: temp config dirs + in-memory secrets (no OS keychain).
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(
+        dir: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with(
+            WorkspacePaths {
+                connections: dir.join("connections.json"),
+                tabs: dir.join("tabs.json"),
+                settings: dir.join("settings.json"),
+                history: dir.join("history.sqlite"),
+            },
+            Box::new(MemorySecretStore::default()),
+            window,
+            cx,
+        )
+    }
+
+    fn new_with(
+        paths: WorkspacePaths,
+        secrets: Box<dyn SecretStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let store = ConfigStore::with_path(paths.connections);
+        let tab_store = TabStore::with_path(paths.tabs);
         let (connections, boot_error) = match store.load() {
             Ok(connections) => (connections, None),
             Err(err) => (Vec::new(), Some(err.to_string())),
         };
         let (history_store, history_reset_notice, history_panel_error) =
-            match HistoryStore::open_default() {
+            match HistoryStore::open(&paths.history) {
                 Ok(open) => (Some(Arc::new(open.store)), open.was_reset, None),
                 Err(err) => (None, false, Some(err.to_string())),
             };
@@ -195,15 +247,12 @@ impl Workspace {
                     _ => {}
                 }
             });
-        let settings = SettingsStore::with_path(SettingsStore::default_path());
+        let settings = SettingsStore::with_path(paths.settings);
         let app_settings = settings.load();
         let theme_preference = app_settings.theme;
         let font_size = app_settings.font_size;
         let system_theme_available = super::theme::system_appearance_available(window);
         super::theme::install_sela_themes(theme_preference, font_size, Some(window), cx);
-        // keyring v3 falls back to an in-process mock when no platform feature
-        // is enabled; fail loudly so passwords are not silently non-persistent.
-        warn_if_mock_credential_store();
         // Follow OS appearance only while the preference is System.
         let this = cx.weak_entity();
         let appearance = window.observe_window_appearance(move |window, cx| {
@@ -225,7 +274,7 @@ impl Workspace {
             font_size,
             system_theme_available,
             result_strip_focus: cx.focus_handle(),
-            secrets: CachingSecrets::new(KeyringStore),
+            secrets: CachingSecrets::new(secrets),
             connections,
             active_id: None,
             session: None,
@@ -297,6 +346,201 @@ impl Workspace {
         self.active_id
             .as_ref()
             .and_then(|id| self.connections.iter().find(|item| &item.id == id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_safe_mode(&self) -> sela_core::SafeMode {
+        self.active_safe_mode()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_id(&self) -> Option<&str> {
+        self.active_id.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_is_connected(&self) -> bool {
+        self.session.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_catalog_table_count(&self) -> usize {
+        self.catalog.iter().map(|s| s.tables.len()).sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_table(&self) -> Option<(String, String)> {
+        match &self.active_view()?.source {
+            GridSource::Table { schema, table, .. } => Some((schema.clone(), table.clone())),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_pending_dirty(&self) -> bool {
+        self.active_view()
+            .and_then(|v| v.edit.as_ref())
+            .is_some_and(|e| e.is_dirty())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_theme_preference(&self) -> ThemePreference {
+        self.theme_preference
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_new_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_query_tab(window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_focus_sql_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.active_view() else {
+            return;
+        };
+        view.sql.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_editor_focused(&self, window: &Window, cx: &App) -> bool {
+        self.editor_field_focused(window, cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_preview_open(&self) -> bool {
+        self.active_view()
+            .and_then(|v| v.edit.as_ref())
+            .is_some_and(|e| e.preview_open)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_safe_toolbar_segment(&self) -> Option<String> {
+        self.active_connection()
+            .map(|c| c.safe_mode.toolbar_segment())
+    }
+
+    /// Set the palette search text and run the same sync path as InputEvent::Change.
+    #[cfg(test)]
+    pub(crate) fn test_set_palette_query(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(palette) = self.palette.as_ref() else {
+            return;
+        };
+        let query = palette.query.clone();
+        query.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+        });
+        self.sync_palette_query(window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_seed_sqlite_connection(
+        &mut self,
+        name: &str,
+        file_path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let mut connection = SavedConnection::new(sela_core::Engine::Sqlite);
+        connection.name = name.into();
+        connection.file_path = file_path.display().to_string();
+        connection.host.clear();
+        let id = connection.id.clone();
+        self.connections.push(connection);
+        let _ = self.store.save(&self.connections);
+        self.selected_connection_id = Some(id.clone());
+        self.rebuild_tree(cx);
+        id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_connect(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.connect_id(id, Some(window), cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_inject_pending_edit(&mut self, cx: &mut Context<Self>) {
+        use sela_core::{ColumnStructure, Dialect, IndexInfo, RelationKind, TableStructure, Value};
+        let Some(view) = self.active_view_mut() else {
+            return;
+        };
+        let structure = TableStructure {
+            schema: "main".into(),
+            table: "books".into(),
+            columns: vec![
+                ColumnStructure {
+                    name: "id".into(),
+                    type_name: "INTEGER".into(),
+                    nullable: false,
+                    default: None,
+                    comment: None,
+                    generated: false,
+                },
+                ColumnStructure {
+                    name: "title".into(),
+                    type_name: "TEXT".into(),
+                    nullable: true,
+                    default: None,
+                    comment: None,
+                    generated: false,
+                },
+            ],
+            indexes: vec![IndexInfo {
+                name: "books_pkey".into(),
+                columns: vec!["id".into()],
+                unique: true,
+                primary: true,
+                definition: None,
+            }],
+            foreign_keys: vec![],
+            ddl: String::new(),
+        };
+        let mut edit = edit_session::EditSession::from_structure(
+            &structure,
+            Dialect::Sqlite,
+            RelationKind::Table,
+        );
+        let pk = vec![Value::Int(1)];
+        let _ = edit.changeset.as_mut().unwrap().set_cell(
+            &pk,
+            "title",
+            Value::text("a"),
+            Value::text("b"),
+        );
+        view.edit = Some(edit);
+        view.source = GridSource::Table {
+            schema: "main".into(),
+            table: "books".into(),
+            kind: RelationKind::Table,
+        };
+        view.table_pane = TablePane::Data;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_connection_safe_mode(&self, id: &str) -> Option<sela_core::SafeMode> {
+        self.connections
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.safe_mode)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_persisted_safe_mode(&self, id: &str) -> Option<sela_core::SafeMode> {
+        self.store
+            .load()
+            .ok()?
+            .into_iter()
+            .find(|c| c.id == id)
+            .map(|c| c.safe_mode)
     }
 
     /// Connection the sidebar Edit / Delete buttons should target: the tree
