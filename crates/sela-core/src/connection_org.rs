@@ -70,8 +70,9 @@ pub fn next_duplicate_name<'a>(
 ///
 /// Copies engine, host, port, user, database, file, TLS, record_history, color,
 /// label, group, and safe mode. Assigns a new id and [`next_duplicate_name`].
-/// Sets [`SavedConnection::needs_password`] so connect asks for a secret (the
-/// password is never copied and no keychain item is written).
+/// Sets [`SavedConnection::needs_password`] when the engine uses a password so
+/// connect asks for a secret (the password is never copied and no keychain item
+/// is written). SQLite and any engine without a password field stay false.
 pub fn duplicate_connection(
     source: &SavedConnection,
     existing_names: impl IntoIterator<Item = impl AsRef<str>>,
@@ -83,8 +84,18 @@ pub fn duplicate_connection(
     let mut copy = source.clone();
     copy.id = uuid::Uuid::new_v4().to_string();
     copy.name = next_duplicate_name(&source.name, names.iter().map(|s| s.as_str()));
-    copy.needs_password = true;
+    copy.needs_password = source.engine.uses_password();
     copy
+}
+
+/// Status line after Duplicate. Only engines with a password field ask the user
+/// to type one; SQLite gets a short confirmation.
+pub fn duplicate_status_message(name: &str, needs_password: bool) -> String {
+    if needs_password {
+        format!("Duplicated {name}. Type the password to connect.")
+    } else {
+        format!("Duplicated {name}.")
+    }
 }
 
 /// Distinct non-empty group names in file order (first appearance).
@@ -207,6 +218,29 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_sqlite_never_sets_needs_password() {
+        let mut source = SavedConnection::new(Engine::Sqlite);
+        source.name = "SQLite QA".into();
+        source.file_path = "/tmp/qa.sqlite".into();
+        let copy = duplicate_connection(&source, ["SQLite QA"]);
+        assert_eq!(copy.name, "SQLite QA copy");
+        assert!(!copy.needs_password);
+        assert!(!copy.should_prompt_for_password(None));
+        assert_eq!(
+            duplicate_status_message(&copy.name, copy.needs_password),
+            "Duplicated SQLite QA copy."
+        );
+    }
+
+    #[test]
+    fn duplicate_mysql_sets_needs_password() {
+        let source = SavedConnection::new(Engine::Mysql);
+        let copy = duplicate_connection(&source, ["x"]);
+        assert!(copy.needs_password);
+        assert!(copy.should_prompt_for_password(None));
+    }
+
+    #[test]
     fn duplicate_still_prompts_when_secret_absent() {
         let source = SavedConnection::new(Engine::Postgres);
         let copy = duplicate_connection(&source, ["x"]);
@@ -219,10 +253,20 @@ mod tests {
     fn duplicate_status_sentence() {
         // docs/design/ux/01-main-window.md — shown on the tab status or
         // workspace status when no tab is open.
-        let name = "Red Prod";
         assert_eq!(
-            format!("Duplicated {name}. Type the password to connect."),
+            duplicate_status_message("Red Prod", true),
             "Duplicated Red Prod. Type the password to connect."
         );
+        assert_eq!(
+            duplicate_status_message("Local file", false),
+            "Duplicated Local file."
+        );
+    }
+
+    #[test]
+    fn engine_uses_password_matches_dialog_fields() {
+        assert!(Engine::Postgres.uses_password());
+        assert!(Engine::Mysql.uses_password());
+        assert!(!Engine::Sqlite.uses_password());
     }
 }

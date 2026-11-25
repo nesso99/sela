@@ -12,7 +12,7 @@ Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). Where the plat
 
 | Region | Size | Where it is set today | Resize |
 | --- | --- | --- | --- |
-| SSD menu row | 32px, Linux and Windows, server decorations only | `workspace/mod.rs` `menu_bar_row`, `h(px(32.))` | Fixed. File menu only. Not drawn when the client title bar is shown. |
+| SSD menu row | 32px, Linux and Windows, server decorations only | `workspace/mod.rs` `menu_bar_row`, `h(px(32.))` | Fixed. File `DropdownMenu` only. Not drawn when the client title bar is shown. |
 | Client title bar | 34px | gpui-component `TitleBar` (`TITLE_BAR_HEIGHT`) | Fixed. Only when `Decorations::Client`. It replaces the 32px menu row. See [Client-side title bar](#client-side-title-bar). |
 | Sidebar | 292px default | `sidebar.rs`, `w(px(292.))`, `flex_shrink_0` | Drag the right edge. Min 200, max 480. Double-click returns to 292. |
 | Tab bar | 28px | `tabs.rs` `TabBar`, no explicit height | Fixed. |
@@ -224,7 +224,7 @@ M2-5, with the dialog fields in [05-connection-dialog.md](./05-connection-dialog
 
 Groups are one level. The sidebar keeps file order. Connections with an empty group stay a flat list at the top, in the order they have today. Each non-empty group is a parent row after that, in the order its first member appears in the file. Members stay in file order under the parent. A group row shows the group name and a disclosure triangle. It is not a connection: clicking it expands or collapses, and it does not connect. Empty groups are not shown. There is no nested group.
 
-Duplicate is a ghost `xsmall` button between Edit and Delete, enabled when Edit is enabled. No shortcut (`secondary-d` is duplicate-row on the grid). It saves a new connection immediately and does not connect and does not open the dialog. The name is `{name} copy`, then `{name} copy 2`, and so on. The new id is new. Engine, host, port, user, database, file, TLS, `record_history`, color, label, group, and safe mode are copied. The password is not copied, and no keychain item is written for the new id. The copy is saved with `needs_password: true` (omitted when false; old files load as false) so connect asks for a password; Save and a successful connect clear that flag. Status: `Duplicated {name}. Type the password to connect.` When no tab is open, that sentence is shown as the workspace status line above the empty pane. Connecting the copy opens the connection dialog so the password can be typed.
+Duplicate is a ghost `xsmall` button between Edit and Delete, enabled when Edit is enabled. No shortcut (`secondary-d` is duplicate-row on the grid). It saves a new connection immediately and does not connect and does not open the dialog. The name is `{name} copy`, then `{name} copy 2`, and so on. The new id is new. Engine, host, port, user, database, file, TLS, `record_history`, color, label, group, and safe mode are copied. The password is not copied, and no keychain item is written for the new id. For engines with a password field (PostgreSQL, MySQL), the copy is saved with `needs_password: true` (omitted when false; old files load as false) so connect asks for a password; Save and a successful connect clear that flag. SQLite (and any engine without a password field) keeps `needs_password` false and connects without opening Edit. Status: `Duplicated {name}. Type the password to connect.` when a password is required, otherwise `Duplicated {name}.` When no tab is open, that sentence is shown as the workspace status line above the empty pane. Connecting a password-engine copy opens the connection dialog so the password can be typed.
 
 ## Client-side title bar
 
@@ -236,7 +236,7 @@ On client decorations, do not draw that 32px row. `client_title_bar` renders gpu
 
 | Piece | As built |
 | --- | --- |
-| File menu | A child of `TitleBar`, on the leading side, Linux and Windows only (`AppMenuBar`). macOS keeps the native app menu and passes no menu child. |
+| File menu | A child of `TitleBar`, on the leading side, Linux and Windows only (File `DropdownMenu` anchored to the label). macOS keeps the native app menu and passes no menu child. |
 | Title | The text `Sela`, the next child, in the same leading group. Not centered. |
 | Window controls | Kit `WindowControls`, on the trailing side. Order is minimize, then maximize or restore, then close. Close is the outermost control. Each hit target is 34×34. |
 | Drag | The bar is `WindowControlArea::Drag`. A left-button move calls `start_window_move` unless the press called `prevent_default`. The File menu and the window controls do that, so clicking them does not drag. The title text does drag. |

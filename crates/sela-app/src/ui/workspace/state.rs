@@ -14,8 +14,8 @@ use sela_config::{
     SavedConnection,
 };
 use sela_core::{
-    count_tabs_requiring_close_confirm, duplicate_connection, DatabaseSession, DbError, Engine,
-    LoadedSchema,
+    count_tabs_requiring_close_confirm, duplicate_connection, duplicate_status_message,
+    DatabaseSession, DbError, Engine, LoadedSchema,
 };
 use sela_drivers::{connect, create_sample_database, load_catalog};
 
@@ -429,6 +429,12 @@ impl Workspace {
             dialog
                 .title(title.clone())
                 .width(px(560.))
+                // Single-line Input propagates Enter after PressEnter. The kit
+                // dialog binds Enter → Confirm; default on_ok closes without
+                // FormEvent::Submit. Keep the dialog open so Import URL Enter
+                // only fills the form (05-connection-dialog.md); Save uses the
+                // form button / FormEvent path (#96).
+                .on_ok(|_, _, _| false)
                 .child(form.clone())
         });
     }
@@ -441,6 +447,7 @@ impl Workspace {
         let names: Vec<String> = self.connections.iter().map(|c| c.name.clone()).collect();
         let copy = duplicate_connection(&source, &names);
         let source_name = source.name.clone();
+        let status = duplicate_status_message(&source_name, copy.needs_password);
         self.connections.push(copy);
         if let Err(err) = self.store.save(&self.connections) {
             if let Some(view) = self.active_view_mut() {
@@ -449,7 +456,6 @@ impl Workspace {
                 self.boot_error = Some(err.to_string());
             }
         }
-        let status = format!("Duplicated {source_name}. Type the password to connect.");
         // With no tab open the status bar is not mounted; keep the sentence on
         // the workspace so the empty pane can show it (#88).
         if let Some(view) = self.active_view_mut() {
