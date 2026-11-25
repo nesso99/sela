@@ -81,7 +81,17 @@ Quit-style confirm. Cancel is primary. `Enter` / `Escape` cancel.
 | Cancel | Primary |
 | Accept & save | Not primary |
 
-Accept appends to `~/.ssh/known_hosts` and continues the same Test/connect. Cancel aborts; known_hosts unchanged. Fingerprint format: OpenSSH SHA256 (`SHA256:…`).
+Accept writes the key in OpenSSH `known_hosts` form and continues the same Test/connect. Cancel aborts; the file is unchanged. Fingerprint format: OpenSSH SHA256 (`SHA256:…`).
+
+**On-disk path and format**
+
+| Detail | Rule |
+| --- | --- |
+| Path (Unix / macOS) | `~/.ssh/known_hosts` |
+| Path (Windows) | `%USERPROFILE%\.ssh\known_hosts` |
+| Non-22 SSH port | Host key line uses OpenSSH bracket form `[host]:port` (CI bastion on 2222 must match this). Port 22 may use bare `host`. |
+| Missing file / directory | Accept creates `~/.ssh` (or `%USERPROFILE%\.ssh`) at mode `0700` when missing, then creates `known_hosts` at mode `0600` (Unix). On Windows, create the `.ssh` folder and file with the user’s default ACL (no world-readable grant). |
+| Append | One new line per Accept; do not rewrite unrelated entries. |
 
 ### Changed host key (**SSH-07**)
 
@@ -90,10 +100,10 @@ Accept appends to `~/.ssh/known_hosts` and continues the same Test/connect. Canc
 | Piece | Value |
 | --- | --- |
 | Title | `SSH host key changed` |
-| Body | `The host key for {host} does not match known_hosts. This can mean the server was rebuilt — or that someone is intercepting the connection.\n\nExpected:\n{old_fingerprint}\n\nPresented:\n{new_fingerprint}\n\nSela will not connect. Remove or update the entry for this host in ~/.ssh/known_hosts, then try again.` |
+| Body | `The host key for {host} does not match known_hosts. This can mean the server was rebuilt — or that someone is intercepting the connection.\n\nExpected:\n{old_fingerprint}\n\nPresented:\n{new_fingerprint}\n\nSela will not connect. Remove or update the entry for this host in ~/.ssh/known_hosts (or %USERPROFILE%\\.ssh\\known_hosts on Windows), then try again.` |
 | OK | Primary (dismiss only) |
 
-No “Replace” / “Continue anyway”.
+No “Replace” / “Continue anyway”. Match lookups use the same `[host]:port` rules as Accept.
 
 ## Connect and Test
 

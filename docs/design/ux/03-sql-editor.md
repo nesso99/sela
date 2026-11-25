@@ -90,9 +90,19 @@ Milestone M3-2 (US-08). Maps to QA [v0.3-test-plan.md](../../qa/v0.3-test-plan.m
 | Inside a comment or string | Do not open or move the selection. |
 | IME composition active | Popup stays closed. Enter commits the composition and does **not** accept a completion. |
 
-`secondary-space` stays free (Spotlight). Binding `ctrl-space` only while the SQL editor is focused is intentional for v0.3; users who need the OS input-source switch on macOS use the OS alternate chord.
+**Identifier character (AU-01).** A character counts toward the 2-character auto-trigger when it is a Unicode letter (`Alphabetic`), a Unicode decimal digit (`Nd`), or `_`. On MySQL connections, `$` also counts. Other punctuation (including `.`, which has its own rule) does not. The two characters are consecutive in the current unquoted identifier fragment at the caret.
 
-**Catalog.** Same cache as the sidebar. Load on connect. Refresh on: Refresh schema (sidebar / palette), after a successful DDL statement run from the editor, and when switching database/schema. While the catalog is loading, the popup shows a single muted row `Loading schema…` (not selectable). If the catalog is empty after load, `No schema loaded.` 
+`secondary-space` stays free (Spotlight). Bind `ctrl-space` only while the SQL editor is focused. On macOS with multiple input sources, the OS may swallow Control+Space before GPUI sees it — that is **not** a product bug. Headless `TestAppContext` asserts AU-05. When SE ships user docs, name the OS alternate (typically Control+Option+Space or the Input menu) so a “manual trigger does nothing on macOS” report is not filed as a Sela defect.
+
+**Catalog.** Same cache as the sidebar. Load on connect. Refresh on:
+
+| Event | Meaning |
+| --- | --- |
+| Refresh schema | Sidebar or palette **Refresh schema** action. |
+| Successful DDL from the editor | A finished statement (no error) whose first keyword, after leading comments, is one of: `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `COMMENT`, `RENAME`, `ATTACH`, `DETACH` (case-insensitive). Not `GRANT` / `REVOKE`. |
+| Switching database / schema | Reconnect with a different database name; a successful MySQL `USE …`; a successful Postgres `SET search_path …`; or selecting a different schema in the sidebar when that changes the completion scope for unqualified names. |
+
+While the catalog is loading, the popup shows a single muted row `Loading schema…` (not selectable). If the catalog is empty after load, `No schema loaded.` 
 
 **Contents.** Dialect keywords, schema names, table names, column names, and aliases from the current statement. After `alias.` or `table.`, that relation’s columns first.
 
@@ -111,22 +121,22 @@ Milestone M3-2 (US-08). Maps to QA [v0.3-test-plan.md](../../qa/v0.3-test-plan.m
 
 | Key | Behavior |
 | --- | --- |
-| Up / Down | Move selection |
-| Enter | Accept and insert |
-| Tab | Accept and insert (same as Enter) |
+| Up / Down | Move selection (popup open) |
+| Enter | Accept and insert (popup open) |
+| Tab | Accept and insert when the popup is **open**. When the popup is **closed**, Tab inserts a tab / indent in the editor and does **not** move focus out of the editor. |
 | Escape | Dismiss; leave the text |
 | Click outside | Dismiss |
 | Arrows when closed | Do not open the popup |
 
 ### Acceptance criteria (→ QA IDs)
 
-1. **AU-01** (updated) — Popup opens after **two** identifier characters, not one.
+1. **AU-01** (updated) — Popup opens after **two** identifier characters (Unicode letter / digit / `_`, plus `$` on MySQL), not one.
 2. **AU-02** — Opens immediately after `.`.
 3. **AU-03** — No open inside comment/string.
 4. **AU-04** — IME: closed during composition; Enter commits composition only.
 5. **AU-05** (updated) — `secondary-space` stays free; **`ctrl-space` manually opens** autocomplete in the editor.
 6. **AU-06…AU-12** — Catalog + keywords; alias columns first; ranking; quoting; large catalog; row chrome; placement above caret.
-7. **AU-13** (updated) — Up/Down navigate; **Tab and Enter accept**; Escape dismisses; click outside closes.
+7. **AU-13** (updated) — Up/Down navigate; **Tab and Enter accept** while open; Tab while closed indents in the editor; Escape dismisses; click outside closes.
 8. **AU-14** — Arrows do nothing to a closed popup.
 9. **AU-15** — Optional tree-sitter; skip if not shipped.
 10. **AU-16** — Completions follow catalog refresh (connect, Refresh schema, successful DDL, switch database/schema); loading row `Loading schema…`.
@@ -205,8 +215,8 @@ M1-4. Stay inside the theme: comments in `muted_foreground`, strings in `foregro
 
 ## Decisions
 
-1. **Autocomplete is M3-2.** Auto-trigger after `.` or 2 identifier chars; manual `ctrl-space`; Tab and Enter accept; Esc dismisses.
-2. **Catalog refresh:** connect, Refresh schema, successful DDL from the editor, switch database/schema. Loading row: `Loading schema…`.
+1. **Autocomplete is M3-2.** Auto-trigger after `.` or 2 identifier chars (class above); manual `ctrl-space` (headless AU-05; macOS OS may swallow in GUI); Tab/Enter accept when open; Tab closed = indent; Esc dismisses.
+2. **Catalog refresh:** connect, Refresh schema, successful DDL allowlist, `USE` / `SET search_path` / reconnect / schema-scope change. Loading row: `Loading schema…`.
 3. **Run-all stops at the first error.** Name that statement in the strip and the status (`Query failed · statement 2`). Keep every result that already finished. Do not start the rest.
 4. **Store at most 8 result sets.** Evict the oldest when a new one arrives.
 5. **No `sqlformat` in M1-4.** Format is backlog. `secondary-shift-f` is reserved for that later work and is not in the M1-4 binding set.

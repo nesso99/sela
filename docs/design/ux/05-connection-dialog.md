@@ -1,6 +1,6 @@
 # Connection dialog
 
-The dialog that creates and edits a saved connection. It already ships as a 460px modal from `open_form` in `crates/sela-app/src/ui/workspace/state.rs`, rendered by `ConnectionForm` in `ui/form.rs`. The sections below keep that dialog and extend it. TLS modes are M1-8. Test connection is an acceptance check on US-01 and has no UI today. Query-history recording is the switch from [04-query-history.md](./04-query-history.md). Color, label, group, safe mode, and import-from-URL are M2-5 (US-01). SSH tunnel (M3-1, US-02) is [10-ssh-tunnel.md](./10-ssh-tunnel.md). Duplicate is a sidebar action, specified in [01-main-window.md](./01-main-window.md#connection-color-and-groups), not a button in this dialog.
+The dialog that creates and edits a saved connection. It already ships as a 460px modal from `open_form` in `crates/sela-app/src/ui/workspace/state.rs`, rendered by `ConnectionForm` in `ui/form.rs`. The sections below keep that dialog and extend it. TLS modes are M1-8. **Test connection** is specified here (US-01) and is required for SSH (**SSH-16** in [10-ssh-tunnel.md](./10-ssh-tunnel.md)); it lands with the M3 SSH work if it is not already in the binary. Query-history recording is the switch from [04-query-history.md](./04-query-history.md). Color, label, group, safe mode, and import-from-URL are M2-5 (US-01). SSH tunnel (M3-1, US-02) is [10-ssh-tunnel.md](./10-ssh-tunnel.md). Duplicate is a sidebar action, specified in [01-main-window.md](./01-main-window.md#connection-color-and-groups), not a button in this dialog.
 
 Shortcut notation is in [README.md](./README.md). `secondary` is Command on macOS and Control on Linux and Windows. The dialog traps focus until it closes, which the main-window spec already requires.
 
@@ -172,7 +172,7 @@ The object is `TlsSettings` as shipped in #15. Field names are `ca_path`, `clien
 
 ## Test connection
 
-Test dials the form's current values, including an unsaved password and the TLS fields. It does not write `connections.json`, does not write the keychain, and does not replace the workspace session. It opens its own connection and drops it. It must not check a connection out of the live pool. A failed test must not poison that pool.
+Test dials the form's current values, including an unsaved password, the TLS fields, and — when enabled — the SSH tunnel fields ([10-ssh-tunnel.md](./10-ssh-tunnel.md)). It does not write `connections.json`, does not write the keychain, and does not replace the workspace session. It opens its own connection (and its own tunnel when SSH is on) and drops them. It must not check a connection out of the live pool. A failed test must not poison that pool. Success with SSH: `Connected in {ms} ms (via SSH).`
 
 The timeout is the existing `CONNECT_TIMEOUT` of 12 seconds in `sela-drivers`. The failure text is the `DbError` message. The timeout message that function already returns is `timed out after 12s while opening the connection`.
 
@@ -185,7 +185,7 @@ Closing the dialog cancels an in-flight test.
 | Success | Label `Test`, enabled | `Connected in {ms} ms.` in `status.success.text` | Enabled |
 | Failure | Label `Test`, enabled | The `DbError` message in `status.error.text`, up to three lines | Enabled |
 
-There is no overlay and no second dialog. The result line is the only indicator. A later edit to host, port, user, database, password, file path, or any TLS field returns the line to idle.
+There is no overlay and no second dialog. The result line is the only indicator. A later edit to host, port, user, database, password, file path, any TLS field, or any SSH field (toggle, host, port, user, auth, password, key path, passphrase) returns the line to idle.
 
 Validation runs before the test starts. A validation error uses the error line the form already has (`text_sm`, danger) and leaves the test state idle.
 

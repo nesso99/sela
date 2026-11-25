@@ -48,8 +48,8 @@ Primary actions (invoke the same code path as the menu/shortcut):
 | Action | Enabled when | Dimmed reason (examples) |
 | --- | --- | --- |
 | New connection | Always | — |
-| Connect | A saved connection is selected and disconnected | `Already connected` / `Select a connection` |
-| Disconnect | Connected | `Not connected` |
+| Connect | A saved connection is **highlighted in the sidebar tree** and that id is not the live session | `Already connected` (sidebar selection is the live session) / `Select a connection` (no sidebar highlight) |
+| Disconnect | A live session exists | `Not connected` |
 | New query tab | Connected | `Not connected` |
 | Run query | Editor has a runnable statement and not busy | `Editor empty` / `Query running` |
 | Refresh schema | Connected | `Not connected` |
@@ -57,12 +57,23 @@ Primary actions (invoke the same code path as the menu/shortcut):
 | Import CSV… | Table Data tab; not Read-only | `Open a table` / `Import is disabled in Read-only mode.` |
 | Toggle theme | Always | — |
 | Font bigger / Font smaller | Always (clamped at ends) | `Already at maximum` / `Already at minimum` when clamped |
-| Toggle safe mode | Connected (cycles Off → Confirm writes → Read-only → Off, or opens the level — **Decision**: cycle) | `Not connected` |
+| Toggle safe mode | Connected (live session). Cycles Off → Confirm writes → Read-only → Off | `Not connected` |
 | Quit | Always | — |
+
+### Toggle safe mode (palette)
+
+Same rules as changing the level in the connection dialog and saving ([09-safe-mode.md](./09-safe-mode.md#editor-and-grid)):
+
+1. Persist `safe_mode` on that connection in `connections.json` immediately.
+2. Do **not** discard pending grid edits.
+3. Reconnect the live session so the server-side Read-only guard (and leaving it) takes effect.
+4. Toolbar `Safe: …` updates to the new level as soon as the in-memory connection value changes (before reconnect finishes). While reconnecting, use the existing reconnect status line; after reconnect, the strip / Commit enablement match the new level.
 
 Also include, dimmed when N/A: Preview SQL (`secondary-shift-v`), Commit, Discard, Stop, Toggle filter, Toggle history — so every prior primary stays reachable (**PAL-03** minimum set).
 
 Unavailable actions stay **visible**, **dimmed**, with the reason on the right. Enter on a dimmed row does nothing (no crash). They are not hidden.
+
+**Connect** uses the sidebar tree highlight. **Disconnect** always targets the live session.
 
 ## Keyboard (**PAL-05**)
 
@@ -96,7 +107,8 @@ Focus trapped while open.
 3. Fuzzy subsequence with highlighted matches; recent first.
 4. Unavailable actions dimmed with reason, not hidden, not executable.
 5. Second `secondary-p` / `secondary-shift-p` toggles that mode closed.
-6. Toggle safe mode cycles Off → Confirm writes → Read-only → Off from the palette.
+6. Toggle safe mode cycles Off → Confirm writes → Read-only → Off; persists, reconnects, keeps pending edits, updates the toolbar immediately (same as dialog save).
+7. Connect = sidebar selection; Disconnect = live session.
 
 ## Answers to QA (#110)
 

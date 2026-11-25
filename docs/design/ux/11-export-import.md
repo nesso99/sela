@@ -36,7 +36,7 @@ Buttons: Cancel (ghost), Export (primary).
 | Current result on SQL tab | Rows already loaded for that result. If capped, status note `Exporting the loaded result (capped at {N} rows).` Do not re-run the SQL. |
 | Whole table | Stream from the server; memory bounded; not a giant `ResultWindow` (**EX-10**). |
 
-Formats follow copy contracts where applicable (**EX-02**, **EX-03**, **EX-07**, **EX-08**, **EX-11**): JSON NULL → `null`; INSERT uses dialect quoting; decode-error / non-finite MySQL·SQLite numbers refuse INSERT with a column name in the status; CSV/JSON do not invent NULL for decode errors (use the display / copy behavior). SQL INSERT files batch at **100 rows or ~1 MiB of statement text per statement, whichever comes first** (Decision 6).
+Formats follow copy contracts where applicable (**EX-02**, **EX-03**, **EX-07**, **EX-08**, **EX-11**): JSON NULL → `null`; INSERT uses dialect quoting; decode-error / non-finite MySQL·SQLite numbers refuse INSERT with a column name in the status; CSV/JSON do not invent NULL for decode errors (use the display / copy behavior). On a **SQL result** tab, SQL INSERT uses the copy placeholder target `table` plus a leading comment `-- replace table name` (no invented `{schema.table}`). SQL INSERT files batch at **100 rows or ~1 MiB of statement text per statement, whichever comes first** (Decision 6).
 
 ### Progress and cancel (**EX-05**, **EX-06**)
 
@@ -58,12 +58,13 @@ Opens only from a table Data tab (target = that tab’s table). Create-new-table
 ### Flow (**IM-01**, **IM-03**)
 
 1. Pick file (`.csv` / All files). UTF-8 only (**IM-08**); invalid UTF-8 fails with a clear error, no fallback encoding.
-2. Sheet or 560px dialog: preview **first 100 rows**, header mapping.
+2. Sheet or 560px dialog: preview **first 100 data rows**, header mapping.
 3. Options: `First row is header` (default on). `Empty field = NULL` (default on). When off, empty field is `''`.
 4. Mapping: CSV column → table column select, including `Skip`. Auto-match by **case-insensitive** name. Unmatched CSV columns → **Skip**. Required table columns left unmapped (NOT NULL, no default, not generated): block Import with `Map every required column or cancel.`
-5. Import (primary) runs inserts in **one transaction**.
+5. Before enabling Import (and before the Confirm-writes dialog), **pre-scan** the file once to count every data row that would be imported: all rows after the header when `First row is header` is on, otherwise every row. That count is `{N}` / `{total}`. Memory stays a counter, not a full materialization. If the pre-scan fails (I/O or encoding), refuse with the parse/encoding error and do not open Confirm.
+6. Import (primary) runs inserts in **one transaction**.
 
-Progress: `Importing · {done} / {total} rows · {elapsed} s`. Cancel → roll back; status `Import cancelled.`; table unchanged (**IM-04**, **IM-07**).
+Confirm title `Import {N} rows into {schema.table}?` uses that pre-scan `{N}` (not the 100-row preview length). Progress: `Importing · {done} / {total} rows · {elapsed} s` with the same `{total}`. Cancel → roll back; status `Import cancelled.`; table unchanged (**IM-04**, **IM-07**).
 
 ### Errors (**IM-06**)
 
@@ -100,7 +101,7 @@ Export CSV (default NULL = empty field) + import (empty field = NULL) restores N
 2. Export dialog: format, scope, path; CSV delimiter / header / NULL encoding / optional BOM.
 3. Cancel export deletes the partial file.
 4. Import: existing table only; preview 100 rows; empty field = NULL option; single transaction; abort+rollback on first row error.
-5. Read-only copy: `Import is disabled in Read-only mode.` Confirm: `Import {N} rows into {schema.table}?`
+5. Read-only copy: `Import is disabled in Read-only mode.` Confirm: `Import {N} rows into {schema.table}?` where `{N}` is the pre-scanned data-row count for the whole file.
 6. **SQL INSERT export batching:** emit at most **100 rows** or about **1 MiB** of statement text per `INSERT`, whichever comes first, so multi-value statements stay under MySQL’s default `max_allowed_packet`. Start a new statement when either limit would be exceeded.
 
 ## Answers to QA (#110)
