@@ -56,7 +56,15 @@ pub enum RowChange {
         values: BTreeMap<String, Value>,
     },
     /// `DELETE` of an existing row identified by `pk`.
-    Delete { pk: Vec<Value> },
+    ///
+    /// `expected` holds non-primary-key column originals ANDed into the
+    /// optimistic `WHERE` clause. Empty when the caller did not supply a row
+    /// snapshot (PK-only delete). When [`ChangeSet::delete_row`] replaces a
+    /// pending update, the update’s cell `old_value`s are copied here.
+    Delete {
+        pk: Vec<Value>,
+        expected: BTreeMap<String, Value>,
+    },
 }
 
 /// Errors from constructing or mutating a [`ChangeSet`].
@@ -216,11 +224,27 @@ impl ChangeSet {
 
     fn find_existing_mut(&mut self, pk: &[Value]) -> Option<usize> {
         self.changes.iter().position(|c| match c {
-            RowChange::Update { pk: existing, .. } | RowChange::Delete { pk: existing } => {
+            RowChange::Update { pk: existing, .. } | RowChange::Delete { pk: existing, .. } => {
                 pk_eq(existing, pk)
             }
             RowChange::Insert { .. } => false,
         })
+    }
+
+    fn is_pk_column(&self, column: &str) -> bool {
+        self.pk_columns.iter().any(|c| c == column)
+    }
+
+    /// Non-PK originals taken from a pending update (for optimistic DELETE).
+    fn expected_from_update_cells(
+        &self,
+        cells: &BTreeMap<String, CellChange>,
+    ) -> BTreeMap<String, Value> {
+        cells
+            .iter()
+            .filter(|(col, _)| !self.is_pk_column(col))
+            .map(|(col, cell)| (col.clone(), cell.old_value.clone()))
+            .collect()
     }
 
     fn find_insert_mut(&mut self, id: u64) -> Option<usize> {
@@ -291,13 +315,52 @@ impl ChangeSet {
     }
 
     /// Mark an existing row for deletion. Replaces any pending update for that PK.
+    ///
+    /// When replacing an update, copies non-PK cell `old_value`s into
+    /// [`RowChange::Delete::expected`] so optimistic WHERE can still check them.
     pub fn delete_row(&mut self, pk: &[Value]) -> Result<(), ChangeError> {
+        self.delete_row_with_expected(pk, BTreeMap::new())
+    }
+
+    /// Mark a row for deletion with an explicit non-PK value snapshot for
+    /// optional optimistic WHERE. Keys must be known columns; PK columns in
+    /// `expected` are ignored. When replacing a pending update, `expected`
+    /// wins over (replaces) any values inherited from that update.
+    pub fn delete_row_with_expected(
+        &mut self,
+        pk: &[Value],
+        expected: BTreeMap<String, Value>,
+    ) -> Result<(), ChangeError> {
         self.require_pk(pk)?;
+        for col in expected.keys() {
+            self.require_column(col)?;
+        }
+        let mut expected: BTreeMap<String, Value> = expected
+            .into_iter()
+            .filter(|(col, _)| !self.is_pk_column(col))
+            .collect();
+
         if let Some(ix) = self.find_existing_mut(pk) {
-            self.changes[ix] = RowChange::Delete { pk: pk.to_vec() };
+            if expected.is_empty() {
+                if let RowChange::Update { cells, .. } = &self.changes[ix] {
+                    expected = self.expected_from_update_cells(cells);
+                } else if let RowChange::Delete {
+                    expected: prior, ..
+                } = &self.changes[ix]
+                {
+                    expected = prior.clone();
+                }
+            }
+            self.changes[ix] = RowChange::Delete {
+                pk: pk.to_vec(),
+                expected,
+            };
             return Ok(());
         }
-        self.changes.push(RowChange::Delete { pk: pk.to_vec() });
+        self.changes.push(RowChange::Delete {
+            pk: pk.to_vec(),
+            expected,
+        });
         Ok(())
     }
 

@@ -84,7 +84,8 @@ impl Workspace {
         let Some(view) = self.views.get(&id) else {
             return;
         };
-        if !view.busy {
+        let committing = view.edit.as_ref().is_some_and(|e| e.committing);
+        if !view.busy && !committing {
             return;
         }
         self.clear_run_queue(id);
