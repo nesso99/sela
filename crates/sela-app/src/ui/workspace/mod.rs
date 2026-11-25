@@ -643,6 +643,66 @@ impl Workspace {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_view_status(&self) -> Option<String> {
+        self.active_view()
+            .map(|v| v.status.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.workspace_status.clone())
+    }
+
+    /// Mark the live session as SSH-tunneled so SSH-11 drop handling applies.
+    #[cfg(test)]
+    pub(crate) fn test_mark_session_via_ssh(&mut self) {
+        assert!(
+            self.session.is_some(),
+            "test_mark_session_via_ssh requires a live session"
+        );
+        self.session_via_ssh = true;
+    }
+
+    /// SSH-11: surface a tunneled connection drop (banner + status + drop session).
+    #[cfg(test)]
+    pub(crate) fn test_simulate_ssh_tunnel_drop(&mut self, cx: &mut Context<Self>) {
+        let err = sela_core::DbError::connection("connection reset by peer");
+        self.note_possible_ssh_tunnel_drop(&err, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_open_form(
+        &mut self,
+        existing: Option<SavedConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_form(existing, window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_connection_form(&self) -> Option<Entity<super::form::ConnectionForm>> {
+        self.connection_form.clone()
+    }
+
+    /// Snapshot of a secret account (for SSH-16 no-persist assertions). Never log it.
+    #[cfg(test)]
+    pub(crate) fn test_secret_present(&self, account: &str) -> bool {
+        self.secrets
+            .get_optional(account)
+            .ok()
+            .flatten()
+            .is_some_and(|v| !v.is_empty())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_secret(&self, account: &str, secret: &str) {
+        let _ = self.secrets.set(account, secret);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_connections_path(&self) -> std::path::PathBuf {
+        self.store.path().to_path_buf()
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_connect(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.connect_id(id, Some(window), cx);
     }
