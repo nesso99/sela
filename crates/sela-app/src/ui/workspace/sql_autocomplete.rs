@@ -401,22 +401,6 @@ pub(super) async fn load_schema_snapshot(
     Ok(SchemaSnapshot { schemas: entries })
 }
 
-/// Test helper: attach a ready cache + provider to an editor.
-#[cfg(test)]
-pub(crate) fn install_test_completions(
-    editor: &Entity<EditorState>,
-    cache: SchemaCacheHandle,
-    cx: &mut App,
-) {
-    let provider = Rc::new(SqlCompletionProvider::new(cache));
-    editor.update(cx, |state, _cx| {
-        state.lsp_mut().completion_provider = Some(provider);
-        state.lsp_mut().completion_menu = CompletionMenuOptions {
-            max_width: px(360.),
-        };
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

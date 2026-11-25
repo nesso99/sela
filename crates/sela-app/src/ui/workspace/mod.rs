@@ -682,12 +682,7 @@ impl Workspace {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_set_sql(
-        &mut self,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn test_set_sql(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(view) = self.active_view() else {
             return;
         };
@@ -715,7 +710,8 @@ impl Workspace {
     pub(crate) fn test_completion_labels(&self, cx: &App) -> Vec<String> {
         self.active_view()
             .map(|v| {
-                v.sql.read(cx)
+                v.sql
+                    .read(cx)
                     .completion_menu_state()
                     .items
                     .iter()
@@ -732,6 +728,47 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.maybe_refresh_schema_after_sql(sql, cx);
+    }
+
+    /// Inject a ready catalog snapshot (AU-09 / AU-10 / AU-12 geometry fixtures).
+    #[cfg(test)]
+    pub(crate) fn test_set_schema_cache(
+        &self,
+        dialect: sela_core::Dialect,
+        snapshot: sela_core::SchemaSnapshot,
+        active_schema: Option<String>,
+    ) {
+        self.schema_cache
+            .set_snapshot(dialect, snapshot, active_schema);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_schema_cache_loading(&self, dialect: sela_core::Dialect) {
+        self.schema_cache.set_loading(dialect);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_show_sql_completions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_sql_completions(window, cx);
+    }
+
+    /// Caret top Y in window coordinates (for AU-12 placement asserts).
+    #[cfg(test)]
+    pub(crate) fn test_sql_caret_top(&self, cx: &App) -> gpui_kit::Pixels {
+        use gpui_kit::px;
+        let Some(view) = self.active_view() else {
+            return px(0.);
+        };
+        view.sql
+            .read(cx)
+            .cursor_layout()
+            .map_or(px(0.), |(caret, _)| {
+                caret.origin.y + view.sql.read(cx).scroll_offset().y
+            })
     }
 
     #[cfg(test)]
