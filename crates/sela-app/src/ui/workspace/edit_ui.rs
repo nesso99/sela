@@ -9,6 +9,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, IntoElement, Window};
+use tokio_util::sync::CancellationToken;
 
 use sela_core::{
     decide_grid_commit_gate, truncate_one_line, ChangePlan, DbError, GridCommitGate, TabId,
@@ -511,13 +512,28 @@ impl Workspace {
         else {
             return;
         };
+        // Same CancellationToken path as streaming queries (Stop / Cmd+.).
+        // Do not bump the tab request id — paging/sort must not drop the result
+        // and leave committing=true forever.
+        let cancel = CancellationToken::new();
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.set_cancel(cancel.clone());
+        }
+        if let Some(view) = self.view_mut(tab_id) {
+            view.busy = true;
+            view.query_started = Some(Instant::now());
+        }
         cx.notify();
         let started = Instant::now();
-        // Commit runs outside the tab request gate so sort/filter/paging cannot
-        // bump request and drop the result (leaving committing=true forever).
         cx.spawn(async move |this, async_cx| {
-            let result = drive(async move { session.apply_changes(&plan).await }).await;
+            let result = drive(async move { session.apply_changes(&plan, cancel).await }).await;
             this.update(async_cx, |this, cx| {
+                if let Some(tab) = this.tabs.get_mut(tab_id) {
+                    tab.clear_cancel();
+                }
+                if let Some(view) = this.view_mut(tab_id) {
+                    view.busy = false;
+                }
                 let Some(view) = this.views.get(&tab_id) else {
                     return;
                 };

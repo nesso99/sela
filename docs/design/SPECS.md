@@ -82,7 +82,7 @@ pub trait DatabaseSession: Send + Sync {
 
 Helpers: `run_user_sql`, `preview_table`, `exact_table_rows`, `is_safe_to_rerun_for_load_more`.
 
-`DatabaseSession::apply_changes(&ChangePlan)` runs pending grid edits in one transaction (M2-2).
+`DatabaseSession::apply_changes(&ChangePlan, CancellationToken)` runs pending grid edits in one transaction (M2-2 / #68). Cancel rolls the transaction back.
 
 **Direction (M2+):** evolve toward a richer `Session` with `Capabilities` and an optional `CancelHandle`, while keeping drivers behind this boundary.
 
@@ -310,12 +310,11 @@ pub struct ChangePlan {
 
 - Edit only with a primary key (`ChangeSet::try_new` / `from_structure`); otherwise `ChangeError::NoPrimaryKey`.
 - Always bound parameters; reuse `quote_ident` / `qualify` / `bind_placeholder`.
-- `UPDATE`/`DELETE` `WHERE` uses only PK columns (`IS NULL` for null PK parts).
-- Commit: driver `apply_changes` → BEGIN → Delete, Update, Insert → COMMIT; on error ROLLBACK and keep `ChangeSet` (caller does not clear).
-- Each UPDATE/DELETE must affect exactly one row; otherwise `DbError::ChangeConflict` (statement index + PK display) and rollback. INSERT is not checked this way. MySQL uses `CLIENT_FOUND_ROWS` (sqlx default + explicit `.found_rows(true)`) so same-value UPDATE still reports one matched row.
-- `ChangePlan::preview_sql` renders literals for the preview dialog; executable SQL stays bound.
-- Optional optimistic WHERE with old non-PK values: not implemented (backlog — see follow-up issue from M2-1/M2-2).
-- Golden tests per dialect under `crates/sela-core/tests/change_plan_snapshots/`; integration tests exercise `apply_changes` on all three engines.
+- `UPDATE`/`DELETE` `WHERE` always includes PK columns (`IS NULL` for null PK parts) **and** previous non-PK values (optimistic concurrency, always on — #68). NULL old values use `IS NULL` (no bind). UPDATE uses each edited cell’s `old_value`; DELETE uses `RowChange::Delete::expected` (UI supplies the loaded-row snapshot).
+- Commit: driver `apply_changes(plan, cancel)` → BEGIN → Delete, Update, Insert → COMMIT; on error or cancel ROLLBACK and keep `ChangeSet` (caller does not clear). Stop / `secondary-.` cancel via the same `CancellationToken` path as streaming queries (Postgres `pg_cancel_backend` / MySQL `KILL QUERY`; SQLite cooperative between statements only).
+- Each UPDATE/DELETE must affect exactly one row; otherwise `DbError::ChangeConflict` (statement index + PK display) and rollback — including when a concurrent non-PK edit makes the optimistic predicate match zero rows. INSERT is not checked this way. MySQL uses `CLIENT_FOUND_ROWS` (sqlx default + explicit `.found_rows(true)`) so same-value UPDATE still reports one matched row.
+- `ChangePlan::preview_sql` / preview sheet render literals including optimistic predicates; executable SQL stays bound.
+- Golden tests per dialect under `crates/sela-core/tests/change_plan_snapshots/` (OW-01); driver integration covers cancel + conflict (CAN-* / OW-*); see [v0.3-test-plan.md](../qa/v0.3-test-plan.md).
 
 Safe mode per connection: Off / Confirm writes / Read-only (`safe_mode` on `SavedConnection`, M2-4). Classify with `classify_statement_safety` (`sqlparser`) for no-WHERE writes and writes inside CTEs. Apply to editor and history Rerun; `decide_grid_commit_gate` for grid Commit when that UI lands. Production-tagged (Red) connections default to Confirm writes when the color UI (M2-5) lands — see [09-safe-mode.md](./ux/09-safe-mode.md).
 

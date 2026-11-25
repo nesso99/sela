@@ -425,8 +425,12 @@ impl DatabaseSession for PostgresSession {
         crate::count_sql!(&self.pool, sql, params)
     }
 
-    async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyChangesResult, DbError> {
-        crate::change_exec::apply_change_plan!(&self.pool, plan, Dialect::Postgres)
+    async fn apply_changes(
+        &self,
+        plan: &ChangePlan,
+        cancel: CancellationToken,
+    ) -> Result<ApplyChangesResult, DbError> {
+        crate::change_exec::apply_postgres(&self.pool, plan, cancel).await
     }
 
     async fn estimate_table_rows(&self, schema: &str, table: &str) -> Result<Option<u64>, DbError> {
@@ -1620,7 +1624,10 @@ mod tests {
         cs.insert_row(values).unwrap();
 
         let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
-        let result = session.apply_changes(&plan).await.unwrap();
+        let result = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(result.statements_executed, 3);
 
         let page = session
@@ -1651,7 +1658,10 @@ mod tests {
         dup.insert("name".into(), Value::text("dup"));
         bad.insert_row(dup).unwrap();
         let bad_plan = ChangePlan::build(&bad, Dialect::Postgres).unwrap();
-        assert!(session.apply_changes(&bad_plan).await.is_err());
+        assert!(session
+            .apply_changes(&bad_plan, CancellationToken::new())
+            .await
+            .is_err());
 
         let page = session
             .query(&format!(
@@ -1721,7 +1731,10 @@ mod tests {
         )
         .unwrap();
         let err = session
-            .apply_changes(&ChangePlan::build(&cs, Dialect::Postgres).unwrap())
+            .apply_changes(
+                &ChangePlan::build(&cs, Dialect::Postgres).unwrap(),
+                CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -1752,7 +1765,10 @@ mod tests {
         cs.delete_row(&[Value::Int(2)]).unwrap();
         cs.delete_row(&[Value::Int(999)]).unwrap();
         let err = session
-            .apply_changes(&ChangePlan::build(&cs, Dialect::Postgres).unwrap())
+            .apply_changes(
+                &ChangePlan::build(&cs, Dialect::Postgres).unwrap(),
+                CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -1774,6 +1790,208 @@ mod tests {
 
         session
             .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_guard"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    /// CAN-02 (blocked lock + cancel), CAN-04 (token), OW-02 (optimistic conflict).
+    async fn can_ow_postgres_apply_changes_cancel_and_optimistic_when_configured() {
+        let Ok(url) = std::env::var("SELA_POSTGRES_URL") else {
+            eprintln!("skip postgres apply cancel/optimistic: set SELA_POSTGRES_URL");
+            return;
+        };
+        let schema = std::env::var("SELA_POSTGRES_SCHEMA").unwrap_or_else(|_| "public".into());
+        let session = PostgresSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| {
+                panic!("SELA_POSTGRES_URL is set but Postgres is unreachable: {err}")
+            });
+        let qschema = quote_ident(Dialect::Postgres, &schema).unwrap();
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_opt68"))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "CREATE TABLE {qschema}.sela_opt68 (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    note TEXT
+                )"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_opt68 (id, name, note) VALUES (1, 'a', NULL), (2, 'b', 'x')"
+            ))
+            .await
+            .unwrap();
+
+        // Pre-cancelled apply: nothing applied.
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_opt68"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("cancelled"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = session
+            .apply_changes(&plan, cancel)
+            .await
+            .expect_err("pre-cancelled");
+        assert!(matches!(err, DbError::Cancelled { .. }), "{err:?}");
+
+        // Concurrent non-PK edit → optimistic ChangeConflict + full rollback.
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_opt68 SET name = 'concurrent' WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_opt68"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("mine"),
+        )
+        .unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert("name".into(), Value::text("b"));
+        expected.insert("note".into(), Value::text("x"));
+        cs.delete_row_with_expected(&[Value::Int(2)], expected)
+            .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let err = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::ChangeConflict {
+                    statement_index: 1,
+                    rows_affected: 0,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let page = session
+            .query(&format!(
+                "SELECT id, name FROM {qschema}.sela_opt68 ORDER BY id"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0][1], Value::text("concurrent"));
+        assert_eq!(page.rows[1][1], Value::text("b"));
+
+        // Cancel while a statement is blocked on a row lock (server cancel path).
+        let lock_pool = sqlx::PgPool::connect(&url).await.expect("lock pool");
+        let mut lock_conn = lock_pool.acquire().await.expect("lock conn");
+        sqlx::query("BEGIN").execute(&mut *lock_conn).await.unwrap();
+        crate::query(&format!(
+            "SELECT id FROM {qschema}.sela_opt68 WHERE id = 1 FOR UPDATE"
+        ))
+        .execute(&mut *lock_conn)
+        .await
+        .unwrap();
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_opt68"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("concurrent"),
+            Value::text("blocked"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let cancel = CancellationToken::new();
+        let cancel_later = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            cancel_later.cancel();
+        });
+        let started = std::time::Instant::now();
+        let err = session
+            .apply_changes(&plan, cancel)
+            .await
+            .expect_err("blocked apply must cancel");
+        assert!(
+            matches!(err, DbError::Cancelled { .. }),
+            "expected Cancelled, got {err:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "cancel took {:?}",
+            started.elapsed()
+        );
+        sqlx::query("ROLLBACK")
+            .execute(&mut *lock_conn)
+            .await
+            .unwrap();
+        drop(lock_conn);
+        lock_pool.close().await;
+        let page = session
+            .query(&format!(
+                "SELECT name FROM {qschema}.sela_opt68 WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("concurrent"));
+
+        // OW-03: optimistic WHERE with NULL old non-PK still commits.
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_opt68 SET name = 'a', note = NULL WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_opt68"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("ok"),
+        )
+        .unwrap();
+        cs.set_cell(&[Value::Int(1)], "note", Value::Null, Value::text("filled"))
+            .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        let result = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.statements_executed, 1);
+
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_opt68"))
             .await
             .unwrap();
     }
@@ -1921,7 +2139,10 @@ mod tests {
             .iter()
             .any(|s| s.sql.contains("::timestamptz")));
 
-        let result = session.apply_changes(&plan).await.unwrap();
+        let result = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(result.statements_executed, 3);
 
         let page = session

@@ -783,14 +783,29 @@ impl Workspace {
                     .and_then(|e| e.changeset.as_ref())
                     .map(|cs| cs.pk_columns().to_vec())
                     .unwrap_or_default();
-                let pk = self
+                let (pk, expected) = self
                     .views
                     .get(&tab_id)
-                    .and_then(|v| extract_pk(&v.grid.read(cx).delegate().result, row_ix, &pk_cols));
+                    .map_or((None, BTreeMap::new()), |v| {
+                        let result = &v.grid.read(cx).delegate().result;
+                        let pk = extract_pk(result, row_ix, &pk_cols);
+                        let expected = if let Some(ref p) = pk {
+                            extract_optimistic_expected(
+                                result,
+                                row_ix,
+                                &pk_cols,
+                                v.edit.as_ref(),
+                                p,
+                            )
+                        } else {
+                            BTreeMap::new()
+                        };
+                        (pk, expected)
+                    });
                 if let Some(pk) = pk {
                     if let Some(view) = self.view_mut(tab_id) {
                         if let Some(edit) = view.edit.as_mut() {
-                            match edit.delete_or_restore_server(&pk) {
+                            match edit.delete_or_restore_server_with_expected(&pk, expected) {
                                 Ok(_) => {}
                                 Err(e) => view.status = e,
                             }
@@ -875,6 +890,33 @@ fn extract_pk(
         pk.push(cells.get(ix)?.clone());
     }
     Some(pk)
+}
+
+/// Non-PK originals for optimistic DELETE WHERE: pending `old_value` when the
+/// cell was edited, otherwise the loaded server cell.
+fn extract_optimistic_expected(
+    result: &sela_core::ResultWindow,
+    row: usize,
+    pk_cols: &[String],
+    edit: Option<&EditSession>,
+    pk: &[Value],
+) -> BTreeMap<String, Value> {
+    let mut expected = BTreeMap::new();
+    let RowState::Ready(cells) = result.row(row) else {
+        return expected;
+    };
+    for (ix, col) in result.columns().iter().enumerate() {
+        if pk_cols.iter().any(|p| p == &col.name) {
+            continue;
+        }
+        let original = edit
+            .and_then(|e| e.original_server_value(pk, &col.name).cloned())
+            .or_else(|| cells.get(ix).cloned());
+        if let Some(value) = original {
+            expected.insert(col.name.clone(), value);
+        }
+    }
+    expected
 }
 
 fn cell_value_at(result: &sela_core::ResultWindow, row: usize, column: &str) -> Option<Value> {

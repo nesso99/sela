@@ -3,6 +3,7 @@
 //! Prefer `gpui_kit::TestAppContext` / `#[gpui_kit::test]` so Linux CI needs no
 //! display. Run via `scripts/ui-tests.sh`.
 
+mod commit_cancel;
 mod connection_dialog;
 mod file_menu;
 mod grid_editing;

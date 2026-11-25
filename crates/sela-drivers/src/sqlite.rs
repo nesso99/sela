@@ -348,8 +348,12 @@ impl DatabaseSession for SqliteSession {
         crate::count_sql!(&self.pool, sql, params)
     }
 
-    async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyChangesResult, DbError> {
-        crate::change_exec::apply_change_plan!(&self.pool, plan, Dialect::Sqlite)
+    async fn apply_changes(
+        &self,
+        plan: &ChangePlan,
+        cancel: CancellationToken,
+    ) -> Result<ApplyChangesResult, DbError> {
+        crate::change_exec::apply_sqlite(&self.pool, plan, cancel).await
     }
 
     async fn estimate_table_rows(
@@ -1366,7 +1370,10 @@ mod tests {
         cs.insert_row(values).unwrap();
 
         let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
-        let result = session.apply_changes(&plan).await.unwrap();
+        let result = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(result.statements_executed, 3);
 
         let page = session
@@ -1397,7 +1404,10 @@ mod tests {
         dup.insert("name".into(), Value::text("dup"));
         bad.insert_row(dup).unwrap();
         let bad_plan = ChangePlan::build(&bad, Dialect::Sqlite).unwrap();
-        assert!(session.apply_changes(&bad_plan).await.is_err());
+        assert!(session
+            .apply_changes(&bad_plan, CancellationToken::new())
+            .await
+            .is_err());
 
         let page = session
             .query("SELECT name FROM sela_changes WHERE id = 1")
@@ -1447,7 +1457,10 @@ mod tests {
         )
         .unwrap();
         let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
-        let err = session.apply_changes(&plan).await.unwrap_err();
+        let err = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap_err();
         match err {
             DbError::ChangeConflict {
                 statement_index,
@@ -1477,7 +1490,10 @@ mod tests {
         cs.delete_row(&[Value::Int(2)]).unwrap();
         cs.delete_row(&[Value::Int(999)]).unwrap();
         let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
-        let err = session.apply_changes(&plan).await.unwrap_err();
+        let err = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1499,6 +1515,190 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(page.rows[0][0], Value::Int(2));
+    }
+
+    /// CAN-02 (SQLite cooperative): pre-cancelled token → nothing applied.
+    /// Blocked-writer interrupt is not available (M1 SQLite cancel limitation).
+    #[tokio::test]
+    async fn can02_sqlite_apply_changes_cancel_before_begin_applies_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes_cancel.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_cancel (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO sela_cancel (id, name) VALUES (1, 'a')")
+            .await
+            .unwrap();
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new("main", "sela_cancel"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("cancelled"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = session
+            .apply_changes(&plan, cancel)
+            .await
+            .expect_err("pre-cancelled apply must fail");
+        assert!(
+            matches!(err, DbError::Cancelled { .. }),
+            "expected Cancelled, got {err:?}"
+        );
+        let page = session
+            .query("SELECT name FROM sela_cancel WHERE id = 1")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("a"));
+    }
+
+    /// OW-02: concurrent non-PK edit → ChangeConflict + full rollback.
+    #[tokio::test]
+    async fn ow02_sqlite_optimistic_conflict_rolls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes_opt.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_opt (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    note TEXT
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO sela_opt (id, name, note) VALUES (1, 'a', NULL), (2, 'b', 'x')")
+            .await
+            .unwrap();
+
+        // Concurrent edit of the non-PK column the plan expects.
+        session
+            .execute("UPDATE sela_opt SET name = 'concurrent' WHERE id = 1")
+            .await
+            .unwrap();
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new("main", "sela_opt"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("mine"),
+        )
+        .unwrap();
+        // Also delete another row so we can prove rollback of earlier work.
+        let mut expected = BTreeMap::new();
+        expected.insert("name".into(), Value::text("b"));
+        expected.insert("note".into(), Value::text("x"));
+        cs.delete_row_with_expected(&[Value::Int(2)], expected)
+            .unwrap();
+
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        // DELETE runs first; UPDATE with stale name expectation conflicts.
+        let err = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::ChangeConflict {
+                    statement_index: 1,
+                    rows_affected: 0,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let page = session
+            .query("SELECT id, name FROM sela_opt ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(
+            page.rows.len(),
+            2,
+            "DELETE must roll back with the conflict"
+        );
+        assert_eq!(page.rows[0][1], Value::text("concurrent"));
+        assert_eq!(page.rows[1][1], Value::text("b"));
+    }
+
+    /// OW-03: commit succeeds with optimistic WHERE, including NULL old non-PK.
+    #[tokio::test]
+    async fn ow03_sqlite_optimistic_commit_succeeds_with_null_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes_opt_ok.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        session
+            .execute(
+                "CREATE TABLE sela_opt_ok (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    note TEXT
+                )",
+            )
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO sela_opt_ok (id, name, note) VALUES (1, 'a', NULL)")
+            .await
+            .unwrap();
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new("main", "sela_opt_ok"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("ok"),
+        )
+        .unwrap();
+        cs.set_cell(&[Value::Int(1)], "note", Value::Null, Value::text("filled"))
+            .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        assert!(
+            plan.statements[0].sql.contains("AND \"note\" IS NULL"),
+            "{}",
+            plan.statements[0].sql
+        );
+        let result = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.statements_executed, 1);
+        let page = session
+            .query("SELECT name, note FROM sela_opt_ok WHERE id = 1")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("ok"));
+        assert_eq!(page.rows[0][1], Value::text("filled"));
     }
 
     #[tokio::test]

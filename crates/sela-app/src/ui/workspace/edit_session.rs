@@ -479,7 +479,7 @@ impl EditSession {
         };
         for change in cs.changes() {
             match change {
-                RowChange::Delete { pk: deleted } if pk_match(deleted, pk) => {
+                RowChange::Delete { pk: deleted, .. } if pk_match(deleted, pk) => {
                     return RowMarker::Deleted;
                 }
                 RowChange::Update { pk: updated, cells }
@@ -513,7 +513,7 @@ impl EditSession {
                 RowChange::Update { pk: updated, cells } if pk_match(updated, pk) => {
                     return cells.get(column).map(|c| &c.new_value);
                 }
-                RowChange::Delete { pk: deleted } if pk_match(deleted, pk) => {
+                RowChange::Delete { pk: deleted, .. } if pk_match(deleted, pk) => {
                     // Show preserved edit under strikethrough when present.
                     let key = PkKey::from_values(pk);
                     return self
@@ -832,7 +832,19 @@ impl EditSession {
         Ok(id)
     }
 
+    #[cfg(test)]
     pub fn delete_or_restore_server(&mut self, pk: &[Value]) -> Result<RowMarker, String> {
+        self.delete_or_restore_server_with_expected(pk, BTreeMap::new())
+    }
+
+    /// Mark/restore a server row. `expected` is the non-PK original snapshot for
+    /// optimistic DELETE WHERE (always on). Pass server cell values for columns
+    /// that are not already covered by a pending update’s `old_value`.
+    pub fn delete_or_restore_server_with_expected(
+        &mut self,
+        pk: &[Value],
+        expected: BTreeMap<String, Value>,
+    ) -> Result<RowMarker, String> {
         self.mutation_allowed()?;
         let marker = self.row_marker_for_server(pk);
         let cs = self.changeset.as_mut().unwrap();
@@ -857,7 +869,20 @@ impl EditSession {
             self.preserved_updates
                 .insert(PkKey::from_values(pk), cells.clone());
         }
-        cs.delete_row(pk).map_err(|e| e.to_string())?;
+        // Merge caller snapshot with any pending-update old values.
+        let mut merged = expected;
+        if let Some(RowChange::Update { cells, .. }) = cs.changes().iter().find(|c| match c {
+            RowChange::Update { pk: p, .. } => pk_match(p, pk),
+            _ => false,
+        }) {
+            for (col, cell) in cells {
+                merged
+                    .entry(col.clone())
+                    .or_insert_with(|| cell.old_value.clone());
+            }
+        }
+        cs.delete_row_with_expected(pk, merged)
+            .map_err(|e| e.to_string())?;
         self.commit_failed = false;
         Ok(RowMarker::Deleted)
     }
@@ -1184,6 +1209,10 @@ pub(crate) fn format_commit_failure(err: &DbError, statement_count: usize) -> (S
                 format!("Commit failed · statement {n} of {statement_count} · changes kept");
             (banner, status)
         }
+        DbError::Cancelled { .. } => (
+            "Commit cancelled.".into(),
+            "Commit cancelled · changes kept".into(),
+        ),
         _ => (err.to_string(), "Commit failed · changes kept".into()),
     }
 }
@@ -1702,7 +1731,11 @@ mod tests {
         assert!(text.contains("-- update · 3"));
         assert!(text.contains("$1"));
         assert!(text.contains("The Hobbit"));
-        assert!(text.contains("WHERE"));
+        // OW-04: preview lists optimistic non-PK predicates.
+        assert!(
+            text.contains("AND \"title\" ="),
+            "preview must show optimistic WHERE: {text}"
+        );
     }
 
     #[test]
@@ -1713,6 +1746,30 @@ mod tests {
         assert!(banner.contains("No row matched public.books for this key."));
         assert!(status.contains("statement 2 of 4"));
         assert!(status.contains("changes kept"));
+    }
+
+    /// CAN-03: cancelled commit is not reported as success; edits stay dirty.
+    #[test]
+    fn can03_cancelled_commit_keeps_edits() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let pk = vec![Value::Int(1)];
+        session
+            .changeset
+            .as_mut()
+            .unwrap()
+            .set_cell(&pk, "title", Value::text("a"), Value::text("b"))
+            .unwrap();
+        let gen = session.begin_commit();
+        let err = DbError::cancelled("apply cancelled");
+        let (banner, status) = format_commit_failure(&err, 1);
+        assert_eq!(banner, "Commit cancelled.");
+        assert_eq!(status, "Commit cancelled · changes kept");
+        assert!(!status.contains("Committed"));
+        assert!(session.note_commit_failure(gen));
+        assert!(session.is_dirty());
+        assert!(session.commit_failed);
+        assert!(!session.committing);
     }
 
     #[test]

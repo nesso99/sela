@@ -329,8 +329,12 @@ impl DatabaseSession for MysqlSession {
         crate::count_sql!(&self.pool, sql, params)
     }
 
-    async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyChangesResult, DbError> {
-        crate::change_exec::apply_change_plan!(&self.pool, plan, Dialect::Mysql)
+    async fn apply_changes(
+        &self,
+        plan: &ChangePlan,
+        cancel: CancellationToken,
+    ) -> Result<ApplyChangesResult, DbError> {
+        crate::change_exec::apply_mysql(&self.pool, plan, cancel).await
     }
 
     async fn estimate_table_rows(&self, schema: &str, table: &str) -> Result<Option<u64>, DbError> {
@@ -1169,7 +1173,10 @@ mod tests {
         cs.insert_row(values).unwrap();
 
         let plan = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
-        let result = session.apply_changes(&plan).await.unwrap();
+        let result = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(result.statements_executed, 3);
 
         let page = session
@@ -1200,7 +1207,10 @@ mod tests {
         dup.insert("name".into(), Value::text("dup"));
         bad.insert_row(dup).unwrap();
         let bad_plan = ChangePlan::build(&bad, Dialect::Mysql).unwrap();
-        assert!(session.apply_changes(&bad_plan).await.is_err());
+        assert!(session
+            .apply_changes(&bad_plan, CancellationToken::new())
+            .await
+            .is_err());
 
         let page = session
             .query(&format!(
@@ -1268,7 +1278,10 @@ mod tests {
         )
         .unwrap();
         let err = session
-            .apply_changes(&ChangePlan::build(&cs, Dialect::Mysql).unwrap())
+            .apply_changes(
+                &ChangePlan::build(&cs, Dialect::Mysql).unwrap(),
+                CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -1299,7 +1312,10 @@ mod tests {
         cs.delete_row(&[Value::Int(2)]).unwrap();
         cs.delete_row(&[Value::Int(999)]).unwrap();
         let err = session
-            .apply_changes(&ChangePlan::build(&cs, Dialect::Mysql).unwrap())
+            .apply_changes(
+                &ChangePlan::build(&cs, Dialect::Mysql).unwrap(),
+                CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -1332,12 +1348,213 @@ mod tests {
                 pk: vec![Value::Int(1)],
             }],
         };
-        let result = session.apply_changes(&plan).await.unwrap();
+        let result = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(result.statements_executed, 1);
         assert_eq!(result.rows_affected, 1);
 
         session
             .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_guard"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    /// CAN-04 (pre-cancel), OW-02 (optimistic conflict). CAN-02 lock cancel added below.
+    async fn can_ow_mysql_apply_changes_cancel_and_optimistic_when_configured() {
+        let Ok(url) = std::env::var("SELA_MYSQL_URL") else {
+            eprintln!("skip mysql apply cancel/optimistic: set SELA_MYSQL_URL");
+            return;
+        };
+        let schema = std::env::var("SELA_MYSQL_SCHEMA").unwrap_or_else(|_| "sample".into());
+        let session = MysqlSession::connect_url(&url)
+            .await
+            .unwrap_or_else(|err| panic!("SELA_MYSQL_URL is set but MySQL is unreachable: {err}"));
+        let qschema = sela_core::quote_ident(Dialect::Mysql, &schema).unwrap();
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_opt68"))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "CREATE TABLE {qschema}.sela_opt68 (
+                    id INT PRIMARY KEY,
+                    name VARCHAR(64) NOT NULL,
+                    note VARCHAR(64) NULL
+                )"
+            ))
+            .await
+            .unwrap();
+        session
+            .execute(&format!(
+                "INSERT INTO {qschema}.sela_opt68 (id, name, note) VALUES (1, 'a', NULL), (2, 'b', 'x')"
+            ))
+            .await
+            .unwrap();
+
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_opt68"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("cancelled"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = session
+            .apply_changes(&plan, cancel)
+            .await
+            .expect_err("pre-cancelled");
+        assert!(matches!(err, DbError::Cancelled { .. }), "{err:?}");
+
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_opt68 SET name = 'concurrent' WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_opt68"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("mine"),
+        )
+        .unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert("name".into(), Value::text("b"));
+        expected.insert("note".into(), Value::text("x"));
+        cs.delete_row_with_expected(&[Value::Int(2)], expected)
+            .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        let err = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::ChangeConflict {
+                    statement_index: 1,
+                    rows_affected: 0,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let page = session
+            .query(&format!(
+                "SELECT id, name FROM {qschema}.sela_opt68 ORDER BY id"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0][1], Value::text("concurrent"));
+        assert_eq!(page.rows[1][1], Value::text("b"));
+
+        // OW-03: optimistic WHERE with NULL old non-PK still commits.
+        session
+            .execute(&format!(
+                "UPDATE {qschema}.sela_opt68 SET name = 'a', note = NULL WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_opt68"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("a"),
+            Value::text("ok"),
+        )
+        .unwrap();
+        cs.set_cell(&[Value::Int(1)], "note", Value::Null, Value::text("filled"))
+            .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        let result = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.statements_executed, 1);
+
+        // CAN-02: cancel while blocked on a row lock — no partial commit.
+        let lock_pool = sqlx::MySqlPool::connect(&url).await.expect("lock pool");
+        let mut lock_conn = lock_pool.acquire().await.expect("lock conn");
+        sqlx::query("BEGIN").execute(&mut *lock_conn).await.unwrap();
+        crate::query(&format!(
+            "SELECT id FROM {qschema}.sela_opt68 WHERE id = 1 FOR UPDATE"
+        ))
+        .execute(&mut *lock_conn)
+        .await
+        .unwrap();
+        let mut cs = ChangeSet::try_new(
+            TableRef::new(&schema, "sela_opt68"),
+            vec!["id".into()],
+            vec!["id".into(), "name".into(), "note".into()],
+        )
+        .unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "name",
+            Value::text("ok"),
+            Value::text("blocked"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        let cancel = CancellationToken::new();
+        let cancel_later = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            cancel_later.cancel();
+        });
+        let started = std::time::Instant::now();
+        let err = session
+            .apply_changes(&plan, cancel)
+            .await
+            .expect_err("blocked apply must cancel");
+        assert!(
+            matches!(err, DbError::Cancelled { .. }),
+            "expected Cancelled, got {err:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "cancel took {:?}",
+            started.elapsed()
+        );
+        sqlx::query("ROLLBACK")
+            .execute(&mut *lock_conn)
+            .await
+            .unwrap();
+        drop(lock_conn);
+        lock_pool.close().await;
+        let page = session
+            .query(&format!(
+                "SELECT name FROM {qschema}.sela_opt68 WHERE id = 1"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("ok"));
+
+        session
+            .execute(&format!("DROP TABLE IF EXISTS {qschema}.sela_opt68"))
             .await
             .unwrap();
     }

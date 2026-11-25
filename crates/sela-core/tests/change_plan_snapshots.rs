@@ -1,7 +1,9 @@
-//! Golden snapshots for ChangePlan SQL (M2-2).
+//! Golden snapshots for ChangePlan SQL (M2-2 / #68 OW-01).
 //!
-//! Expected files live under `tests/change_plan_snapshots/`. Regenerate by
-//! updating those files when intentional SQL shape changes land.
+//! Covers always-on optimistic WHERE (previous non-PK values, `IS NULL` for
+//! NULL) across Postgres, MySQL, and SQLite. Expected files live under
+//! `tests/change_plan_snapshots/`. Regenerate by updating those files when
+//! intentional SQL shape changes land.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -64,8 +66,14 @@ fn mixed_changeset() -> ChangeSet {
     )
     .unwrap();
 
-    // Delete (composite PK; second component NULL → IS NULL).
-    cs.delete_row(&[Value::Int(2), Value::Null]).unwrap();
+    // Delete (composite PK; second component NULL → IS NULL) with non-PK
+    // expected values for always-on optimistic WHERE (OW-01), including NULL.
+    let mut del_expected = BTreeMap::new();
+    del_expected.insert("name".into(), Value::text("beta"));
+    del_expected.insert("qty".into(), Value::Int(0));
+    del_expected.insert("note".into(), Value::Null);
+    cs.delete_row_with_expected(&[Value::Int(2), Value::Null], del_expected)
+        .unwrap();
 
     // Insert with odd-ish values including NULL.
     let mut values = BTreeMap::new();

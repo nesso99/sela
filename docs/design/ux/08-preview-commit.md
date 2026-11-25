@@ -43,7 +43,7 @@ The footer repeats `Discard` (ghost) and `Commit` (primary). They do the same th
 
 ## Commit
 
-`Commit` or `secondary-s` runs the pending statements in one transaction: `BEGIN`, deletes, updates, inserts, `COMMIT`. Identifiers are quoted. Values are bound. The `WHERE` is the primary-key columns only.
+`Commit` or `secondary-s` runs the pending statements in one transaction: `BEGIN`, deletes, updates, inserts, `COMMIT`. Identifiers are quoted. Values are bound. The `WHERE` is the primary-key columns plus previous non-PK values (optimistic concurrency, always on — #68). Stop / `secondary-.` cancels an in-flight commit; the transaction rolls back and pending edits stay.
 
 `secondary-s` while the cell editor is open accepts the cell first, then commits, except when that accept fails validation: the editor stays open and nothing is sent. `secondary-s` in the SQL editor does nothing. It is not a document save.
 
@@ -117,7 +117,7 @@ Until this milestone ships, quit still confirms only while a query is running. T
 
 1. The pending count lives on the 26px bar, not a second time on the status bar.
 2. The sheet shows placeholders plus bound values. Execution stays on the bound path.
-3. `WHERE` is the primary-key columns only, matching #65. Old values of other columns are not part of the predicate. An optimistic check on those values is [#68](https://github.com/nesso99/sela/issues/68), not v0.2.
+3. `WHERE` is the primary-key columns plus previous non-PK values (optimistic concurrency, always on — [#68](https://github.com/nesso99/sela/issues/68)). NULL old values use `IS NULL`.
 4. A failed commit keeps every pending edit and does not reload.
 5. Discard, close-tab, and quit-with-edits reuse the quit dialog's button rules. Cancel is primary. The destructive button is not. Discard is both `secondary-shift-z` and the Discard button.
 
