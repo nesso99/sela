@@ -557,6 +557,42 @@ impl Workspace {
         id
     }
 
+    /// Retarget the active saved connection as Postgres + SSH (closed bastion port)
+    /// while leaving the live session in place so palette actions stay enabled.
+    /// Reconnect then exercises `proceed_connect_id` → SSH `ConnectOutcome` (#122).
+    #[cfg(test)]
+    pub(crate) fn test_retarget_active_as_postgres_ssh(&mut self) -> Option<String> {
+        use sela_core::{Engine, SshAuthMethod, SshSettings};
+        let id = self.active_id.clone()?;
+        let conn = self.connections.iter_mut().find(|c| c.id == id)?;
+        conn.engine = Engine::Postgres;
+        conn.host = "127.0.0.1".into();
+        conn.port = 5432;
+        conn.username = "sela".into();
+        conn.database = "sela".into();
+        conn.file_path.clear();
+        conn.ssh = SshSettings {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            port: 1,
+            user: "tunnel".into(),
+            auth: SshAuthMethod::Password,
+            private_key_path: String::new(),
+        };
+        let _ = self.store.save(&self.connections);
+        let _ = self
+            .secrets
+            .set(&sela_config::ssh_password_account(&id), "tunnel-secret");
+        Some(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_view_error(&self) -> Option<String> {
+        self.active_view()
+            .and_then(|v| v.error.clone())
+            .or_else(|| self.boot_error.clone())
+    }
+
     #[cfg(test)]
     pub(crate) fn test_connect(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.connect_id(id, Some(window), cx);

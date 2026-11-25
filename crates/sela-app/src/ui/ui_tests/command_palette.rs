@@ -617,6 +617,86 @@ async fn pal12_toggle_safe_mode_cycle(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// PAL-12 with SSH enabled on the active connection: after #122,
+/// `cycle_safe_mode_from_palette` → `proceed_connect_id` → `connect_auth_for`
+/// → `ConnectOutcome`. Bastion is a closed local port so reconnect fails;
+/// Safe label + persist still update first, and pending edits are kept.
+#[gpui_kit::test]
+async fn pal12_safe_mode_cycle_ssh_connect_outcome(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    let conn_id = cx
+        .update_window(fix.handle, |_, window, cx| {
+            window.render_frame(cx);
+            // Keep the live SQLite session so Toggle safe mode is enabled, then
+            // retarget the saved row as Postgres+SSH for the reconnect path.
+            let id = fix
+                .workspace
+                .update(cx, |ws, _| ws.test_retarget_active_as_postgres_ssh())
+                .expect("active connection");
+            fix.workspace
+                .update(cx, |ws, cx| ws.test_inject_pending_edit(cx));
+            assert!(fix.workspace.read(cx).test_pending_dirty());
+            assert!(fix.workspace.read(cx).test_is_connected());
+            fix.workspace
+                .update(cx, |ws, cx| ws.test_focus_sql_editor(window, cx));
+            window.render_frame(cx);
+            press_secondary(window, "secondary-shift-p", cx);
+            window.render_frame(cx);
+            assert!(fix.workspace.read(cx).palette_is_open());
+            fix.workspace.update(cx, |ws, cx| {
+                ws.test_set_palette_query("Toggle safe mode", window, cx);
+            });
+            window.render_frame(cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                fix.workspace.read(cx).test_connection_safe_mode(&id),
+                Some(SafeMode::Confirm)
+            );
+            assert_eq!(
+                fix.workspace
+                    .read(cx)
+                    .test_safe_toolbar_segment()
+                    .as_deref(),
+                Some("Safe: Confirm")
+            );
+            assert_eq!(
+                fix.workspace.read(cx).test_persisted_safe_mode(&id),
+                Some(SafeMode::Confirm)
+            );
+            assert!(
+                fix.workspace.read(cx).test_pending_dirty(),
+                "pending edits must survive SSH reconnect attempt"
+            );
+            id
+        })
+        .unwrap();
+    // SSH reconnect attempt fails (closed port) via ConnectOutcome/SSH path.
+    cx.wait_for(fix.handle, Duration::from_secs(8), |_, cx| {
+        fix.workspace.read(cx).test_view_error().is_some()
+            && !fix.workspace.read(cx).test_is_connected()
+    })
+    .await;
+    let err = cx
+        .update(|cx| fix.workspace.read(cx).test_view_error())
+        .expect("SSH reconnect should surface an error");
+    assert!(
+        err.contains("SSH")
+            || err.contains("ssh")
+            || err.contains("Connection")
+            || err.contains("connect")
+            || err.contains("refused"),
+        "expected SSH/connect failure, got: {err}"
+    );
+    // Mode stayed Confirm through the failed SSH reconnect; pending kept.
+    cx.update(|cx| {
+        assert_eq!(
+            fix.workspace.read(cx).test_persisted_safe_mode(&conn_id),
+            Some(SafeMode::Confirm)
+        );
+        assert!(fix.workspace.read(cx).test_pending_dirty());
+    });
+}
 /// Cancelled-commit pending-bar copy (carry-over from #112).
 #[gpui_kit::test]
 fn cancelled_commit_pending_bar_copy(_cx: &mut TestAppContext) {
