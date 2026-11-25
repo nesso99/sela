@@ -57,10 +57,12 @@ impl SchemaCacheHandle {
         self.inner.borrow().status.clone()
     }
 
+    #[cfg(test)]
     pub fn generation(&self) -> u64 {
         self.inner.borrow().generation
     }
 
+    #[cfg(test)]
     pub fn connection_id(&self) -> Option<String> {
         self.inner.borrow().connection_id.clone()
     }
@@ -83,6 +85,7 @@ impl SchemaCacheHandle {
         g.generation
     }
 
+    #[cfg(test)]
     pub fn set_loading(&self, dialect: Dialect) {
         let _ = self.begin_reload(dialect);
     }
@@ -128,6 +131,7 @@ impl SchemaCacheHandle {
         true
     }
 
+    #[cfg(test)]
     pub fn set_snapshot(
         &self,
         dialect: Dialect,
