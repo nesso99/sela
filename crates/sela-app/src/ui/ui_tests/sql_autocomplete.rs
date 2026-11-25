@@ -699,7 +699,8 @@ async fn workspace_ctrl_space_and_tab_accept(cx: &mut TestAppContext) {
     });
     cx.update_window(fix.handle, |_, window, cx| {
         fix.workspace.update(cx, |ws, cx| {
-            ws.test_set_sql("bo", window, cx);
+            // Unique prefix in the sample library (books / bookmarks both match "bo").
+            ws.test_set_sql("autho", window, cx);
             ws.test_focus_sql_editor(window, cx);
         });
         window.press("secondary-space", cx);
@@ -722,8 +723,8 @@ async fn workspace_ctrl_space_and_tab_accept(cx: &mut TestAppContext) {
         );
         let labels = fix.workspace.read(cx).test_completion_labels(cx);
         assert!(
-            labels.iter().any(|l| l.eq_ignore_ascii_case("books")),
-            "expected books; got {labels:?}"
+            labels.iter().any(|l| l.eq_ignore_ascii_case("authors")),
+            "expected authors; got {labels:?}"
         );
         window.dispatch_action(Box::new(AcceptCompletionOrIndent), cx);
     })
@@ -732,7 +733,7 @@ async fn workspace_ctrl_space_and_tab_accept(cx: &mut TestAppContext) {
     cx.update_window(fix.handle, |_, _, cx| {
         let buf = fix.workspace.read(cx).test_sql_buffer(cx);
         assert!(
-            buf.to_ascii_lowercase().contains("books"),
+            buf.to_ascii_lowercase().contains("authors"),
             "Tab accept via Workspace; buffer={buf:?}"
         );
     })

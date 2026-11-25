@@ -726,11 +726,6 @@ impl Workspace {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_show_completions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_sql_completions(window, cx);
-    }
-
-    #[cfg(test)]
     pub(crate) fn test_maybe_refresh_schema_after_sql(
         &mut self,
         sql: &str,
