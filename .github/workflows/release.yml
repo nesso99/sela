@@ -248,6 +248,66 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Headless GPUI smoke under Xvfb + lavapipe. Best-effort only: software
+  # rendering can flake or fail to paint; never block a release publish.
+  screenshot-smoke:
+    name: screenshot-smoke (linux)
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sela-${{ needs.meta.outputs.version }}-linux-x86_64
+          path: dist
+
+      - name: Install runtime + screenshot deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # Ubuntu 24.04 renamed libasound2 → libasound2t64.
+          if apt-cache show libasound2t64 >/dev/null 2>&1; then
+            ALSA=libasound2t64
+          else
+            ALSA=libasound2
+          fi
+          sudo apt-get install -y \
+            xvfb openbox xdotool imagemagick \
+            mesa-vulkan-drivers libvulkan1 \
+            libwayland-client0 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb1 libx11-6 libxrandr2 libxi6 \
+            libfontconfig1 libfreetype6 libdbus-1-3 \
+            "$ALSA" fonts-dejavu-core
+
+      - name: Extract binary and capture screenshots
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/screenshot-smoke.sh
+          tar -xzf "dist/sela-${VERSION}-linux-x86_64.tar.gz"
+          BIN="sela-${VERSION}-linux-x86_64/sela"
+          test -x "$BIN"
+          mkdir -p screenshots
+          SELA_BIN="$(pwd)/$BIN" OUT_DIR="$(pwd)/screenshots" \
+            ./scripts/screenshot-smoke.sh
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sela-${{ needs.meta.outputs.version }}-screenshots
+          path: screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 14
+
   assemble:
     name: assemble + checksums + notes
     needs: [meta, build]
@@ -258,10 +318,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Explicit platform names only — do not glob sela-*-screenshots into
+      # SHA256SUMS / GitHub Release assets.
       - name: Download all platform artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: sela-${{ needs.meta.outputs.version }}-*
+          pattern: sela-${{ needs.meta.outputs.version }}-{linux-x86_64,macos-arm64,windows-x86_64}
           path: dist
           merge-multiple: true
 
