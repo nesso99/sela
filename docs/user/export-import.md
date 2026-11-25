@@ -9,7 +9,7 @@ Writers take any `std::io::Write` (tests inject a `Vec<u8>` or `Cursor`; the app
 | Format | Notes |
 | --- | --- |
 | **CSV** | RFC 4180 quoting. Delimiter `,` (default), `;`, or tab. Header on by default. **NULL = empty field** by default; optional literal `\N` (text equal to the sentinel is always quoted). Empty string is written as `""` so NULL ≠ `''`. Optional UTF-8 BOM (off by default). Binary: lowercase hex or Base64. Line endings are **LF** (`\n`). |
-| **JSON** | Array of objects, or NDJSON. SQL NULL → JSON `null`; text `NULL` stays a string. Object keys follow column order. `NUMERIC` is an exact raw JSON number; JSON column text is written verbatim after validation. |
+| **JSON** | Array of objects, or NDJSON. SQL NULL → JSON `null`; text `NULL` stays a string. Object keys follow column order. `NUMERIC` is an exact raw JSON number; JSON column text is written after validation with raw `\n`/`\r` collapsed to spaces so NDJSON stays one record per line. |
 | **SQL INSERT** | Dialect-quoted identifiers and literals for Postgres, MySQL, and SQLite. Batches flush at **100 rows** or about **1 MiB** of statement text, whichever comes first. Decode/unsupported cells are refused (column named). MySQL/SQLite refuse non-finite floats; Postgres emits `'NaN'` / `'Infinity'` / `'-Infinity'`. Binary: `'\x…'` (Postgres) or `X'…'` (MySQL/SQLite). On a SQL result, use placeholder table `table` plus a trailing `-- replace table name`. |
 
 Clipboard copy of a selection (US-14) stays in [copying.md](./copying.md) and still uses the keyword `NULL` in CSV.

@@ -131,6 +131,58 @@ fn ex02_json_decimal_and_nested_json_golden() {
     assert_snapshot("precision.json", &String::from_utf8(out).unwrap());
 }
 
+fn multiline_json_cell() -> Value {
+    // Pretty-printed JSON as PG `json` may store it (raw newlines outside strings).
+    Value::json_raw("{\n  \"a\": 1,\n  \"b\": 2\n}")
+}
+
+/// EX-02: multi-line JSON cell in a JSON array (newlines → spaces).
+#[test]
+fn ex02_json_array_multiline_cell_golden() {
+    let mut out = Vec::new();
+    export_rows(
+        &mut out,
+        &["payload".into()],
+        vec![vec![multiline_json_cell()]],
+        &ExportFormat::Json(JsonExportOptions {
+            mode: JsonExportMode::Array,
+            binary: BinaryEncoding::Hex,
+        }),
+        &CancellationToken::new(),
+        |_| {},
+    )
+    .unwrap();
+    assert_snapshot("multiline_cell.json", &String::from_utf8(out).unwrap());
+}
+
+/// EX-02: multi-line JSON cell in NDJSON stays one record per line.
+#[test]
+fn ex02_json_ndjson_multiline_cell_golden() {
+    let mut out = Vec::new();
+    export_rows(
+        &mut out,
+        &["payload".into()],
+        vec![
+            vec![multiline_json_cell()],
+            vec![Value::json_raw(r#"{"x":1}"#)],
+        ],
+        &ExportFormat::Json(JsonExportOptions {
+            mode: JsonExportMode::Ndjson,
+            binary: BinaryEncoding::Hex,
+        }),
+        &CancellationToken::new(),
+        |_| {},
+    )
+    .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert_eq!(
+        text.lines().count(),
+        2,
+        "expected 2 NDJSON records:\n{text}"
+    );
+    assert_snapshot("multiline_cell.ndjson", &text);
+}
+
 /// EX-02 NDJSON.
 #[test]
 fn ex02_json_ndjson_golden() {

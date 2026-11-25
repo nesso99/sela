@@ -272,11 +272,11 @@ pub fn format_csv_cell(value: &Value, null_repr: &str, binary: BinaryEncoding) -
     }
 }
 
-/// Format a cell as a JSON value (typed where possible; binary as a string).
+/// Format a non-JSON / non-Decimal cell as `serde_json::Value` (internal helper).
 ///
-/// Prefer [`append_json_cell`] for export: NUMERIC is written as an exact raw
-/// number and JSON column text is emitted verbatim after validation.
-pub fn format_json_cell(value: &Value, binary: BinaryEncoding) -> serde_json::Value {
+/// [`Value::Decimal`] and [`Value::Json`] are handled only by [`append_json_cell`]
+/// so NUMERIC stays an exact raw number and JSON text stays ordered / un-reserialized.
+fn format_json_cell(value: &Value, binary: BinaryEncoding) -> serde_json::Value {
     match value {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
@@ -285,17 +285,19 @@ pub fn format_json_cell(value: &Value, binary: BinaryEncoding) -> serde_json::Va
         Value::Float(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
             .unwrap_or_else(|| serde_json::Value::String(value.display().into_owned())),
-        // Keep precision: do not round-trip through f64 / serde Number.
-        Value::Decimal(d) => serde_json::Value::String(d.normalize().to_string()),
         Value::Bytes(bytes) => serde_json::Value::String(encode_binary(bytes, binary)),
-        // Keep key order / bigints: callers that need verbatim JSON use append_json_cell.
+        // Decimal / Json must go through append_json_cell; fall back safely if misrouted.
+        Value::Decimal(d) => serde_json::Value::String(d.normalize().to_string()),
         Value::Json(text) => serde_json::Value::String(text.to_string()),
         other => serde_json::Value::String(other.display().into_owned()),
     }
 }
 
 /// Append one cell as JSON text. NUMERIC is an exact raw number; JSON columns
-/// are written verbatim after a validity check (no re-parse → re-serialize).
+/// are written after a validity check (no re-parse → re-serialize). Raw `\n` /
+/// `\r` in the JSON text are replaced with spaces so NDJSON stays one record
+/// per line (PG `json` may keep original newlines; those are insignificant
+/// outside strings).
 fn append_json_cell(
     out: &mut String,
     value: &Value,
@@ -310,7 +312,12 @@ fn append_json_cell(
         Value::Json(text) => {
             serde_json::from_str::<serde_json::Value>(text)
                 .map_err(|err| ExportError::Io(format!("invalid JSON cell: {err}")))?;
-            out.push_str(text);
+            for ch in text.chars() {
+                out.push(match ch {
+                    '\n' | '\r' => ' ',
+                    other => other,
+                });
+            }
             Ok(())
         }
         other => {
@@ -1508,6 +1515,88 @@ mod tests {
         assert!(
             text.contains(raw_json),
             "JSON column must be verbatim (key order kept): {text}"
+        );
+    }
+
+    /// EX-02: JSON cell with raw newlines must not split an NDJSON record.
+    #[test]
+    fn ex02_json_cell_newlines_collapsed_for_ndjson() {
+        let cancel = CancellationToken::new();
+        let raw = "{\n  \"a\": 1,\r\n  \"b\": 2\n}";
+        let mut out = Vec::new();
+        export_rows(
+            &mut out,
+            &["payload".into()],
+            vec![vec![Value::json_raw(raw)]],
+            &ExportFormat::Json(JsonExportOptions {
+                mode: JsonExportMode::Ndjson,
+                binary: BinaryEncoding::Hex,
+            }),
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "NDJSON must be one line per row:\n{text}"
+        );
+        assert!(!text.contains('\r'));
+        assert!(text.contains(r#""a": 1"#) || text.contains(r#""a":1"#));
+    }
+
+    /// Wide NUMERIC past rust_decimal (28 digits) falls back to `Value::Text` in
+    /// the PG driver (`get_decimal`); export must emit that text exactly.
+    #[test]
+    fn ex02_wide_numeric_text_fallback_exported_exactly() {
+        let cancel = CancellationToken::new();
+        // 40-digit integer string — wider than rust_decimal's 28-digit limit.
+        let wide = "1234567890123456789012345678901234567890";
+        let cols = vec!["amount".into()];
+        let rows = vec![vec![Value::text(wide)]];
+
+        let mut json = Vec::new();
+        export_rows(
+            &mut json,
+            &cols,
+            rows.clone(),
+            &ExportFormat::Json(JsonExportOptions::default()),
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        let j = String::from_utf8(json).unwrap();
+        assert!(j.contains(wide), "JSON must keep every digit: {j}");
+
+        let mut csv = Vec::new();
+        export_rows(
+            &mut csv,
+            &cols,
+            rows.clone(),
+            &ExportFormat::Csv(CsvExportOptions::default()),
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(csv).unwrap().contains(wide),
+            "CSV must keep every digit"
+        );
+
+        let mut sql = Vec::new();
+        export_rows(
+            &mut sql,
+            &cols,
+            rows,
+            &ExportFormat::SqlInsert(SqlInsertExportOptions::new(Dialect::Postgres, "t")),
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(sql).unwrap().contains(wide),
+            "INSERT must keep every digit"
         );
     }
 

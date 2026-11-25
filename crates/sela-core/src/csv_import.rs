@@ -15,7 +15,10 @@ use uuid::Uuid;
 use crate::change_set::{ChangeError, ChangeSet};
 use crate::column_kind::ColumnKind;
 use crate::connection::SafeMode;
-use crate::export::{encode_binary, BinaryEncoding, CsvExportOptions};
+use crate::export::{
+    encode_binary, escape_csv_field_delim, escape_csv_field_delim_ex, BinaryEncoding,
+    CsvExportOptions,
+};
 use crate::safe_mode::{decide_grid_commit_gate, GridCommitGate};
 use crate::schema_source::{SchemaSourceError, TableSchemaSource};
 use crate::types::{ColumnMeta, Value};
@@ -125,14 +128,14 @@ pub enum ImportError {
     NeedsConfirm,
     #[error("{0}")]
     Sink(String),
-    #[error("invalid UTF-8 in CSV input")]
-    InvalidUtf8,
+    #[error("line {line}: invalid UTF-8 in CSV input")]
+    InvalidUtf8 { line: u64 },
 }
 
 impl From<io::Error> for ImportError {
     fn from(err: io::Error) -> Self {
         if err.kind() == io::ErrorKind::InvalidData {
-            Self::InvalidUtf8
+            Self::InvalidUtf8 { line: 0 }
         } else {
             Self::Io(err.to_string())
         }
@@ -635,7 +638,7 @@ fn parse_csv_fields(raw: &[u8], delim: u8) -> Result<Vec<CsvField>, ImportError>
                 out.push(bytes[i]);
                 i += 1;
             }
-            let text = String::from_utf8(out).map_err(|_| ImportError::InvalidUtf8)?;
+            let text = String::from_utf8(out).map_err(|_| ImportError::InvalidUtf8 { line: 0 })?;
             fields.push(CsvField { text, quoted: true });
             if i < bytes.len() {
                 if bytes[i] != delim {
@@ -658,7 +661,7 @@ fn parse_csv_fields(raw: &[u8], delim: u8) -> Result<Vec<CsvField>, ImportError>
                 i += 1;
             }
             let text = std::str::from_utf8(&bytes[start..i])
-                .map_err(|_| ImportError::InvalidUtf8)?
+                .map_err(|_| ImportError::InvalidUtf8 { line: 0 })?
                 .to_string();
             fields.push(CsvField {
                 text,
@@ -715,8 +718,18 @@ impl<R: Read> CsvImporter<R> {
         strip_leading_utf8_bom(&mut reader)?;
         let mut buf = Vec::new();
         let (headers, mapping, line) = if options.has_header {
-            let (fields, lines) = read_csv_record(&mut reader, options.delimiter, &mut buf)?
-                .ok_or_else(|| ImportError::Mapping("CSV is empty (missing header row)".into()))?;
+            let (fields, lines) = match read_csv_record(&mut reader, options.delimiter, &mut buf) {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    return Err(ImportError::Mapping(
+                        "CSV is empty (missing header row)".into(),
+                    ));
+                }
+                Err(ImportError::InvalidUtf8 { .. }) => {
+                    return Err(ImportError::InvalidUtf8 { line: 1 });
+                }
+                Err(err) => return Err(err),
+            };
             let headers: Vec<String> = fields.iter().map(|f| f.text.clone()).collect();
             let mapping = ColumnMapping::from_headers(&headers, table_columns, &options)?;
             (headers, mapping, lines)
@@ -770,7 +783,13 @@ impl<R: Read> CsvImporter<R> {
                     .map_err(ImportError::from),
                 )
             }
-            Err(ImportError::InvalidUtf8) => Some(Err(ImportError::InvalidUtf8)),
+            Err(ImportError::InvalidUtf8 { .. }) => {
+                // Record that failed to parse starts on the next line after
+                // whatever was already consumed (header / prior rows).
+                Some(Err(ImportError::InvalidUtf8 {
+                    line: self.line + 1,
+                }))
+            }
             Err(ImportError::Row { line, message }) => {
                 Some(Err(ImportError::Row { line, message }))
             }
@@ -824,8 +843,10 @@ where
 }
 
 /// Validate that a byte slice is valid UTF-8 before parsing (IM-08).
+///
+/// Line is `0` when the failure is not tied to a CSV record yet.
 pub fn require_utf8(bytes: &[u8]) -> Result<&str, ImportError> {
-    std::str::from_utf8(bytes).map_err(|_| ImportError::InvalidUtf8)
+    std::str::from_utf8(bytes).map_err(|_| ImportError::InvalidUtf8 { line: 0 })
 }
 
 /// Read a UTF-8 CSV from any [`Read`], failing clearly on invalid encoding.
@@ -851,11 +872,21 @@ pub fn peek_utf8_bom<R: BufRead>(reader: &mut R) -> Result<bool, ImportError> {
 }
 
 /// Encode a value back to CSV text using the same rules as the exporter (round-trip helpers).
+///
+/// Text equal to the NULL sentinel is force-quoted so it stays distinct from NULL (EX-08).
 pub fn value_to_csv_field(value: &Value, options: &CsvExportOptions) -> String {
+    let null_repr = options.null_repr();
     match value {
-        Value::Null => options.null_repr().to_string(),
-        Value::Bytes(b) => encode_binary(b, options.binary),
-        other => other.display().into_owned(),
+        Value::Null if null_repr.is_empty() => String::new(),
+        Value::Null => escape_csv_field_delim(null_repr, options.delimiter),
+        Value::Bytes(b) => {
+            escape_csv_field_delim(&encode_binary(b, options.binary), options.delimiter)
+        }
+        other => {
+            let text = other.display().into_owned();
+            let force_quote = !null_repr.is_empty() && text == null_repr;
+            escape_csv_field_delim_ex(&text, options.delimiter, force_quote)
+        }
     }
 }
 
@@ -1094,9 +1125,12 @@ mod tests {
     #[test]
     fn im08_invalid_utf8_fails_clearly() {
         let bad = b"id,title\n1,\xff\xfe\n";
-        assert_eq!(require_utf8(bad).unwrap_err(), ImportError::InvalidUtf8);
+        assert_eq!(
+            require_utf8(bad).unwrap_err(),
+            ImportError::InvalidUtf8 { line: 0 }
+        );
         let err = read_utf8_source(&bad[..]).unwrap_err();
-        assert_eq!(err, ImportError::InvalidUtf8);
+        assert_eq!(err, ImportError::InvalidUtf8 { line: 0 });
     }
 
     #[test]
@@ -1164,7 +1198,19 @@ mod tests {
             |_| {},
         )
         .unwrap_err();
-        assert_eq!(err, ImportError::InvalidUtf8);
+        // Header is line 1; bad data row is line 2.
+        assert_eq!(err, ImportError::InvalidUtf8 { line: 2 });
+    }
+
+    #[test]
+    fn value_to_csv_field_quotes_null_sentinel_text() {
+        let opts = CsvExportOptions {
+            null_encoding: CsvNullEncoding::LiteralBackslashN,
+            ..CsvExportOptions::default()
+        };
+        assert_eq!(value_to_csv_field(&Value::Null, &opts), "\\N");
+        assert_eq!(value_to_csv_field(&Value::text("\\N"), &opts), "\"\\N\"");
+        assert_eq!(value_to_csv_field(&Value::text("plain"), &opts), "plain");
     }
 
     #[test]
