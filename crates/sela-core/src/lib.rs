@@ -11,11 +11,14 @@ mod connection_color;
 mod connection_org;
 mod connection_url;
 mod copy_format;
+mod csv_import;
 mod error;
+mod export;
 mod filter;
 mod history;
 mod result_window;
 mod safe_mode;
+mod schema_source;
 mod selection;
 mod session;
 mod sql;
@@ -43,7 +46,21 @@ pub use copy_format::{
     escape_csv_field, escape_sql_string, extract_selection_matrix, format_selection,
     value_to_copy_cell, CopyCell, CopyError, CopyFormat, CopyScalarKind,
 };
+pub use csv_import::{
+    count_csv_data_rows, decide_import_gate, ensure_import_allowed, import_csv_into, map_record,
+    map_record_fields, parse_import_field, parse_import_field_ex, peek_utf8_bom, require_utf8,
+    strip_utf8_bom, value_to_csv_field, ColumnMapping, CsvField, CsvImportOptions, CsvImporter,
+    ImportError, ImportRow, ImportRowError, ImportRowSink, IMPORT_CANCELLED_STATUS,
+    IMPORT_REFUSED_READ_ONLY_STATUS,
+};
 pub use error::DbError;
+pub use export::{
+    discard_export_partial, encode_binary, escape_csv_field_delim, escape_csv_field_delim_ex,
+    export_query, export_rows, format_csv_cell, value_to_export_sql_literal, BinaryEncoding,
+    CsvExportOptions, CsvExporter, CsvNullEncoding, ExportError, ExportFormat, JsonExportMode,
+    JsonExportOptions, JsonExporter, SqlInsertExportOptions, SqlInsertExporter,
+    EXPORT_CANCELLED_STATUS, SQL_INSERT_DEFAULT_BATCH_BYTES, SQL_INSERT_DEFAULT_BATCH_ROWS,
+};
 pub use filter::{
     bool_filter_menu_index, bool_filter_menu_value, build_table_count, build_table_page,
     build_table_select, display_bound_sql, escape_like, escape_like_meta, filter_drafts_are_empty,
@@ -62,6 +79,7 @@ pub use safe_mode::{
     classify_statement_safety, decide_editor_gate, decide_grid_commit_gate, decide_history_rerun,
     EditorGate, GridCommitGate, HistoryRerunGate, NoWhereKind, StatementSafety,
 };
+pub use schema_source::{SchemaSourceError, StaticTableSchema, TableSchemaSource};
 pub use selection::{step_result_index, CellPos, SelectionRect};
 pub use session::{
     default_page_size, default_sql_row_cap, exact_table_rows, preview_table, run_user_sql,

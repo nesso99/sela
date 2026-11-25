@@ -11,7 +11,7 @@ flowchart TB
   ui["sela-app (GPUI)<br/>Workspace, tabs, grid, editor, dialogs"]
   state["App state / models<br/>Entity per tab, ChangeSet, SchemaCache"]
   bridge["Runtime bridge<br/>drive() + CancellationToken"]
-  core["sela-core<br/>DatabaseSession, Value, ResultWindow, SQL helpers"]
+  core["sela-core<br/>DatabaseSession, Value, ResultWindow, SQL helpers, export/import"]
   drivers["sela-drivers<br/>postgres, mysql, sqlite (sqlx)"]
   ssh["sela-ssh<br/>Tunnel local port-forward (russh)"]
   cfg["sela-config<br/>connections.json, history.sqlite, keychain"]
@@ -30,7 +30,7 @@ The UI never talks to sqlx directly. Library crates stay free of GPUI so CI can 
 
 ```text
 crates/
-  sela-core/     # DatabaseSession, Value, ResultWindow, SQL builder, ChangeSet/ChangePlan, structure, tabs
+  sela-core/     # DatabaseSession, Value, ResultWindow, SQL builder, ChangeSet/ChangePlan, export/import, structure, tabs
   sela-drivers/  # postgres, mysql, sqlite, stream, decode, runtime, apply_changes; opens sela-ssh
   sela-ssh/      # SSH tunnel (russh), known_hosts, ~/.ssh/config subset
   sela-config/   # connections.json, tabs.json, settings.json, SecretStore / keyring

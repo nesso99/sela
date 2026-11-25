@@ -1,0 +1,4 @@
+{"id":1,"title":"a,b","note":null,"blob":"3q2+7w==","flag":true}
+{"id":2,"title":"say \"hi\"\nthere","note":"","blob":"","flag":false}
+{"id":3,"title":"café","note":"NULL","blob":"AA==","flag":null}
+{"id":4,"title":"cr\ronly","note":"plain","blob":"/w==","flag":true}
