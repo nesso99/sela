@@ -292,7 +292,11 @@ mod tests {
         let dir = tempdir().unwrap();
 
         let corrupt = dir.path().join("corrupt");
-        fs::write(&corrupt, b"-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-key\n").unwrap();
+        fs::write(
+            &corrupt,
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-key\n",
+        )
+        .unwrap();
         let err = load_private_key(&corrupt, Some("any-passphrase")).expect_err("corrupt");
         assert_eq!(err, SshError::auth(COULD_NOT_READ_KEY));
         assert_no_passphrase_leak(&err, "any-passphrase");
