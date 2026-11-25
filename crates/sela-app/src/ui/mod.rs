@@ -83,6 +83,12 @@ actions!(
         DiscardChanges,
         ExportData,
         ImportCsv,
+        ToggleQuickOpen,
+        ToggleCommandPalette,
+        EscapePalette,
+        PaletteSelectUp,
+        PaletteSelectDown,
+        PaletteConfirm,
         Quit,
         IncreaseFontSize,
         DecreaseFontSize,
@@ -360,6 +366,26 @@ pub(crate) fn install_sela_keybindings(cx: &mut gpui_kit::App) {
         Box::new(PreviewChanges),
         Some("DataTable"),
     );
+    // Leave paste (Ctrl/Cmd+Shift+V on some platforms) to text inputs.
+    bind_secondary(
+        cx,
+        "secondary-shift-v",
+        Box::new(NoAction),
+        Some(CELL_EDITOR_KEY_CONTEXT),
+    );
+    bind_secondary(cx, "secondary-shift-v", Box::new(NoAction), Some("Input"));
+    bind_secondary(
+        cx,
+        "secondary-shift-v",
+        Box::new(NoAction),
+        Some("SqlEditor"),
+    );
+    bind_secondary(
+        cx,
+        "secondary-shift-v",
+        Box::new(NoAction),
+        Some("FilterBar"),
+    );
     bind_secondary(
         cx,
         "secondary-s",
@@ -371,6 +397,62 @@ pub(crate) fn install_sela_keybindings(cx: &mut gpui_kit::App) {
         "secondary-shift-z",
         Box::new(DiscardChanges),
         Some("DataTable"),
+    );
+    // M3-4 command palette / quick open (global; dialogs eat keys via focus).
+    bind_secondary(cx, "secondary-p", Box::new(ToggleQuickOpen), None);
+    bind_secondary(
+        cx,
+        "secondary-shift-p",
+        Box::new(ToggleCommandPalette),
+        None,
+    );
+    bind_secondary(
+        cx,
+        "escape",
+        Box::new(EscapePalette),
+        Some(workspace::palette::PALETTE_KEY_CONTEXT),
+    );
+    bind_secondary(
+        cx,
+        "up",
+        Box::new(PaletteSelectUp),
+        Some(workspace::palette::PALETTE_KEY_CONTEXT),
+    );
+    bind_secondary(
+        cx,
+        "down",
+        Box::new(PaletteSelectDown),
+        Some(workspace::palette::PALETTE_KEY_CONTEXT),
+    );
+    bind_secondary(
+        cx,
+        "enter",
+        Box::new(PaletteConfirm),
+        Some(workspace::palette::PALETTE_KEY_CONTEXT),
+    );
+    bind_secondary(
+        cx,
+        "up",
+        Box::new(PaletteSelectUp),
+        Some("CommandPalette > Input"),
+    );
+    bind_secondary(
+        cx,
+        "down",
+        Box::new(PaletteSelectDown),
+        Some("CommandPalette > Input"),
+    );
+    bind_secondary(
+        cx,
+        "enter",
+        Box::new(PaletteConfirm),
+        Some("CommandPalette > Input"),
+    );
+    bind_secondary(
+        cx,
+        "escape",
+        Box::new(EscapePalette),
+        Some("CommandPalette > Input"),
     );
 }
 
