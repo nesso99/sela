@@ -108,6 +108,29 @@ fn ex02_json_array_golden() {
     assert_snapshot("mixed.json", &text);
 }
 
+/// EX-02: big NUMERIC as exact raw number; nested JSON verbatim (key order kept).
+#[test]
+fn ex02_json_decimal_and_nested_json_golden() {
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+    let cols = vec!["amount".into(), "payload".into()];
+    let rows = vec![vec![
+        Value::Decimal(Decimal::from_str("1234567890123456789.123456789").unwrap()),
+        Value::json_raw(r#"{"z":1,"big":12345678901234567890,"nested":{"b":2,"a":1}}"#),
+    ]];
+    let mut out = Vec::new();
+    export_rows(
+        &mut out,
+        &cols,
+        rows,
+        &ExportFormat::Json(JsonExportOptions::default()),
+        &CancellationToken::new(),
+        |_| {},
+    )
+    .unwrap();
+    assert_snapshot("precision.json", &String::from_utf8(out).unwrap());
+}
+
 /// EX-02 NDJSON.
 #[test]
 fn ex02_json_ndjson_golden() {
@@ -128,7 +151,8 @@ fn ex03_sql_insert_golden_all_dialects() {
     ] {
         let text = export_to_string(ExportFormat::SqlInsert(SqlInsertExportOptions {
             dialect,
-            table: "public.books".into(),
+            schema: Some("public".into()),
+            table: "books".into(),
             batch_size: 2,
             batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
             replace_table_comment: false,
@@ -161,6 +185,7 @@ fn ex12_sql_insert_flushes_at_row_cap() {
         rows,
         &ExportFormat::SqlInsert(SqlInsertExportOptions {
             dialect: Dialect::Sqlite,
+            schema: None,
             table: "t".into(),
             batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
             batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
@@ -194,7 +219,8 @@ fn ex12_sql_insert_flushes_at_byte_cap() {
         rows,
         &ExportFormat::SqlInsert(SqlInsertExportOptions {
             dialect: Dialect::Postgres,
-            table: "public.wide".into(),
+            schema: Some("public".into()),
+            table: "wide".into(),
             batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
             // Tight budget: prefix + two wide rows fits; a third forces a flush.
             batch_max_bytes: 500,

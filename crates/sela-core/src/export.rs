@@ -6,8 +6,6 @@
 //! in [`crate::copy_format`]; this module is for full-result / full-table export.
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
@@ -124,7 +122,9 @@ pub const SQL_INSERT_DEFAULT_BATCH_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlInsertExportOptions {
     pub dialect: Dialect,
-    /// `schema.table` or bare `table`.
+    /// Optional schema; when set, quoted as `schema.table` (no string-split on `.`).
+    pub schema: Option<String>,
+    /// Table name (unqualified).
     pub table: String,
     /// Max rows per `INSERT` statement (default [`SQL_INSERT_DEFAULT_BATCH_ROWS`]).
     pub batch_size: usize,
@@ -139,6 +139,22 @@ impl SqlInsertExportOptions {
     pub fn new(dialect: Dialect, table: impl Into<String>) -> Self {
         Self {
             dialect,
+            schema: None,
+            table: table.into(),
+            batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
+            batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
+            replace_table_comment: false,
+        }
+    }
+
+    pub fn with_schema(
+        dialect: Dialect,
+        schema: impl Into<String>,
+        table: impl Into<String>,
+    ) -> Self {
+        Self {
+            dialect,
+            schema: Some(schema.into()),
             table: table.into(),
             batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
             batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
@@ -150,6 +166,7 @@ impl SqlInsertExportOptions {
     pub fn placeholder(dialect: Dialect) -> Self {
         Self {
             dialect,
+            schema: None,
             table: "table".into(),
             batch_size: SQL_INSERT_DEFAULT_BATCH_ROWS,
             batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
@@ -201,8 +218,17 @@ impl From<DbError> for ExportError {
 /// Empty strings are always quoted (`""`) so they stay distinct from an empty
 /// NULL field when [`CsvExportOptions::null_repr`] is empty (EX-08).
 pub fn escape_csv_field_delim(value: &str, delimiter: u8) -> String {
+    escape_csv_field_delim_ex(value, delimiter, false)
+}
+
+/// Like [`escape_csv_field_delim`], with optional forced quoting.
+///
+/// Callers force-quote text that equals the configured NULL sentinel (e.g. `\N`)
+/// so it stays distinct from an unquoted NULL (EX-08).
+pub fn escape_csv_field_delim_ex(value: &str, delimiter: u8, force_quote: bool) -> String {
     let delim = delimiter as char;
-    let needs_quotes = value.is_empty()
+    let needs_quotes = force_quote
+        || value.is_empty()
         || value.contains(delim)
         || value.contains('"')
         || value.contains('\n')
@@ -247,6 +273,9 @@ pub fn format_csv_cell(value: &Value, null_repr: &str, binary: BinaryEncoding) -
 }
 
 /// Format a cell as a JSON value (typed where possible; binary as a string).
+///
+/// Prefer [`append_json_cell`] for export: NUMERIC is written as an exact raw
+/// number and JSON column text is emitted verbatim after validation.
 pub fn format_json_cell(value: &Value, binary: BinaryEncoding) -> serde_json::Value {
     match value {
         Value::Null => serde_json::Value::Null,
@@ -256,16 +285,40 @@ pub fn format_json_cell(value: &Value, binary: BinaryEncoding) -> serde_json::Va
         Value::Float(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
             .unwrap_or_else(|| serde_json::Value::String(value.display().into_owned())),
+        // Keep precision: do not round-trip through f64 / serde Number.
+        Value::Decimal(d) => serde_json::Value::String(d.normalize().to_string()),
+        Value::Bytes(bytes) => serde_json::Value::String(encode_binary(bytes, binary)),
+        // Keep key order / bigints: callers that need verbatim JSON use append_json_cell.
+        Value::Json(text) => serde_json::Value::String(text.to_string()),
+        other => serde_json::Value::String(other.display().into_owned()),
+    }
+}
+
+/// Append one cell as JSON text. NUMERIC is an exact raw number; JSON columns
+/// are written verbatim after a validity check (no re-parse → re-serialize).
+fn append_json_cell(
+    out: &mut String,
+    value: &Value,
+    binary: BinaryEncoding,
+) -> Result<(), ExportError> {
+    match value {
         Value::Decimal(d) => {
             let text = d.normalize().to_string();
-            text.parse::<serde_json::Number>()
-                .map(serde_json::Value::Number)
-                .unwrap_or_else(|_| serde_json::Value::String(text))
+            out.push_str(&text);
+            Ok(())
         }
-        Value::Bytes(bytes) => serde_json::Value::String(encode_binary(bytes, binary)),
-        Value::Json(text) => serde_json::from_str(text)
-            .unwrap_or_else(|_| serde_json::Value::String(text.to_string())),
-        other => serde_json::Value::String(other.display().into_owned()),
+        Value::Json(text) => {
+            serde_json::from_str::<serde_json::Value>(text)
+                .map_err(|err| ExportError::Io(format!("invalid JSON cell: {err}")))?;
+            out.push_str(text);
+            Ok(())
+        }
+        other => {
+            let value_json = serde_json::to_string(&format_json_cell(other, binary))
+                .map_err(|err| ExportError::Io(err.to_string()))?;
+            out.push_str(&value_json);
+            Ok(())
+        }
     }
 }
 
@@ -285,9 +338,7 @@ fn format_json_object_row(
         out.push_str(&key_json);
         out.push(':');
         let cell = row.get(i).unwrap_or(&Value::Null);
-        let value_json = serde_json::to_string(&format_json_cell(cell, binary))
-            .map_err(|err| ExportError::Io(err.to_string()))?;
-        out.push_str(&value_json);
+        append_json_cell(&mut out, cell, binary)?;
     }
     out.push('}');
     Ok(out)
@@ -358,15 +409,18 @@ fn bytes_to_sql_literal(bytes: &[u8], dialect: Dialect) -> String {
     }
 }
 
-fn quote_table_ref(dialect: Dialect, table: &str) -> Result<String, SqlError> {
-    if let Some((schema, name)) = table.split_once('.') {
-        Ok(format!(
+fn quote_table_ref(
+    dialect: Dialect,
+    schema: Option<&str>,
+    table: &str,
+) -> Result<String, SqlError> {
+    match schema {
+        Some(schema) if !schema.is_empty() => Ok(format!(
             "{}.{}",
             quote_ident(dialect, schema)?,
-            quote_ident(dialect, name)?
-        ))
-    } else {
-        quote_ident(dialect, table)
+            quote_ident(dialect, table)?
+        )),
+        _ => quote_ident(dialect, table),
     }
 }
 
@@ -473,10 +527,13 @@ impl<W: Write> CsvExporter<W> {
                 }
                 other => {
                     let text = other.display().into_owned();
+                    // Quote text that equals the NULL sentinel (e.g. `\N`) so it
+                    // stays distinct from an unquoted NULL (EX-08).
+                    let force_quote = !null_repr.is_empty() && text == null_repr;
                     write!(
                         self.writer,
                         "{}",
-                        escape_csv_field_delim(&text, self.options.delimiter)
+                        escape_csv_field_delim_ex(&text, self.options.delimiter, force_quote)
                     )?;
                 }
             }
@@ -605,7 +662,8 @@ pub struct SqlInsertExporter<W: Write> {
 
 impl<W: Write> SqlInsertExporter<W> {
     pub fn new(writer: W, options: SqlInsertExportOptions) -> Result<Self, ExportError> {
-        let quoted_table = quote_table_ref(options.dialect, &options.table)?;
+        let quoted_table =
+            quote_table_ref(options.dialect, options.schema.as_deref(), &options.table)?;
         Ok(Self {
             writer,
             options,
@@ -913,30 +971,30 @@ where
     Ok((rows, outcome))
 }
 
-/// Helper used by tests: export with a live atomic progress counter.
-pub fn export_rows_with_progress_counter<W, I>(
-    writer: &mut W,
-    columns: &[String],
-    rows: I,
-    format: &ExportFormat,
-    cancel: &CancellationToken,
-    progress: &Arc<AtomicUsize>,
-) -> Result<u64, ExportError>
-where
-    W: Write,
-    I: IntoIterator<Item = Vec<Value>>,
-{
-    export_rows(writer, columns, rows, format, cancel, |n| {
-        progress.store(n as usize, Ordering::Relaxed);
-    })
-}
-
 #[cfg(test)]
 mod tests {
     //! Unit coverage for v0.3 plan IDs EX-01..EX-11 and EX-06 cancel.
     //! Driver / headless UI layers for those IDs are out of this core-only PR.
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    fn export_rows_with_progress_counter<W, I>(
+        writer: &mut W,
+        columns: &[String],
+        rows: I,
+        format: &ExportFormat,
+        cancel: &CancellationToken,
+        progress: &Arc<AtomicUsize>,
+    ) -> Result<u64, ExportError>
+    where
+        W: Write,
+        I: IntoIterator<Item = Vec<Value>>,
+    {
+        export_rows(writer, columns, rows, format, cancel, |n| {
+            progress.store(n as usize, Ordering::Relaxed);
+        })
+    }
 
     fn sample_columns() -> Vec<String> {
         vec!["id".into(), "name".into(), "note".into()]
@@ -1068,7 +1126,8 @@ mod tests {
             rows,
             &ExportFormat::SqlInsert(SqlInsertExportOptions {
                 dialect: Dialect::Postgres,
-                table: "public.items".into(),
+                schema: Some("public".into()),
+                table: "items".into(),
                 batch_size: 2,
                 batch_max_bytes: SQL_INSERT_DEFAULT_BATCH_BYTES,
                 replace_table_comment: false,
@@ -1394,5 +1453,222 @@ mod tests {
         )
         .unwrap();
         assert!(String::from_utf8(out).unwrap().contains("'Infinity'"));
+    }
+
+    /// EX-08: text equal to the `\N` sentinel is quoted; NULL stays unquoted.
+    #[test]
+    fn ex08_literal_backslash_n_quotes_text_sentinel() {
+        let cancel = CancellationToken::new();
+        let opts = CsvExportOptions {
+            null_encoding: CsvNullEncoding::LiteralBackslashN,
+            ..CsvExportOptions::default()
+        };
+        let mut out = Vec::new();
+        export_rows(
+            &mut out,
+            &["n".into()],
+            vec![vec![Value::Null], vec![Value::text("\\N")]],
+            &ExportFormat::Csv(opts),
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "n\n\\N\n\"\\N\"\n");
+    }
+
+    /// EX-02: big NUMERIC stays exact; JSON column text is emitted verbatim.
+    #[test]
+    fn ex02_json_preserves_decimal_and_json_verbatim() {
+        use rust_decimal::Decimal;
+        use std::str::FromStr;
+        let cancel = CancellationToken::new();
+        let raw_json = r#"{"z":1,"big":12345678901234567890}"#;
+        let mut out = Vec::new();
+        export_rows(
+            &mut out,
+            &["amount".into(), "payload".into()],
+            vec![vec![
+                Value::Decimal(Decimal::from_str("1234567890123456789.123456789").unwrap()),
+                Value::json_raw(raw_json),
+            ]],
+            &ExportFormat::Json(JsonExportOptions::default()),
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("1234567890123456789.123456789"),
+            "NUMERIC must not lose precision via f64: {text}"
+        );
+        assert!(
+            !text.contains("1.2345678901234568e"),
+            "must not emit scientific f64 form: {text}"
+        );
+        assert!(
+            text.contains(raw_json),
+            "JSON column must be verbatim (key order kept): {text}"
+        );
+    }
+
+    /// Minimal session for [`export_query`] cancel / error coverage.
+    struct FakeExportSession {
+        fail: Option<DbError>,
+        rows: Vec<Vec<Value>>,
+        columns: Vec<ColumnMeta>,
+    }
+
+    #[async_trait::async_trait]
+    impl DatabaseSession for FakeExportSession {
+        fn dialect(&self) -> Dialect {
+            Dialect::Sqlite
+        }
+        async fn list_schemas(&self) -> Result<Vec<crate::types::SchemaInfo>, DbError> {
+            Ok(vec![])
+        }
+        async fn list_tables(
+            &self,
+            _schema: &str,
+        ) -> Result<Vec<crate::types::TableInfo>, DbError> {
+            Ok(vec![])
+        }
+        async fn query(&self, _sql: &str) -> Result<crate::types::QueryPage, DbError> {
+            Err(DbError::query("unused"))
+        }
+        async fn execute(&self, _sql: &str) -> Result<u64, DbError> {
+            Err(DbError::query("unused"))
+        }
+        async fn count_query(&self, _sql: &str, _params: &[Value]) -> Result<u64, DbError> {
+            Err(DbError::query("unused"))
+        }
+        async fn apply_changes(
+            &self,
+            _plan: &crate::change_plan::ChangePlan,
+        ) -> Result<crate::change_plan::ApplyChangesResult, DbError> {
+            Err(DbError::query("unused"))
+        }
+        async fn estimate_table_rows(
+            &self,
+            _schema: &str,
+            _table: &str,
+        ) -> Result<Option<u64>, DbError> {
+            Ok(None)
+        }
+        async fn describe_table(
+            &self,
+            _schema: &str,
+            _table: &str,
+        ) -> Result<crate::structure::TableStructure, DbError> {
+            Err(DbError::query("unused"))
+        }
+        async fn table_ddl(&self, _schema: &str, _table: &str) -> Result<String, DbError> {
+            Err(DbError::query("unused"))
+        }
+        async fn stream_query(
+            &self,
+            _sql: &str,
+            _params: &[Value],
+            _batch_size: usize,
+            _row_cap: Option<Arc<AtomicUsize>>,
+            _finish_at_cap: bool,
+            cancel: CancellationToken,
+            sink: async_channel::Sender<StreamBatch>,
+        ) -> Result<StreamOutcome, DbError> {
+            if let Some(err) = &self.fail {
+                return Err(err.clone());
+            }
+            if cancel.is_cancelled() {
+                return Err(DbError::cancelled("cancelled"));
+            }
+            let _ = sink
+                .send(StreamBatch {
+                    columns: Some(self.columns.clone()),
+                    rows: self.rows.clone(),
+                    start_index: 0,
+                    paused_at_cap: false,
+                })
+                .await;
+            drop(sink);
+            Ok(StreamOutcome {
+                columns: self.columns.clone(),
+                rows_delivered: self.rows.len(),
+                truncated: false,
+                cancelled: false,
+                duration: std::time::Duration::from_millis(1),
+            })
+        }
+        async fn close(&self) {}
+    }
+
+    #[tokio::test]
+    async fn export_query_streams_rows() {
+        let session = FakeExportSession {
+            fail: None,
+            columns: vec![ColumnMeta {
+                name: "id".into(),
+                type_name: "integer".into(),
+            }],
+            rows: vec![vec![Value::Int(1)], vec![Value::Int(2)]],
+        };
+        let mut out = Vec::new();
+        let (n, outcome) = export_query(
+            &session,
+            "select 1",
+            &[],
+            &mut out,
+            &ExportFormat::Csv(CsvExportOptions::default()),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(outcome.rows_delivered, 2);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("id\n1\n2\n"));
+    }
+
+    #[tokio::test]
+    async fn export_query_cancel_before_start() {
+        let session = FakeExportSession {
+            fail: None,
+            columns: vec![],
+            rows: vec![],
+        };
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = export_query(
+            &session,
+            "select 1",
+            &[],
+            &mut Vec::new(),
+            &ExportFormat::Csv(CsvExportOptions::default()),
+            cancel,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, ExportError::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn export_query_propagates_session_error() {
+        let session = FakeExportSession {
+            fail: Some(DbError::query("boom")),
+            columns: vec![],
+            rows: vec![],
+        };
+        let err = export_query(
+            &session,
+            "select 1",
+            &[],
+            &mut Vec::new(),
+            &ExportFormat::Csv(CsvExportOptions::default()),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ExportError::Query(_)), "{err:?}");
     }
 }
