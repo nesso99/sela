@@ -1,7 +1,7 @@
 //! M3-3 headless UI: export dialog, import mapping / safe-mode, cancel copy.
 //!
-//! Paths are injected (M-EX-01 native dialogs stay manual-at-RC). Never log
-//! passwords, URLs, or full row payloads.
+//! Paths are injected in tests; Browse uses native `prompt_for_*` (M-EX-01).
+//! Never log passwords, URLs, or full row payloads.
 
 use std::fs;
 use std::path::PathBuf;
@@ -24,6 +24,9 @@ use crate::ui::workspace::export_import::export_dialog::{
 };
 use crate::ui::workspace::export_import::import_dialog::{
     ImportDialog, ImportDialogContext, ImportDialogEvent,
+};
+use crate::ui::workspace::export_import::logic::{
+    export_paths_to_discard_on_failure, export_temp_path, should_cancel_transfer_on_stop,
 };
 use crate::ui::workspace::export_import::messages::{
     export_progress_status, export_success_status, format_export_failure, format_import_failure,
@@ -211,18 +214,30 @@ fn ex05_ex13_progress_and_already_running_copy() {
     assert!(ok.contains("/tmp/books.csv"));
 }
 
-/// EX-06: cancel deletes partial; status copy.
+/// EX-06: cancel deletes only the temp sibling; destination stays byte-identical.
 #[test]
-fn ex06_cancel_deletes_partial_and_status() {
+fn ex06_cancel_deletes_temp_keeps_destination() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("partial.csv");
-    fs::write(&path, b"id,title\n1,a\n").unwrap();
-    assert!(path.exists());
-    discard_export_partial(&path).unwrap();
-    assert!(!path.exists());
+    let dest = dir.path().join("keep.csv");
+    let original = b"id,title\n1,a\n";
+    fs::write(&dest, original).unwrap();
+    let tmp = export_temp_path(&dest);
+    fs::write(&tmp, b"partial").unwrap();
+    for path in export_paths_to_discard_on_failure(&tmp) {
+        discard_export_partial(&path).unwrap();
+    }
+    assert!(!tmp.exists());
+    assert_eq!(fs::read(&dest).unwrap(), original);
     let (b, s) = format_export_failure(&sela_core::ExportError::Cancelled);
     assert_eq!(b, EXPORT_CANCELLED_STATUS);
     assert_eq!(s, EXPORT_CANCELLED_STATUS);
+}
+
+/// Stop cancels a transfer only when the active tab has no running query.
+#[test]
+fn ex06_stop_routing_skips_transfer_when_query_running() {
+    assert!(should_cancel_transfer_on_stop(true, false));
+    assert!(!should_cancel_transfer_on_stop(true, true));
 }
 
 /// EX-01 capped note + streaming write of injected rows (no hang).
@@ -345,6 +360,11 @@ async fn im01_im03_import_preview_and_mapping(cx: &mut TestAppContext) {
             });
         });
         window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
         host.update(cx, |host, cx| {
             let form = host.form.read(cx);
             let headers = form.test_preview_headers().unwrap();
@@ -383,6 +403,11 @@ async fn im03_required_unmapped_blocks_import(cx: &mut TestAppContext) {
             });
         });
         window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
         host.update(cx, |host, cx| {
             let form = host.form.read(cx);
             assert!(!form.import_enabled());
@@ -412,6 +437,12 @@ async fn im05_read_only_disables_import(cx: &mut TestAppContext) {
             host.form.update(cx, |form, cx| {
                 form.set_path_and_load(path.to_string_lossy().as_ref(), window, cx);
             });
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, _, cx| {
+        host.update(cx, |host, cx| {
             assert_eq!(
                 host.form.read(cx).test_error(),
                 Some(IMPORT_REFUSED_READ_ONLY_STATUS)
@@ -451,76 +482,8 @@ fn im06_im07_error_and_progress_copy() {
     assert_eq!(s, "Importing · 5 / 100 rows · 1.0 s");
 }
 
-/// EX-06 / CAN-style cancel host: Stop cancels the transfer token.
-struct TransferCancelHost {
-    cancel: CancellationToken,
-    status: String,
-    busy: bool,
-}
-
-impl TransferCancelHost {
-    fn new() -> Self {
-        Self {
-            cancel: CancellationToken::new(),
-            status: export_progress_status(0, None, Duration::ZERO),
-            busy: true,
-        }
-    }
-
-    fn stop_like_ui(&mut self) {
-        if !self.busy {
-            return;
-        }
-        self.cancel.cancel();
-        self.status = "Cancelling…".into();
-    }
-
-    fn finish_cancelled(&mut self) {
-        self.busy = false;
-        self.status = EXPORT_CANCELLED_STATUS.into();
-    }
-}
-
-impl Render for TransferCancelHost {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_kit::component::button::Button;
-        let this = cx.entity();
-        div()
-            .size_full()
-            .id("transfer-cancel-host")
-            .child(self.status.clone())
-            .child(
-                Button::new("status-transfer-cancel")
-                    .label("Cancel")
-                    .on_click(move |_, _, cx| {
-                        this.update(cx, |host, cx| {
-                            host.stop_like_ui();
-                            cx.notify();
-                        });
-                    }),
-            )
-    }
-}
-
-/// EX-06: status-bar Cancel cancels the token (same wiring as Stop).
-#[gpui_kit::test]
-async fn ex06_status_cancel_cancels_token(cx: &mut TestAppContext) {
-    let (handle, host) = super::harness::open_window(cx, size(px(400.), px(200.)), |_, cx| {
-        cx.new(|_cx| TransferCancelHost::new())
-    });
-    let handle = handle.into();
-    let token = host.read_with(cx, |h, _| h.cancel.clone());
-    assert!(!token.is_cancelled());
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.click("status-transfer-cancel", cx);
-        window.render_frame(cx);
-        host.update(cx, |h, _| {
-            assert!(h.cancel.is_cancelled());
-            assert_eq!(h.status, "Cancelling…");
-            h.finish_cancelled();
-            assert_eq!(h.status, EXPORT_CANCELLED_STATUS);
-        });
-    })
-    .unwrap();
+/// EX-06 status copy for a cancelled transfer (real discard path is in jobs e2e).
+#[test]
+fn ex06_cancelled_status_copy() {
+    assert_eq!(EXPORT_CANCELLED_STATUS, "Export cancelled.");
 }

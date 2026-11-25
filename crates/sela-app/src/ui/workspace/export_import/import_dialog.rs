@@ -1,7 +1,7 @@
 //! CSV import dialog — preview, column mapping, options (UX 11 / IM-*).
 
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::BufReader;
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -11,11 +11,15 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable
 use gpui_kit::prelude::*;
 #[cfg(test)]
 use gpui_kit::App;
-use gpui_kit::{div, px, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Window};
+use gpui_kit::{
+    div, px, Context, Entity, EventEmitter, IntoElement, PathPromptOptions, Render, SharedString,
+    Window,
+};
+use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    count_csv_data_rows, ColumnMapping, ColumnMeta, CsvImportOptions, CsvImporter, ImportError,
-    TableStructure, IMPORT_REFUSED_READ_ONLY_STATUS,
+    ColumnMeta, CsvImportOptions, CsvImporter, ImportError, TableStructure,
+    IMPORT_REFUSED_READ_ONLY_STATUS,
 };
 
 use super::messages::format_import_failure;
@@ -66,6 +70,12 @@ pub struct ImportDialog {
     total_rows: Option<u64>,
     error: Option<String>,
     mapping_blocked: Option<String>,
+    /// Cancel the in-flight background preview / pre-scan.
+    preview_cancel: Option<CancellationToken>,
+    preview_generation: u64,
+    /// Browse result applied on the next render (async task has no Window).
+    pending_browse_path: Option<String>,
+    preview_loading: bool,
 }
 
 impl ImportDialog {
@@ -79,6 +89,10 @@ impl ImportDialog {
             total_rows: None,
             error: None,
             mapping_blocked: None,
+            preview_cancel: None,
+            preview_generation: 0,
+            pending_browse_path: None,
+            preview_loading: false,
         }
     }
 
@@ -133,6 +147,7 @@ impl ImportDialog {
             && self.total_rows.is_some()
             && self.mapping_blocked.is_none()
             && self.error.is_none()
+            && !self.preview_loading
     }
 
     fn options(&self) -> CsvImportOptions {
@@ -145,11 +160,19 @@ impl ImportDialog {
         }
     }
 
+    fn cancel_preview_task(&mut self) {
+        if let Some(token) = self.preview_cancel.take() {
+            token.cancel();
+        }
+    }
+
     fn reload_preview(&mut self, cx: &mut Context<Self>) {
+        self.cancel_preview_task();
         self.error = None;
         self.mapping_blocked = None;
         self.preview = None;
         self.total_rows = None;
+        self.preview_loading = false;
         if self.ctx.read_only {
             self.error = Some(IMPORT_REFUSED_READ_ONLY_STATUS.into());
             cx.notify();
@@ -161,30 +184,96 @@ impl ImportDialog {
             return;
         }
         let path = PathBuf::from(path);
-        match load_preview_and_count(&path, &self.ctx.structure, &self.options()) {
-            Ok((preview, total)) => {
-                // Re-check required mapping after user may have remapped.
-                if let Err(msg) = validate_required_mapped(&preview.mapping, &self.options()) {
-                    self.mapping_blocked = Some(msg);
-                }
-                self.preview = Some(preview);
-                self.total_rows = Some(total);
-            }
-            Err(err) => {
-                if let ImportError::Mapping(msg) = &err {
-                    if msg.contains("Map every required column") {
-                        self.mapping_blocked = Some(msg.clone());
-                    } else {
-                        let (banner, _) = format_import_failure(&err);
-                        self.error = Some(banner);
-                    }
-                } else {
-                    let (banner, _) = format_import_failure(&err);
-                    self.error = Some(banner);
-                }
-            }
-        }
+        let structure = self.ctx.structure.clone();
+        let options = self.options();
+        let cancel = CancellationToken::new();
+        self.preview_cancel = Some(cancel.clone());
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        let generation = self.preview_generation;
+        self.preview_loading = true;
         cx.notify();
+
+        cx.spawn(async move |this, async_cx| {
+            let result = async_cx
+                .background_executor()
+                .spawn(async move {
+                    load_preview_and_count_streaming(&path, &structure, &options, &cancel)
+                })
+                .await;
+            this.update(async_cx, |this, cx| {
+                if this.preview_generation != generation {
+                    return;
+                }
+                this.preview_loading = false;
+                this.preview_cancel = None;
+                match result {
+                    Ok((preview, total)) => {
+                        if let Err(msg) =
+                            validate_required_mapped(&preview.mapping, &this.options())
+                        {
+                            this.mapping_blocked = Some(msg);
+                        }
+                        this.preview = Some(preview);
+                        this.total_rows = Some(total);
+                    }
+                    Err(ImportError::Cancelled) => {
+                        // Dialog closed or superseded — leave empty.
+                    }
+                    Err(err) => {
+                        if let ImportError::Mapping(msg) = &err {
+                            if msg.contains("Map every required column") {
+                                this.mapping_blocked = Some(msg.clone());
+                            } else {
+                                let (banner, _) = format_import_failure(&err);
+                                this.error = Some(banner);
+                            }
+                        } else {
+                            let (banner, _) = format_import_failure(&err);
+                            this.error = Some(banner);
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn browse_csv(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.ctx.read_only {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose CSV to import".into()),
+        });
+        cx.spawn(async move |this, async_cx| {
+            let picked = match receiver.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
+            };
+            if let Some(path) = picked {
+                let display = path.to_string_lossy().to_string();
+                this.update(async_cx, |dialog, cx| {
+                    dialog.pending_browse_path = Some(display);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn flush_pending_browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.pending_browse_path.take() {
+            self.path.update(cx, |input, cx| {
+                input.set_value(&path, window, cx);
+            });
+            self.reload_preview(cx);
+        }
     }
 
     fn set_mapping_target(
@@ -229,21 +318,8 @@ impl ImportDialog {
         let path = PathBuf::from(self.path.read(cx).value().trim());
         let total = self.total_rows.unwrap_or(0);
         let mut options = self.options();
-        // Persist the user’s mapping by rewriting required check; the importer
-        // rebuilds from headers, so we encode overrides via reject + required
-        // only. Custom Skip/remap: re-open with positional override below in jobs
-        // by passing headers + mapping through options.required and a sidecar.
-        // For custom mapping, store targets on the request via options by
-        // rebuilding ColumnMapping in the job from the dialog snapshot.
-        let _mapping = self
-            .preview
-            .as_ref()
-            .map(|p| ColumnMapping {
-                targets: p.mapping.clone(),
-            })
-            .unwrap_or_else(|| ColumnMapping { targets: vec![] });
-        // Clear required so open() does not double-fail; jobs apply mapping.
         options.required_columns = required_columns(&self.ctx.structure);
+        self.cancel_preview_task();
         cx.emit(ImportDialogEvent::Ready(ImportRequest {
             path,
             options,
@@ -259,6 +335,7 @@ impl ImportDialog {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.cancel_preview_task();
         cx.emit(ImportDialogEvent::Cancel);
     }
 }
@@ -266,7 +343,9 @@ impl ImportDialog {
 impl EventEmitter<ImportDialogEvent> for ImportDialog {}
 
 impl Render for ImportDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.flush_pending_browse(window, cx);
+
         let this = cx.entity();
         let read_only = self.ctx.read_only;
         let import_enabled = self.import_enabled();
@@ -302,14 +381,12 @@ impl Render for ImportDialog {
                     )
                     .child({
                         let this = this.clone();
-                        let path = self.path.clone();
                         Button::new("import-browse")
                             .label("Browse")
                             .ghost()
                             .disabled(read_only)
                             .on_click(move |_, window, cx| {
-                                path.update(cx, |state, cx| state.focus(window, cx));
-                                this.update(cx, |dialog, cx| dialog.reload_preview(cx));
+                                this.update(cx, |dialog, cx| dialog.browse_csv(window, cx));
                             })
                     })
                     .child({
@@ -365,6 +442,14 @@ impl Render for ImportDialog {
                             })
                     }),
             )
+            .when(self.preview_loading, |col| {
+                col.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Scanning CSV…"),
+                )
+            })
             .when_some(self.total_rows, |col, n| {
                 col.child(
                     div()
@@ -539,14 +624,18 @@ fn validate_required_mapped(
     Ok(())
 }
 
-fn load_preview_and_count(
+/// Stream preview rows and a full data-row count without materializing the file.
+fn load_preview_and_count_streaming(
     path: &PathBuf,
     structure: &TableStructure,
     options: &CsvImportOptions,
+    cancel: &CancellationToken,
 ) -> Result<(PreviewState, u64), ImportError> {
-    let bytes = std::fs::read(path).map_err(|e| ImportError::Io(e.to_string()))?;
-    // Fail clearly on invalid UTF-8 before parsing (IM-08).
-    sela_core::require_utf8(&bytes)?;
+    if cancel.is_cancelled() {
+        return Err(ImportError::Cancelled);
+    }
+    let file = File::open(path).map_err(|e| ImportError::Io(e.to_string()))?;
+    let reader = BufReader::new(file);
 
     let table_columns: Vec<ColumnMeta> = structure
         .columns
@@ -557,43 +646,40 @@ fn load_preview_and_count(
         })
         .collect();
 
-    let mut importer = CsvImporter::open_with_columns(
-        Cursor::new(bytes.as_slice()),
-        &table_columns,
-        options.clone(),
-    )?;
+    let mut importer = CsvImporter::open_with_columns(reader, &table_columns, options.clone())?;
     let headers = importer.headers().to_vec();
     let mapping = importer.mapping().targets.clone();
 
     let mut rows = Vec::new();
-    while rows.len() < PREVIEW_MAX_ROWS {
-        match importer.next_row() {
-            None => break,
-            Some(Ok(row)) => {
-                let mut display = Vec::with_capacity(headers.len());
-                for target in &mapping {
-                    match target {
-                        Some(col) => {
-                            let cell = row
-                                .values
-                                .get(col)
-                                .map(|v| match v {
-                                    sela_core::Value::Null => String::new(),
-                                    other => other.display().into_owned(),
-                                })
-                                .unwrap_or_default();
-                            display.push(cell);
-                        }
-                        None => display.push(String::new()),
+    let mut total = 0u64;
+    while let Some(item) = importer.next_row() {
+        if cancel.is_cancelled() {
+            return Err(ImportError::Cancelled);
+        }
+        let row = item?;
+        total += 1;
+        if rows.len() < PREVIEW_MAX_ROWS {
+            let mut display = Vec::with_capacity(headers.len());
+            for target in &mapping {
+                match target {
+                    Some(col) => {
+                        let cell = row
+                            .values
+                            .get(col)
+                            .map(|v| match v {
+                                sela_core::Value::Null => String::new(),
+                                other => other.display().into_owned(),
+                            })
+                            .unwrap_or_default();
+                        display.push(cell);
                     }
+                    None => display.push(String::new()),
                 }
-                rows.push(display);
             }
-            Some(Err(err)) => return Err(err),
+            rows.push(display);
         }
     }
 
-    let total = count_csv_data_rows(Cursor::new(bytes.as_slice()), options)?;
     Ok((
         PreviewState {
             headers,
@@ -603,36 +689,4 @@ fn load_preview_and_count(
         },
         total,
     ))
-}
-
-/// Re-open the file for the import job (streaming). Applies a custom mapping
-/// by validating required columns only; header auto-map is re-derived unless
-/// `override_targets` is provided via rewriting headers through a temp approach.
-///
-/// When `override_targets` is set, we feed the importer with `has_header` and
-/// then replace the mapping after open via a small adapter sink in jobs.
-pub(crate) fn open_csv_file(path: &PathBuf) -> Result<File, ImportError> {
-    File::open(path).map_err(|e| ImportError::Io(e.to_string()))
-}
-
-/// Pre-scan only (used when dialog already counted, or jobs re-count).
-#[allow(dead_code)]
-pub(crate) fn prescan_file(path: &PathBuf, options: &CsvImportOptions) -> Result<u64, ImportError> {
-    let file = open_csv_file(path)?;
-    let mut reader = BufReader::new(file);
-    // Ensure we can re-read: count_csv_data_rows consumes the reader.
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| ImportError::Io(e.to_string()))?;
-    sela_core::require_utf8(&bytes)?;
-    count_csv_data_rows(Cursor::new(bytes), options)
-}
-
-/// Seek helper kept for future streaming reopen paths.
-#[allow(dead_code)]
-pub(crate) fn rewind(file: &mut File) -> Result<(), ImportError> {
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| ImportError::Io(e.to_string()))?;
-    Ok(())
 }

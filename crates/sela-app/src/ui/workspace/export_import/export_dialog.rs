@@ -1,6 +1,6 @@
 //! Export dialog (560px) — format, scope, path, CSV options (UX 11).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
@@ -106,6 +106,8 @@ pub struct ExportDialog {
     null_empty_field: bool,
     utf8_bom: bool,
     error: Option<String>,
+    /// Browse result applied on the next render (async task has no Window).
+    pending_browse_path: Option<String>,
 }
 
 impl ExportDialog {
@@ -120,10 +122,11 @@ impl ExportDialog {
             null_empty_field: true,
             utf8_bom: false,
             error: None,
+            pending_browse_path: None,
         }
     }
 
-    /// Inject a destination path (headless tests; M-EX-01 uses the native dialog).
+    /// Inject a destination path (headless tests; native Browse also fills this field).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_path(
         &mut self,
@@ -136,6 +139,35 @@ impl ExportDialog {
             input.set_value(&path, window, cx);
         });
         cx.notify();
+    }
+
+    fn browse_save_path(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let typed = self.path.read(cx).value().trim().to_string();
+        let (dir, suggested) = export_browse_defaults(&typed);
+        let receiver = cx.prompt_for_new_path(&dir, suggested.as_deref());
+        cx.spawn(async move |this, async_cx| {
+            let picked = match receiver.await {
+                Ok(Ok(Some(path))) => Some(path),
+                _ => None,
+            };
+            if let Some(path) = picked {
+                let display = path.to_string_lossy().to_string();
+                this.update(async_cx, |dialog, cx| {
+                    dialog.pending_browse_path = Some(display);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn flush_pending_browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.pending_browse_path.take() {
+            self.path.update(cx, |input, cx| {
+                input.set_value(&path, window, cx);
+            });
+        }
     }
 
     #[cfg(test)]
@@ -226,7 +258,8 @@ impl ExportDialog {
 impl EventEmitter<ExportDialogEvent> for ExportDialog {}
 
 impl Render for ExportDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.flush_pending_browse(window, cx);
         let this = cx.entity();
         let whole_enabled = self.whole_table_enabled();
         let show_csv = self.format == ExportFormatChoice::Csv;
@@ -325,14 +358,14 @@ impl Render for ExportDialog {
                             .child(Input::new(&self.path).id("export-path-input")),
                     )
                     .child({
-                        // Native save dialog is manual-at-RC (M-EX-01). Tests inject
-                        // the path into the field; Browse focuses the path input.
-                        let path = self.path.clone();
+                        let this = this.clone();
                         Button::new("export-browse")
                             .label("Browse")
                             .ghost()
                             .on_click(move |_, window, cx| {
-                                path.update(cx, |state, cx| state.focus(window, cx));
+                                this.update(cx, |dialog, cx| {
+                                    dialog.browse_save_path(window, cx);
+                                });
                             })
                     }),
             )
@@ -461,4 +494,23 @@ fn section_label(text: &str, cx: &Context<ExportDialog>) -> impl IntoElement {
         .text_xs()
         .text_color(cx.theme().muted_foreground)
         .child(text.to_string())
+}
+
+/// Initial directory + suggested name for `prompt_for_new_path`.
+fn export_browse_defaults(typed: &str) -> (PathBuf, Option<String>) {
+    if typed.is_empty() {
+        let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        return (dir, Some("export.csv".into()));
+    }
+    let path = PathBuf::from(typed);
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let suggested = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(str::to_string);
+    (dir, suggested)
 }

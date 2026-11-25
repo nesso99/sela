@@ -1,7 +1,7 @@
 //! Background export / import jobs on the Workspace (progress, cancel, safe mode).
 
 use std::fs::File;
-use std::io::{BufWriter, Cursor, Write};
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -16,10 +16,10 @@ use tokio_util::sync::CancellationToken;
 
 use sela_core::{
     bind_placeholder, build_table_select, decide_import_gate, discard_export_partial,
-    ensure_import_allowed, export_query, export_rows, import_csv_into, qualify, quote_ident,
-    ChangePlan, ChangeSet, ColumnMeta, CsvImportOptions, DatabaseSession, Dialect, ExportError,
-    ExportFormat, GridCommitGate, ImportError, ImportRow, ImportRowSink, PlanOp, PlannedStatement,
-    RowState, SafeMode, StaticTableSchema, TableRef, TableStructure, Value,
+    ensure_import_allowed, export_query, export_rows, qualify, quote_ident, ChangePlan, ChangeSet,
+    ColumnMapping, ColumnMeta, CsvImportOptions, CsvImporter, DatabaseSession, Dialect,
+    ExportError, ExportFormat, GridCommitGate, ImportError, ImportRow, ImportRowSink, PlanOp,
+    PlannedStatement, RowState, SafeMode, TableRef, TableStructure, Value,
     IMPORT_REFUSED_READ_ONLY_STATUS,
 };
 use sela_drivers::drive;
@@ -31,6 +31,9 @@ use super::export_dialog::{
 };
 use super::import_dialog::{
     required_columns, ImportDialog, ImportDialogContext, ImportDialogEvent, ImportRequest,
+};
+use super::logic::{
+    export_paths_to_discard_on_failure, export_temp_path, transfer_completion_applies,
 };
 use super::messages::{
     export_capped_note, export_progress_status, export_success_status, format_export_failure,
@@ -53,18 +56,11 @@ pub struct TransferJob {
     pub started: Instant,
     pub done: Arc<AtomicU64>,
     pub total: Option<u64>,
-    #[allow(dead_code)] // retained for status / discard paths
-    pub path: Option<PathBuf>,
     pub tab_id: sela_core::TabId,
     pub generation: u64,
 }
 
 impl Workspace {
-    #[allow(dead_code)]
-    pub(crate) fn transfer_busy(&self) -> bool {
-        self.transfer_job.is_some()
-    }
-
     /// Open the Export dialog for the active result / table (UX 11).
     pub(crate) fn open_export_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.transfer_job.is_some() {
@@ -486,13 +482,15 @@ impl Workspace {
             }
         }
 
+        let dest = req.path.clone();
+        let tmp = export_temp_path(&dest);
+
         self.transfer_job = Some(TransferJob {
             kind: TransferKind::Export,
             cancel: cancel.clone(),
             started,
             done: done.clone(),
             total: prepared.total,
-            path: Some(req.path.clone()),
             tab_id,
             generation,
         });
@@ -508,11 +506,11 @@ impl Workspace {
         self.spawn_transfer_status_tick(cx);
         cx.notify();
 
-        let path = req.path.clone();
         let format = req.format.clone();
-        let path_for_discard = path.clone();
         let stream = prepared.stream;
         let loaded = prepared.loaded;
+        let dest_for_finish = dest.clone();
+        let tmp_for_finish = tmp.clone();
 
         cx.spawn(async move |this, async_cx| {
             // Nested Result so drive can stay typed on DbError while we keep ExportError.
@@ -520,7 +518,8 @@ impl Workspace {
                 Ok::<_, sela_core::DbError>(
                     run_export(
                         session.as_ref(),
-                        &path,
+                        &dest,
+                        &tmp,
                         &format,
                         stream,
                         loaded,
@@ -537,26 +536,35 @@ impl Workspace {
             };
 
             this.update(async_cx, |this, cx| {
-                this.finish_export(tab_id, generation, path_for_discard, started, result, cx);
+                this.finish_export(
+                    tab_id,
+                    generation,
+                    dest_for_finish,
+                    tmp_for_finish,
+                    started,
+                    result,
+                    cx,
+                );
             })
             .ok();
         })
         .detach();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_export(
         &mut self,
         tab_id: sela_core::TabId,
         generation: u64,
-        path: PathBuf,
+        dest: PathBuf,
+        tmp: PathBuf,
         started: Instant,
         result: Result<u64, ExportError>,
         cx: &mut Context<Self>,
     ) {
-        let still = self
-            .transfer_job
-            .as_ref()
-            .is_some_and(|j| j.generation == generation && j.kind == TransferKind::Export);
+        let still = self.transfer_job.as_ref().is_some_and(|j| {
+            transfer_completion_applies(j.generation, j.kind, generation, TransferKind::Export)
+        });
         if !still {
             return;
         }
@@ -571,13 +579,16 @@ impl Workspace {
             Ok(rows) => {
                 let ms = started.elapsed().as_millis();
                 if let Some(view) = self.view_mut(tab_id) {
-                    view.status = export_success_status(rows, &path, ms);
+                    view.status = export_success_status(rows, &dest, ms);
                     view.error = None;
                     view.note = None;
                 }
             }
             Err(err) => {
-                let _ = discard_export_partial(&path);
+                // Never touch the user destination — only the temp sibling.
+                for path in export_paths_to_discard_on_failure(&tmp) {
+                    let _ = discard_export_partial(&path);
+                }
                 let (banner, status) = format_export_failure(&err);
                 if let Some(view) = self.view_mut(tab_id) {
                     view.status = status;
@@ -622,7 +633,6 @@ impl Workspace {
             started,
             done: done.clone(),
             total: Some(total),
-            path: Some(req.path.clone()),
             tab_id,
             generation,
         });
@@ -682,10 +692,9 @@ impl Workspace {
         result: Result<u64, ImportError>,
         cx: &mut Context<Self>,
     ) {
-        let still = self
-            .transfer_job
-            .as_ref()
-            .is_some_and(|j| j.generation == generation && j.kind == TransferKind::Import);
+        let still = self.transfer_job.as_ref().is_some_and(|j| {
+            transfer_completion_applies(j.generation, j.kind, generation, TransferKind::Import)
+        });
         if !still {
             return;
         }
@@ -833,23 +842,21 @@ fn prepare_export_source(
     }
 }
 
+/// Stream an export to `tmp`, then rename onto `dest` only on success.
+///
+/// On cancel/failure deletes `tmp` only — never the user destination.
 #[allow(clippy::too_many_arguments)]
-async fn run_export(
+pub(crate) async fn run_export(
     session: &dyn DatabaseSession,
-    path: &PathBuf,
+    dest: &PathBuf,
+    tmp: &PathBuf,
     format: &ExportFormat,
     stream: Option<(String, Vec<Value>)>,
     loaded: Option<(Vec<String>, Vec<Vec<Value>>)>,
     cancel: CancellationToken,
     done: Arc<AtomicU64>,
 ) -> Result<u64, ExportError> {
-    let tmp = path.with_extension(format!(
-        "{}.sela-tmp",
-        path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("export")
-    ));
-    let file = File::create(&tmp).map_err(|e| ExportError::Io(e.to_string()))?;
+    let file = File::create(tmp).map_err(|e| ExportError::Io(e.to_string()))?;
     let mut writer = BufWriter::new(file);
     let progress = |n: u64| {
         done.store(n, Ordering::Relaxed);
@@ -875,20 +882,24 @@ async fn run_export(
         Ok(n) => {
             writer.flush().map_err(|e| ExportError::Io(e.to_string()))?;
             drop(writer);
-            std::fs::rename(&tmp, path).map_err(|e| ExportError::Io(e.to_string()))?;
+            std::fs::rename(tmp, dest).map_err(|e| ExportError::Io(e.to_string()))?;
             Ok(n)
         }
         Err(err) => {
             drop(writer);
-            let _ = discard_export_partial(&tmp);
-            let _ = discard_export_partial(path);
+            for path in export_paths_to_discard_on_failure(tmp) {
+                let _ = discard_export_partial(&path);
+            }
             Err(err)
         }
     }
 }
 
+/// Stream CSV via [`CsvImporter`], applying dialog mapping (including when there
+/// is no header row). Builds an in-memory [`ChangePlan`] then `apply_changes`
+/// (IM-07 streaming sink is backlog for v0.3).
 #[allow(clippy::too_many_arguments)]
-async fn run_import(
+pub(crate) async fn run_import(
     session: &dyn DatabaseSession,
     dialect: Dialect,
     path: &PathBuf,
@@ -905,9 +916,6 @@ async fn run_import(
         .map_err(|e| ImportError::Schema(e.to_string()))?;
     options.required_columns = required_columns(&structure);
 
-    let bytes = std::fs::read(path).map_err(|e| ImportError::Io(e.to_string()))?;
-    sela_core::require_utf8(&bytes)?;
-
     let table_columns: Vec<ColumnMeta> = structure
         .columns
         .iter()
@@ -917,44 +925,34 @@ async fn run_import(
         })
         .collect();
 
-    // When the user remapped columns, rewrite headers so import_csv_into picks
-    // them up (Skip columns become unique ignored names).
-    let source_bytes = if let Some(targets) = mapping_override.as_ref() {
-        rewrite_csv_headers(&bytes, options.delimiter, options.has_header, targets)?
-    } else {
-        bytes
-    };
-
-    let mut schema_source = StaticTableSchema::new();
-    schema_source.insert(schema, table, table_columns);
+    let file = File::open(path).map_err(|e| ImportError::Io(e.to_string()))?;
+    let mut importer = CsvImporter::open_with_columns(file, &table_columns, options.clone())?;
+    if let Some(targets) = mapping_override {
+        let mapping = ColumnMapping { targets };
+        for req in &options.required_columns {
+            let mapped = mapping
+                .targets
+                .iter()
+                .flatten()
+                .any(|c| c.eq_ignore_ascii_case(req));
+            if !mapped {
+                return Err(ImportError::Mapping(
+                    "Map every required column or cancel.".into(),
+                ));
+            }
+        }
+        importer = importer.with_mapping(mapping);
+    }
 
     let plan = match ChangeSet::from_structure(&structure) {
         Ok(mut cs) => {
-            import_csv_into(
-                Cursor::new(source_bytes.as_slice()),
-                &schema_source,
-                schema,
-                table,
-                options,
-                &mut cs,
-                &cancel,
-                |n| done.store(n, Ordering::Relaxed),
-            )?;
+            drain_importer_into_sink(&mut importer, &mut cs, &cancel, &done)?;
             ChangePlan::build(&cs, dialect).map_err(|e| ImportError::Sink(e.to_string()))?
         }
         Err(_) => {
             let mut rows = Vec::new();
             let mut collector = CollectSink { rows: &mut rows };
-            import_csv_into(
-                Cursor::new(source_bytes.as_slice()),
-                &schema_source,
-                schema,
-                table,
-                options,
-                &mut collector,
-                &cancel,
-                |n| done.store(n, Ordering::Relaxed),
-            )?;
+            drain_importer_into_sink(&mut importer, &mut collector, &cancel, &done)?;
             build_insert_only_plan(dialect, schema, table, &rows)?
         }
     };
@@ -974,6 +972,28 @@ async fn run_import(
     Ok(row_count.max(plan.statements.len() as u64))
 }
 
+fn drain_importer_into_sink<R, S>(
+    importer: &mut CsvImporter<R>,
+    sink: &mut S,
+    cancel: &CancellationToken,
+    done: &Arc<AtomicU64>,
+) -> Result<u64, ImportError>
+where
+    R: std::io::Read,
+    S: ImportRowSink,
+{
+    let mut rows = 0u64;
+    while let Some(item) = importer.next_row() {
+        if cancel.is_cancelled() {
+            return Err(ImportError::Cancelled);
+        }
+        sink.push_row(item?)?;
+        rows += 1;
+        done.store(rows, Ordering::Relaxed);
+    }
+    Ok(rows)
+}
+
 struct CollectSink<'a> {
     rows: &'a mut Vec<ImportRow>,
 }
@@ -982,44 +1002,6 @@ impl ImportRowSink for CollectSink<'_> {
     fn push_row(&mut self, row: ImportRow) -> Result<(), ImportError> {
         self.rows.push(row);
         Ok(())
-    }
-}
-
-/// Rewrite the header line so auto-map follows the dialog mapping (IM-03).
-fn rewrite_csv_headers(
-    bytes: &[u8],
-    delimiter: u8,
-    has_header: bool,
-    targets: &[Option<String>],
-) -> Result<Vec<u8>, ImportError> {
-    if !has_header {
-        return Ok(bytes.to_vec());
-    }
-    let text = sela_core::require_utf8(bytes)?;
-    let (first_line, rest) = match text.find('\n') {
-        Some(i) => (&text[..=i], &text[i + 1..]),
-        None => (text, ""),
-    };
-    let delim = delimiter as char;
-    let mut new_headers = Vec::with_capacity(targets.len());
-    for (i, target) in targets.iter().enumerate() {
-        match target {
-            Some(name) => new_headers.push(escape_header(name, delim)),
-            None => new_headers.push(format!("__sela_skip_{i}")),
-        }
-    }
-    let mut out = new_headers.join(&delim.to_string());
-    out.push('\n');
-    out.push_str(rest.trim_start_matches('\r'));
-    let _ = first_line;
-    Ok(out.into_bytes())
-}
-
-fn escape_header(name: &str, delim: char) -> String {
-    if name.contains(delim) || name.contains('"') || name.contains('\n') {
-        format!("\"{}\"", name.replace('"', "\"\""))
-    } else {
-        name.to_string()
     }
 }
 
@@ -1068,4 +1050,181 @@ fn build_insert_only_plan(
         table: table_ref,
         statements,
     })
+}
+
+#[cfg(test)]
+mod transfer_e2e {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+
+    use sela_core::{
+        CsvExportOptions, CsvImportOptions, Engine, ExportFormat, SavedConnection, Value,
+    };
+    use sela_drivers::{connect, create_sample_database};
+    use tokio_util::sync::CancellationToken;
+
+    async fn open_sample() -> (tempfile::TempDir, Box<dyn DatabaseSession>) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("library.sqlite");
+        create_sample_database(&db).await.unwrap();
+        let mut conn = SavedConnection::new(Engine::Sqlite);
+        conn.file_path = db.to_string_lossy().into();
+        let session = connect(&conn, "").await.unwrap();
+        (dir, session)
+    }
+
+    #[tokio::test]
+    async fn export_success_renames_temp_onto_destination() {
+        let (dir, session) = open_sample().await;
+        let dest = dir.path().join("books.csv");
+        let tmp = export_temp_path(&dest);
+        let done = Arc::new(AtomicU64::new(0));
+        let n = run_export(
+            session.as_ref(),
+            &dest,
+            &tmp,
+            &ExportFormat::Csv(CsvExportOptions::default()),
+            Some(("SELECT id, title FROM books ORDER BY id".into(), vec![])),
+            None,
+            CancellationToken::new(),
+            done,
+        )
+        .await
+        .unwrap();
+        assert!(n >= 1);
+        assert!(dest.exists());
+        assert!(!tmp.exists());
+        let text = fs::read_to_string(&dest).unwrap();
+        assert!(text.contains("title"));
+        assert!(text.contains("Left Hand"));
+    }
+
+    #[tokio::test]
+    async fn export_cancel_keeps_preexisting_destination_byte_identical() {
+        let (dir, session) = open_sample().await;
+        let dest = dir.path().join("keep.csv");
+        let original = b"pre-existing destination contents";
+        fs::write(&dest, original).unwrap();
+        let tmp = export_temp_path(&dest);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let done = Arc::new(AtomicU64::new(0));
+        let err = run_export(
+            session.as_ref(),
+            &dest,
+            &tmp,
+            &ExportFormat::Csv(CsvExportOptions::default()),
+            Some(("SELECT id, title FROM books ORDER BY id".into(), vec![])),
+            None,
+            cancel,
+            done,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ExportError::Cancelled));
+        assert_eq!(fs::read(&dest).unwrap(), original);
+        assert!(!tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn export_failure_keeps_preexisting_destination_byte_identical() {
+        let (dir, session) = open_sample().await;
+        let dest = dir.path().join("keep-fail.csv");
+        let original = b"do-not-delete-me";
+        fs::write(&dest, original).unwrap();
+        let tmp = export_temp_path(&dest);
+        // Force a query failure so we never rename.
+        let err = run_export(
+            session.as_ref(),
+            &dest,
+            &tmp,
+            &ExportFormat::Csv(CsvExportOptions::default()),
+            Some(("SELECT * FROM no_such_table".into(), vec![])),
+            None,
+            CancellationToken::new(),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+        .unwrap_err();
+        assert!(!matches!(err, ExportError::Cancelled));
+        assert_eq!(fs::read(&dest).unwrap(), original);
+        assert!(!tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn import_applies_mapping_without_header() {
+        let (dir, session) = open_sample().await;
+        // Create a tiny target table.
+        session
+            .execute("CREATE TABLE items (id INTEGER PRIMARY KEY, title TEXT NOT NULL)")
+            .await
+            .unwrap();
+        let csv_path = dir.path().join("items.csv");
+        // title,id order — positional would be wrong.
+        fs::write(&csv_path, b"Alpha,10\nBeta,20\n").unwrap();
+        let mapping = Some(vec![Some("title".into()), Some("id".into())]);
+        let n = run_import(
+            session.as_ref(),
+            Dialect::Sqlite,
+            &csv_path,
+            "main",
+            "items",
+            CsvImportOptions {
+                has_header: false,
+                required_columns: vec!["id".into(), "title".into()],
+                ..CsvImportOptions::default()
+            },
+            mapping,
+            CancellationToken::new(),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 2);
+        let page = session
+            .query("SELECT id, title FROM items ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::Int(10));
+        assert_eq!(page.rows[0][1], Value::text("Alpha"));
+    }
+
+    #[tokio::test]
+    async fn import_cancel_mid_transfer_leaves_table_unchanged() {
+        let (dir, session) = open_sample().await;
+        session
+            .execute("CREATE TABLE items2 (id INTEGER PRIMARY KEY, title TEXT NOT NULL)")
+            .await
+            .unwrap();
+        let csv_path = dir.path().join("items2.csv");
+        let mut body = String::from("id,title\n");
+        for i in 0..500 {
+            body.push_str(&format!("{i},row{i}\n"));
+        }
+        fs::write(&csv_path, body).unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = run_import(
+            session.as_ref(),
+            Dialect::Sqlite,
+            &csv_path,
+            "main",
+            "items2",
+            CsvImportOptions {
+                has_header: true,
+                required_columns: vec!["id".into(), "title".into()],
+                ..CsvImportOptions::default()
+            },
+            None,
+            cancel,
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ImportError::Cancelled));
+        let page = session.query("SELECT count(*) FROM items2").await.unwrap();
+        assert_eq!(page.rows[0][0].display(), "0");
+    }
 }
