@@ -78,10 +78,14 @@ async fn authenticate_private_key(
     let key = load_secret_key(path, passphrase).map_err(|err| {
         // Wrong passphrase and unreadable key both surface as auth — never
         // echo the passphrase.
-        let msg = err.to_string();
-        if msg.to_ascii_lowercase().contains("password")
-            || msg.to_ascii_lowercase().contains("passphrase")
-            || msg.to_ascii_lowercase().contains("decrypt")
+        // russh/ssh-key surfaces a wrong passphrase as "cryptographic error"
+        // or "encrypted", not the words password/passphrase/decrypt.
+        let msg = err.to_string().to_ascii_lowercase();
+        if msg.contains("password")
+            || msg.contains("passphrase")
+            || msg.contains("decrypt")
+            || msg.contains("crypto")
+            || msg.contains("encrypted")
         {
             SshError::auth("SSH: could not unlock the private key.")
         } else {
