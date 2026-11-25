@@ -36,13 +36,15 @@ chmod 600 "$WORKDIR/keys/id_ed25519" "$WORKDIR/keys/id_ed25519_enc" \
   "$WORKDIR/keys/authorized_keys"
 
 # Docker network + DB without host publish.
-docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
+# Keep docker chatter off stdout — callers use `eval "$(./scripts/run-ssh-bastion.sh)"`.
+docker network inspect "$NETWORK" >/dev/null 2>&1 \
+  || docker network create "$NETWORK" >/dev/null
 docker rm -f sela-ssh-pg sela-ssh-mysql sela-ssh-bastion >/dev/null 2>&1 || true
 
 # Image digests pinned (resolved from :16 / :8.4 / :latest via registry API).
 PG_IMAGE="postgres@sha256:07abc3f43c9395b0bdbbab36bc25ddb0e8d83cd4fcafb5fb7d6abe14ff156dd8"
 MYSQL_IMAGE="mysql@sha256:8c233bad33d520a7aae1c1e619c3a9775f4a1ba2d463d692fada04ec7f40be00"
-# lscr.io/linuxserver/openssh-server:latest →
+# lscr.io/linuxserver/openssh-server:latest
 OPENSSH_IMAGE="lscr.io/linuxserver/openssh-server@sha256:c8431b8982e7eb3935ebf9c46607d19c6417e39c12ce884cc66945df2e9334e8"
 
 docker run -d --name sela-ssh-pg --network "$NETWORK" \
