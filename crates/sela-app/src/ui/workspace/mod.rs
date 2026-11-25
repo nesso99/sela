@@ -220,6 +220,9 @@ pub struct Workspace {
     /// Active export / import background job (one per window; EX-13).
     transfer_job: Option<TransferJob>,
     transfer_generation: u64,
+    /// Test-only: when set, the next `run_export` parks until cancel (EX-06 Stop).
+    #[cfg(test)]
+    test_export_hold: Option<std::sync::Arc<export_import::jobs::ExportHold>>,
     /// Open export dialog entity (tests may inject a path).
     export_dialog: Option<Entity<ExportDialog>>,
     /// Open import dialog entity (tests may inject a path).
@@ -415,6 +418,8 @@ impl Workspace {
             import_confirm_open: false,
             transfer_job: None,
             transfer_generation: 0,
+            #[cfg(test)]
+            test_export_hold: None,
             export_dialog: None,
             import_dialog: None,
             pending_unknown_host_key: None,
@@ -771,6 +776,24 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) fn test_active_status(&self) -> Option<String> {
         self.active_view().map(|v| v.status.clone())
+    }
+
+    /// Arm the test-only export hold so `run_export` parks until cancel.
+    #[cfg(test)]
+    pub(crate) fn test_arm_export_hold(&mut self) {
+        self.test_export_hold = Some(std::sync::Arc::new(
+            export_import::jobs::ExportHold::default(),
+        ));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_clear_export_hold(&mut self) {
+        self.test_export_hold = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_export_hold_reached(&self) -> bool {
+        self.test_export_hold.as_ref().is_some_and(|h| h.reached())
     }
 
     /// Start a real export job (exercises `transfer_generation` bump + cancel token).

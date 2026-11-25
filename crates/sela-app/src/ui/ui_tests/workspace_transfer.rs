@@ -13,6 +13,7 @@ use sela_core::EXPORT_CANCELLED_STATUS;
 use sela_drivers::create_sample_database;
 
 use crate::ui::workspace::Workspace;
+use crate::ui::CancelQuery;
 
 struct TransferFixture {
     _dir: TempDir,
@@ -58,7 +59,7 @@ async fn open_fixture(cx: &mut TestAppContext) -> TransferFixture {
     })
     .unwrap();
     wait_connected(cx, handle, &workspace).await;
-    // Focus path so CancelQuery keybinding dispatches into Workspace.
+    // Focus path so CancelQuery dispatches into Workspace.
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         workspace.update(cx, |ws, cx| {
@@ -103,6 +104,9 @@ fn open_books_data(
 
 /// EX-06: real Workspace export + Stop via CancelQuery clears the job with
 /// `Export cancelled.` Catches removal of `job.cancel.cancel()`.
+///
+/// The export parks on a per-Workspace hold until cancel, so Stop cannot lose
+/// a race with a tiny table finishing first (Windows CI flake).
 #[gpui_kit::test]
 async fn ex06_workspace_stop_cancels_running_export(cx: &mut TestAppContext) {
     let fix = open_fixture(cx).await;
@@ -110,9 +114,9 @@ async fn ex06_workspace_stop_cancels_running_export(cx: &mut TestAppContext) {
 
     let dest = fix.out_dir.join("books.csv");
     cx.update_window(fix.handle, |_, window, cx| {
-        // Ensure a focus target for CancelQuery.
         fix.workspace.update(cx, |ws, cx| {
             ws.test_focus_sql_editor(window, cx);
+            ws.test_arm_export_hold();
             ws.test_start_export(dest.clone(), cx);
         });
         window.render_frame(cx);
@@ -120,8 +124,23 @@ async fn ex06_workspace_stop_cancels_running_export(cx: &mut TestAppContext) {
             fix.workspace.read(cx).test_has_transfer_job(),
             "export job must be installed"
         );
-        // Real Stop / secondary-. binding (ctrl-. on Linux CI).
-        window.press("ctrl-.", cx);
+    })
+    .unwrap();
+
+    // Background `drive` parks on the hold; wait until it has entered the gate.
+    cx.wait_for(fix.handle, Duration::from_secs(8), |_, cx| {
+        fix.workspace.read(cx).test_export_hold_reached()
+    })
+    .await;
+    assert!(
+        fix.workspace
+            .read_with(cx, |ws, _| ws.test_has_transfer_job()),
+        "job must still be in flight when hold is reached"
+    );
+
+    // Real CancelQuery action (same path as Stop / secondary-.).
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.dispatch_action(Box::new(CancelQuery), cx);
         window.render_frame(cx);
     })
     .unwrap();
@@ -136,12 +155,13 @@ async fn ex06_workspace_stop_cancels_running_export(cx: &mut TestAppContext) {
     })
     .await;
 
-    fix.workspace.read_with(cx, |ws, _| {
+    fix.workspace.update(cx, |ws, _| {
         assert!(!ws.test_has_transfer_job());
         assert_eq!(
             ws.test_active_status().as_deref(),
             Some(EXPORT_CANCELLED_STATUS)
         );
+        ws.test_clear_export_hold();
     });
 }
 
@@ -159,7 +179,6 @@ async fn ex06_workspace_transfer_generation_bumps(cx: &mut TestAppContext) {
             ws.test_start_export(dest1.clone(), cx);
             assert_eq!(ws.test_transfer_generation(), 1);
             assert_eq!(ws.test_transfer_job_generation(), Some(1));
-            // Cancel so the slot clears for a second start.
             ws.cancel_transfer_if_active(cx);
         });
         window.render_frame(cx);
@@ -195,8 +214,6 @@ async fn ex06_workspace_transfer_generation_bumps(cx: &mut TestAppContext) {
     })
     .await;
 
-    // Seed a throwaway table so import can open (describe_table).
-    // Import bump is a separate line from export — exercise it too.
     cx.update_window(fix.handle, |_, window, cx| {
         fix.workspace.update(cx, |ws, cx| {
             ws.test_start_import(csv.clone(), "main", "books", cx);
@@ -239,11 +256,9 @@ async fn ex06_workspace_stale_export_completion_ignored(cx: &mut TestAppContext)
             ws.test_start_export(dest.clone(), cx);
             let gen = ws.test_transfer_job_generation().expect("job gen");
             assert!(gen >= 1, "start_export must bump generation above 0");
-            // Simulate a newer owner of the transfer slot.
             ws.test_supersede_transfer_generation();
             let newer = ws.test_transfer_job_generation().unwrap();
             assert_eq!(newer, gen + 1);
-            // Stale success must be ignored.
             ws.test_finish_export(gen, dest.clone(), Ok(999), cx);
             assert!(
                 ws.test_has_transfer_job(),

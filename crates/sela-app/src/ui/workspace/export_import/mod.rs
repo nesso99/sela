@@ -6,7 +6,7 @@
 
 pub(crate) mod export_dialog;
 pub(crate) mod import_dialog;
-mod jobs;
+pub(crate) mod jobs;
 pub(crate) mod logic;
 pub(crate) mod messages;
 

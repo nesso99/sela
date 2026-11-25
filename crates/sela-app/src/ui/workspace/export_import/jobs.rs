@@ -49,6 +49,29 @@ pub enum TransferKind {
     Import,
 }
 
+/// Per-Workspace test gate: when present, `run_export` parks until the job's
+/// cancel token fires. Guarantees Stop is pressed while the export is in flight
+/// (no race with a tiny table). Scoped to one Workspace so parallel tests do
+/// not share process-wide atomics.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct ExportHold {
+    reached: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+impl ExportHold {
+    pub fn reached(&self) -> bool {
+        self.reached.load(Ordering::SeqCst)
+    }
+
+    pub async fn wait_until_cancelled(self: &Arc<Self>, cancel: &CancellationToken) -> ExportError {
+        self.reached.store(true, Ordering::SeqCst);
+        cancel.cancelled().await;
+        ExportError::Cancelled
+    }
+}
+
 /// Workspace-level export/import job (one at a time per window).
 pub struct TransferJob {
     pub kind: TransferKind,
@@ -511,6 +534,8 @@ impl Workspace {
         let loaded = prepared.loaded;
         let dest_for_finish = dest.clone();
         let tmp_for_finish = tmp.clone();
+        #[cfg(test)]
+        let hold = self.test_export_hold.clone();
 
         cx.spawn(async move |this, async_cx| {
             // Nested Result so drive can stay typed on DbError while we keep ExportError.
@@ -525,6 +550,8 @@ impl Workspace {
                         loaded,
                         cancel,
                         done,
+                        #[cfg(test)]
+                        hold,
                     )
                     .await,
                 )
@@ -855,7 +882,13 @@ pub(crate) async fn run_export(
     loaded: Option<(Vec<String>, Vec<Vec<Value>>)>,
     cancel: CancellationToken,
     done: Arc<AtomicU64>,
+    #[cfg(test)] hold: Option<Arc<ExportHold>>,
 ) -> Result<u64, ExportError> {
+    #[cfg(test)]
+    if let Some(hold) = hold.as_ref() {
+        return Err(hold.wait_until_cancelled(&cancel).await);
+    }
+
     let file = File::create(tmp).map_err(|e| ExportError::Io(e.to_string()))?;
     let mut writer = BufWriter::new(file);
     let progress = |n: u64| {
@@ -1090,6 +1123,7 @@ mod transfer_e2e {
             None,
             CancellationToken::new(),
             done,
+            None,
         )
         .await
         .unwrap();
@@ -1120,6 +1154,7 @@ mod transfer_e2e {
             None,
             cancel,
             done,
+            None,
         )
         .await
         .unwrap_err();
@@ -1145,6 +1180,7 @@ mod transfer_e2e {
             None,
             CancellationToken::new(),
             Arc::new(AtomicU64::new(0)),
+            None,
         )
         .await
         .unwrap_err();
