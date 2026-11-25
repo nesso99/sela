@@ -32,7 +32,9 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tree::{TreeEvent, TreeState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _, TitleBar};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window};
+use gpui_kit::{
+    div, px, App, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window,
+};
 
 use super::decorations::{should_show_client_title_bar, should_suppress_title_bar_window_menu};
 
@@ -319,20 +321,21 @@ impl Workspace {
     }
 
     /// Linux/Windows in-window File menu under server-side decorations.
-    /// Height is fixed so the row does not swallow the column. When client-side
-    /// decorations are active, the menu lives inside [`Self::client_title_bar`]
-    /// instead.
+    /// Height is fixed so the row does not swallow the column. Uses `h_flex` so
+    /// the File trigger sizes to its label (left-aligned); a block row made the
+    /// ghost Button stretch full-width and `Anchor::TopLeft` put the menu at
+    /// x=0 (#101). When client-side decorations are active, the menu lives
+    /// inside [`Self::client_title_bar`] instead.
     #[cfg(not(target_os = "macos"))]
-    fn menu_bar_row(&self, _cx: &Context<Self>) -> impl IntoElement {
-        div()
+    pub(crate) fn menu_bar_row(cx: &App) -> impl IntoElement {
+        h_flex()
             .id("sela-menu-bar")
             .w_full()
             .h(px(32.))
             .flex_shrink_0()
             .border_b_1()
-            .border_color(_cx.theme().title_bar_border)
-            .bg(_cx.theme().title_bar)
-            .items_center()
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().title_bar)
             .px_1()
             .child(Self::file_menu_button())
     }
@@ -341,7 +344,7 @@ impl Workspace {
     /// `AppMenuBar`'s deferred `anchored()` popup was painted at the window
     /// origin, so Quit overlapped the sidebar title and missed hit-tests.
     #[cfg(not(target_os = "macos"))]
-    fn file_menu_button() -> impl IntoElement {
+    pub(crate) fn file_menu_button() -> impl IntoElement {
         Button::new("file-menu")
             .small()
             .ghost()
@@ -844,7 +847,7 @@ impl Render for Workspace {
                 } else {
                     #[cfg(not(target_os = "macos"))]
                     {
-                        root.child(self.menu_bar_row(cx))
+                        root.child(Self::menu_bar_row(cx))
                     }
                     #[cfg(target_os = "macos")]
                     {

@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enter in the Import URL field fills the form and keeps the New/Edit connection dialog open; it no longer dismisses via the dialog Confirm path (#96).
 - Duplicate of a SQLite (or any no-password) connection leaves `needs_password` false and connects without opening Edit (#97).
 - A failed Import URL clears the previous `Filled from the URL…` success line; a later success clears the error line (#100).
-- Linux/Windows File menu dropdown anchors under the File label (DropdownMenu/Popover) instead of the window top-left over the sidebar title (#101).
+- Linux/Windows SSD File menu row uses `h_flex` so the File trigger is content-sized and left-aligned; the DropdownMenu opens under File instead of at the window top-left over the sidebar title (#101).
 - Space inspect popover anchors to the focused cell instead of the results-area top-left (#102).
 - Status bar restores the Data row-count line when switching Structure → Data (#75); does not overwrite a `Query failed` status.
 - Cell editor ghost NULL control at the right edge of the inline editor (#76).

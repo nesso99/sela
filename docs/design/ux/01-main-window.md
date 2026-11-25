@@ -12,7 +12,7 @@ Default window size is 1180×760, minimum 880×560 (`ui/mod.rs`). Where the plat
 
 | Region | Size | Where it is set today | Resize |
 | --- | --- | --- | --- |
-| SSD menu row | 32px, Linux and Windows, server decorations only | `workspace/mod.rs` `menu_bar_row`, `h(px(32.))` | Fixed. File `DropdownMenu` only. Not drawn when the client title bar is shown. |
+| SSD menu row | 32px, Linux and Windows, server decorations only | `workspace/mod.rs` `menu_bar_row`, `h_flex` + `h(px(32.))` | Fixed. File `DropdownMenu` only (trigger content-sized / left-aligned). Not drawn when the client title bar is shown. |
 | Client title bar | 34px | gpui-component `TitleBar` (`TITLE_BAR_HEIGHT`) | Fixed. Only when `Decorations::Client`. It replaces the 32px menu row. See [Client-side title bar](#client-side-title-bar). |
 | Sidebar | 292px default | `sidebar.rs`, `w(px(292.))`, `flex_shrink_0` | Drag the right edge. Min 200, max 480. Double-click returns to 292. |
 | Tab bar | 28px | `tabs.rs` `TabBar`, no explicit height | Fixed. |

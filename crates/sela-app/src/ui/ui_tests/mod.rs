@@ -4,6 +4,7 @@
 //! display. Run via `scripts/ui-tests.sh`.
 
 mod connection_dialog;
+mod file_menu;
 mod grid_editing;
 mod harness;
 mod reconnect;
