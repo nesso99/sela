@@ -1633,6 +1633,7 @@ mod tests {
         async fn apply_changes(
             &self,
             _plan: &crate::change_plan::ChangePlan,
+            _cancel: CancellationToken,
         ) -> Result<crate::change_plan::ApplyChangesResult, DbError> {
             Err(DbError::query("unused"))
         }

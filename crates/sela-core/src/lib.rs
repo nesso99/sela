@@ -26,7 +26,10 @@ mod structure;
 mod tabs;
 mod types;
 
-pub use change_plan::{ApplyChangesResult, ChangePlan, PlanOp, PlannedStatement};
+pub use change_plan::{
+    optimistic_value_comparable, ApplyChangesResult, ChangePlan, PlanOp, PlannedStatement,
+    OPTIMISTIC_BLOB_MAX_BYTES,
+};
 pub use change_set::{CellChange, ChangeError, ChangeSet, RowChange, TableRef};
 pub use column_kind::{ColumnKind, MAX_SORT_KEYS};
 pub use connection::{safe_mode_driven_by_color, SafeMode, SavedConnection, TlsMode, TlsSettings};

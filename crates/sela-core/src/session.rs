@@ -32,10 +32,20 @@ pub trait DatabaseSession: Send + Sync {
     async fn count_query(&self, sql: &str, params: &[Value]) -> Result<u64, DbError>;
 
     /// Apply a [`ChangePlan`] in a single transaction (commit on success,
-    /// rollback on any error). Empty plans are a no-op success.
+    /// rollback on any error or cancel). Empty plans are a no-op success.
     ///
-    /// On failure the caller's [`crate::ChangeSet`] is left unchanged (M2-3).
-    async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyChangesResult, DbError>;
+    /// Honours `cancel` the same way as [`Self::stream_query`]: cooperative
+    /// checks between statements, plus server-side cancel on Postgres/MySQL
+    /// when a statement is in flight. On cancel the transaction is rolled
+    /// back and [`DbError::Cancelled`] is returned so the caller keeps the
+    /// [`crate::ChangeSet`] (nothing was applied).
+    ///
+    /// On other failures the caller's [`crate::ChangeSet`] is left unchanged (M2-3).
+    async fn apply_changes(
+        &self,
+        plan: &ChangePlan,
+        cancel: CancellationToken,
+    ) -> Result<ApplyChangesResult, DbError>;
 
     /// Cheap row-count estimate for a table (Postgres `reltuples`, MySQL `table_rows`).
     /// SQLite returns `Ok(None)` — use [`exact_table_rows`] only on demand.

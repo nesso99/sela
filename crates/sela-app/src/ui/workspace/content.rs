@@ -291,15 +291,39 @@ impl Workspace {
 
     pub(super) fn error_banner(&self, cx: &Context<Self>, error: String) -> impl IntoElement {
         let palette = super::super::theme::SelaPalette::for_mode(cx.theme().mode);
-        div()
+        let this = cx.entity();
+        let show_refresh = self
+            .active_view()
+            .and_then(|v| v.edit.as_ref())
+            .is_some_and(|e| e.commit_conflict);
+        h_flex()
             .max_h(px(60.))
             .overflow_y_scrollbar()
             .px_3()
             .py_2()
-            .text_sm()
+            .gap_2()
+            .items_start()
+            .justify_between()
             .bg(palette.status_error_wash)
             .text_color(palette.status_error)
-            .child(error)
+            .child(div().text_sm().flex_1().min_w(px(0.)).child(error))
+            .when(show_refresh, |row| {
+                row.child(
+                    Button::new("conflict-refresh")
+                        .xsmall()
+                        .ghost()
+                        .label("Refresh")
+                        .tooltip("Drop pending edits and reload this page")
+                        .on_click({
+                            let this = this.clone();
+                            move |_, _, cx| {
+                                this.update(cx, |workspace, cx| {
+                                    workspace.refresh_after_commit_conflict(cx);
+                                });
+                            }
+                        }),
+                )
+            })
     }
 
     /// Non-error status when no tab is open (e.g. Duplicate).

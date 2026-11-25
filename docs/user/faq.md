@@ -34,7 +34,7 @@ A per-connection setting (Off / Confirm writes / Read-only) that gates writes fr
 
 ## Can I edit cells in the grid?
 
-Yes on a table Data tab that has a primary key: Enter or double-click a cell, then Commit from the pending bar (or Cmd/Ctrl+S). Tables without a primary key, views, and SQL result tabs stay read-only. Preview SQL and Discard are on the pending bar. Safe mode gates editor writes and grid Commit — see [Safe mode](./safe-mode.md), [grid editing](../design/ux/07-grid-editing.md), and [preview / commit](../design/ux/08-preview-commit.md).
+Yes on a table Data tab that has a primary key: Enter or double-click a cell, then Commit from the pending bar (or Cmd/Ctrl+S). Tables without a primary key, views, and SQL result tabs stay read-only. Preview SQL and Discard are on the pending bar. Commit always checks previous non-key column values (optimistic concurrency); a concurrent edit shows *Row changed since it was loaded…* with **Refresh**. Cancel an in-flight Commit with Stop / Cmd/Ctrl+. / pending-bar Cancel — nothing is saved. Safe mode gates editor writes and grid Commit — see [Safe mode](./safe-mode.md), [grid editing](../design/ux/07-grid-editing.md), and [preview / commit](../design/ux/08-preview-commit.md).
 
 ## How do I quit?
 
