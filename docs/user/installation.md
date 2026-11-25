@@ -7,8 +7,8 @@ Download the asset for your platform from the [GitHub Releases](https://github.c
 | Platform | Asset | Notes |
 | --- | --- | --- |
 | Linux x86_64 | `sela-*-linux-x86_64.tar.gz` or `Sela-*-x86_64.AppImage` | AppImage is self-contained enough to run without installing; still needs system GPU/Vulkan (below). |
-| macOS arm64 (Apple Silicon) | `sela-*-macos-arm64.dmg` or `.zip` | **Apple Silicon (arm64) only for v0.1.0 — Intel Macs are not supported yet.** **Unsigned**. |
-| Windows x86_64 | `sela-*-windows-x86_64.zip` | Contains `sela.exe`. **Unsigned** for v0.1.0. |
+| macOS arm64 (Apple Silicon) | `sela-*-macos-arm64.dmg` or `.zip` | **Apple Silicon (arm64) only for v0.2.0 — Intel Macs are not supported yet.** **Unsigned**. |
+| Windows x86_64 | `sela-*-windows-x86_64.zip` | Contains `sela.exe`. **Unsigned** for v0.2.0. |
 
 ### Linux
 
@@ -36,15 +36,15 @@ export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 
 Also expect the usual desktop stack at runtime: Wayland or X11, fontconfig/Freetype fonts (e.g. DejaVu), and D-Bus. Passwords use the Secret Service API (gnome-keyring or KWallet) over D-Bus via keyring’s `sync-secret-service` backend (`libdbus-1-dev` at build time; already listed below). Without a Secret Service at runtime, Sela keeps the password in memory for the session, warns in the connection dialog and status bar that it will not be saved after quit, and never writes it to JSON.
 
-Fedora note: an RPM is not published for v0.1.0. Prefer the AppImage or tarball; Flatpak may come later.
+Fedora note: an RPM is not published for v0.2.0. Prefer the AppImage or tarball; Flatpak may come later.
 
 ### macOS
 
-**v0.1.0 macOS builds are Apple Silicon (arm64) only. Intel Macs are not supported yet** (no x86_64 or universal binary in this release).
+**v0.2.0 macOS builds are Apple Silicon (arm64) only. Intel Macs are not supported yet** (no x86_64 or universal binary in this release).
 
 Open the `.dmg` and drag **Sela** into Applications, or unzip the `.zip` and run `Sela.app`.
 
-**Gatekeeper (unsigned builds).** v0.1.0 is not notarized or Developer ID–signed. The first launch may show *“Sela” cannot be opened because it is from an unidentified developer*. To open it anyway: Right-click (or Control-click) **Sela** → **Open** → confirm **Open**, or remove the quarantine flag after you have verified `SHA256SUMS`:
+**Gatekeeper (unsigned builds).** v0.2.0 is not notarized or Developer ID–signed. The first launch may show *“Sela” cannot be opened because it is from an unidentified developer*. To open it anyway: Right-click (or Control-click) **Sela** → **Open** → confirm **Open**, or remove the quarantine flag after you have verified `SHA256SUMS`:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Sela.app
@@ -56,14 +56,14 @@ GPUI renders with Metal. Passwords go to the login Keychain.
 
 Unzip and run `sela.exe`.
 
-**SmartScreen (unsigned builds).** v0.1.0 is not Authenticode-signed. SmartScreen may show *Windows protected your PC*. Choose **More info** → **Run anyway** only after verifying `SHA256SUMS`.
+**SmartScreen (unsigned builds).** v0.2.0 is not Authenticode-signed. SmartScreen may show *Windows protected your PC*. Choose **More info** → **Run anyway** only after verifying `SHA256SUMS`.
 
 GPUI Kit targets Windows (Direct3D via wgpu); `keyring` uses Credential Manager. Treat Windows as less exercised than Linux/macOS until someone dogfoods there.
 
 ### Check the binary
 
 ```bash
-sela --version   # prints e.g. sela 0.1.0
+sela --version   # prints e.g. sela 0.2.0
 sela --help
 ```
 

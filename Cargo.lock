@@ -5955,7 +5955,7 @@ dependencies = [
 
 [[package]]
 name = "sela-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "chrono",
@@ -5974,7 +5974,7 @@ dependencies = [
 
 [[package]]
 name = "sela-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "keyring",
@@ -5989,7 +5989,7 @@ dependencies = [
 
 [[package]]
 name = "sela-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -6008,7 +6008,7 @@ dependencies = [
 
 [[package]]
 name = "sela-drivers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "async-trait",

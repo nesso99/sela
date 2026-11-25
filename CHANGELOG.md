@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 ### Added
 
 - M2-5 connection organization: named color swatches (light/dark pairs; Red = production), optional label and one-level sidebar groups, Duplicate (copies settings but not the password / keychain secret), and Import URL for `postgres://` / `mysql://` / `sqlite:` (password goes to the keychain path on save; URLs are never logged). Config fields default so v0.1 files still load. On a new connection, choosing Red sets Safe mode to Confirm writes until the user touches that control.
