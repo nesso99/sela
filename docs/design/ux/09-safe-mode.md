@@ -88,7 +88,7 @@ Classify the statement at the caret, the selection, or each statement of a run-a
 
 Grid Commit is classified as a write that has a `WHERE`. It never takes the no-WHERE dialog. Filter, sort, paging, Count, and Structure are reads. They do not ask.
 
-Switching the level in the dialog does not discard pending edits already on a tab. Saving the connection reconnects, so server-side Read-only (and leaving it) takes effect on that reconnect. The next Commit sees the new level. If the new level is Read-only, the strip appears and Commit disables; Discard still works.
+Switching the level in the dialog does not discard pending edits already on a tab. Saving the connection reconnects, so server-side Read-only (and leaving it) takes effect on that reconnect. The next Commit sees the new level. If the new level is Read-only, the strip appears and Commit disables; Discard still works. The command-palette **Toggle safe mode** action follows the same persist → keep pending → reconnect rules ([12-command-palette.md](./12-command-palette.md#toggle-safe-mode-palette)).
 
 ## Server-side Read-only
 

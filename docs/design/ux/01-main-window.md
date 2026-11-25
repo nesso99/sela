@@ -173,7 +173,7 @@ Tab order, top to bottom. Shift+Tab reverses. The status text and the source lab
 9. Run, Stop, and Load more in the editor header.
 10. `Count` or `Load more` in the status bar, when that button is visible.
 
-A modal (connection form, delete confirm, quit confirm) traps focus until it closes. `secondary-q` still reaches the quit handler from a dialog other than the quit confirm. An open menu, the autocomplete popup, or the inspect popover keeps Tab, arrows, Enter, and Escape inside itself.
+A modal (connection form, delete confirm, quit confirm) traps focus until it closes. `secondary-q` still reaches the quit handler from a dialog other than the quit confirm. An open menu, the autocomplete popup, or the inspect popover keeps Tab, arrows, Enter, and Escape inside itself. When the autocomplete popup is **closed**, Tab in the SQL editor inserts indent and does not leave the editor ([03-sql-editor.md](./03-sql-editor.md#autocomplete)).
 
 ## Keyboard shortcuts
 

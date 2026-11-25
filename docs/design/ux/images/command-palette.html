@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Command palette</title><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; color: #e8e8e8; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 14px 18px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; }
+.win {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  background: #161616; border: 1px solid #3a3a3a; position: relative;
+}
+.titlebar {
+  height: 22px; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #bdbdbd; border-bottom: 1px solid #3a3a3a; background: #1c1c1c;
+}
+.body { flex: 1; display: flex; }
+.side { width: 232px; background: #1e1e1e; border-right: 1px solid #3a3a3a; }
+.main { flex: 1; display: flex; flex-direction: column; }
+.toolbar { height: 40px; border-bottom: 1px solid #3a3a3a; padding: 0 10px; display: flex; align-items: center; font-size: 12px; }
+.grid { flex: 1; }
+.status { height: 28px; background: #242424; border-top: 1px solid #3a3a3a; }
+.dim { position: absolute; inset: 22px 0 0 0; background: rgba(0,0,0,.5); }
+.pal {
+  position: absolute; left: 50%; top: 120px; transform: translateX(-50%);
+  width: 520px; max-height: 420px; background: #1c1c1c; border: 1px solid #6a6a6a;
+  display: flex; flex-direction: column;
+}
+.search {
+  height: 36px; border-bottom: 1px solid #3a3a3a; padding: 0 12px;
+  display: flex; align-items: center; gap: 8px; font: 13px Inter, sans-serif;
+}
+.search .mode { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #8d8d8d; }
+.search .q { color: #f2f2f2; }
+.search .caret { width: 1px; height: 14px; background: #f2f2f2; }
+.list { flex: 1; overflow: hidden; padding: 4px 0; }
+.row {
+  height: 28px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px;
+}
+.row .name { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.row .name .h { color: #f2f2f2; text-decoration: underline; text-underline-offset: 2px; }
+.row .why { font-size: 11px; color: #8d8d8d; }
+.row.sel { background: #2e2e2e; box-shadow: inset 0 -1px 0 #f2f2f2; }
+.row.dimmed { color: #666; }
+.row.dimmed .name { color: #666; }
+.hint { padding: 6px 12px 8px; font-size: 10px; color: #8d8d8d; border-top: 1px solid #3a3a3a; }
+.caption { font-size: 12px; color: #bdbdbd; }
+</style></head>
+<body>
+  <div class="kicker"><b>Sela</b><span>Command palette · action mode · secondary-shift-p</span></div>
+  <div class="win">
+    <div class="titlebar">Sela</div>
+    <div class="body">
+      <div class="side"></div>
+      <div class="main">
+        <div class="toolbar">public.books</div>
+        <div class="grid"></div>
+        <div class="status"></div>
+      </div>
+    </div>
+    <div class="dim"></div>
+    <div class="pal">
+      <div class="search">
+        <span class="mode">Actions</span>
+        <span class="q">&gt; exp</span><span class="caret"></span>
+      </div>
+      <div class="list">
+        <div class="row sel"><span class="name"><span class="h">Exp</span>ort…</span><span class="why">secondary-shift-p</span></div>
+        <div class="row"><span class="name">Import CSV…</span><span class="why"></span></div>
+        <div class="row"><span class="name">New query tab</span><span class="why">secondary-t</span></div>
+        <div class="row"><span class="name">Refresh schema</span><span class="why"></span></div>
+        <div class="row dimmed"><span class="name">Commit</span><span class="why">No pending changes</span></div>
+        <div class="row dimmed"><span class="name">Stop</span><span class="why">Nothing running</span></div>
+        <div class="row"><span class="name">Toggle theme</span><span class="why"></span></div>
+        <div class="row"><span class="name">Quit</span><span class="why">secondary-q</span></div>
+      </div>
+      <div class="hint">secondary-p tables · secondary-shift-p actions · type &gt; to switch · dimmed = unavailable</div>
+    </div>
+  </div>
+  <div class="caption">One surface, two modes. Fuzzy subsequence with highlighted matches. Recent first.</div>
+</body></html>
