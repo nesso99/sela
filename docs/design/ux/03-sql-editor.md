@@ -78,13 +78,23 @@ Cancel and the 1,000-row cap keep the behavior in the main-window spec.
 
 ## Autocomplete
 
-Milestone M3-2. Do not block M1-4 on it. The popup rules are fixed now so M1-4 does not take the chords.
+Milestone M3-2 (US-08). Maps to QA [v0.3-test-plan.md](../../qa/v0.3-test-plan.md) **AU-01…AU-16** (v0.3 UX updates AU-01 trigger length, AU-05 manual chord, AU-13 Tab accepts — see [Answers to QA](#answers-to-qa-110-autocomplete)).
 
-**Trigger.** Open after one identifier character, and immediately after `.`. Do not open inside a comment or a string. Do not open or move the selection while an IME composition is active. Enter during composition commits the composition and does not accept a completion.
+**Trigger.**
 
-There is no manual chord. `secondary-space` is Spotlight on macOS. `ctrl-space` switches input sources on macOS. Automatic open plus Escape is the whole trigger.
+| Event | Behavior |
+| --- | --- |
+| After `.` | Open immediately (`alias.` / `table.` / `schema.`). |
+| After **2** identifier characters | Open (not after the first character). |
+| `ctrl-space` (Control+Space, not `secondary`) | Manual open / refresh of suggestions in the editor focus context. |
+| Inside a comment or string | Do not open or move the selection. |
+| IME composition active | Popup stays closed. Enter commits the composition and does **not** accept a completion. |
 
-**Contents.** Dialect keywords, schema names, table names, and column names from the connection’s catalog cache (the same catalog the sidebar tree uses). After `alias.` or `table.`, list that relation’s columns first.
+`secondary-space` stays free (Spotlight). Binding `ctrl-space` only while the SQL editor is focused is intentional for v0.3; users who need the OS input-source switch on macOS use the OS alternate chord.
+
+**Catalog.** Same cache as the sidebar. Load on connect. Refresh on: Refresh schema (sidebar / palette), after a successful DDL statement run from the editor, and when switching database/schema. While the catalog is loading, the popup shows a single muted row `Loading schema…` (not selectable). If the catalog is empty after load, `No schema loaded.` 
+
+**Contents.** Dialect keywords, schema names, table names, column names, and aliases from the current statement. After `alias.` or `table.`, that relation’s columns first.
 
 **Ranking.**
 
@@ -93,11 +103,41 @@ There is no manual chord. `secondary-space` is Spotlight on macOS. `ctrl-space` 
 3. Other substring matches.
 4. Keywords, below identifiers, unless the fragment itself is a keyword prefix.
 
-**Rows.** Monospace name, and on the right a muted label: the type name, `table`, `schema`, or `keyword`. No large icons. Maximum 8 rows, 22px each, so the popup is at most 176px tall and then scrolls. Width fits the labels up to 360px.
+**Rows.** Monospace name; muted label on the right: type name, `table`, `schema`, or `keyword`. Max 8 rows × 22px (≤ 176px) then scroll; width up to 360px.
 
-**Placement.** Prefer above the caret. The editor sits at the bottom of the window, so a popup that opens downward is clipped. Flip below only when there is no room above.
+**Placement.** Prefer above the caret; flip below only when there is no room above.
 
-**Keys.** Up and Down move. Enter accepts and inserts. Tab does not accept; it moves focus. Escape closes the popup and leaves the text. Click outside closes it. Arrows do nothing to the popup when it is closed.
+**Keys.**
+
+| Key | Behavior |
+| --- | --- |
+| Up / Down | Move selection |
+| Enter | Accept and insert |
+| Tab | Accept and insert (same as Enter) |
+| Escape | Dismiss; leave the text |
+| Click outside | Dismiss |
+| Arrows when closed | Do not open the popup |
+
+### Acceptance criteria (→ QA IDs)
+
+1. **AU-01** (updated) — Popup opens after **two** identifier characters, not one.
+2. **AU-02** — Opens immediately after `.`.
+3. **AU-03** — No open inside comment/string.
+4. **AU-04** — IME: closed during composition; Enter commits composition only.
+5. **AU-05** (updated) — `secondary-space` stays free; **`ctrl-space` manually opens** autocomplete in the editor.
+6. **AU-06…AU-12** — Catalog + keywords; alias columns first; ranking; quoting; large catalog; row chrome; placement above caret.
+7. **AU-13** (updated) — Up/Down navigate; **Tab and Enter accept**; Escape dismisses; click outside closes.
+8. **AU-14** — Arrows do nothing to a closed popup.
+9. **AU-15** — Optional tree-sitter; skip if not shipped.
+10. **AU-16** — Completions follow catalog refresh (connect, Refresh schema, successful DDL, switch database/schema); loading row `Loading schema…`.
+
+### Answers to QA (#110) (autocomplete)
+
+| QA question | Answer |
+| --- | --- |
+| 7. Autocomplete cache refresh | Load on connect; refresh on Refresh schema, successful DDL from the editor, and database/schema switch. Loading row while in flight. |
+
+Delta vs the M1-era popup notes that QA marked “aligned”: trigger length 2; `ctrl-space` manual; Tab accepts. QA should retarget AU-01, AU-05, AU-13 in the follow-up plan PR.
 
 ## Errors
 
@@ -145,7 +185,8 @@ M1-4. Stay inside the theme: comments in `muted_foreground`, strings in `foregro
 | Find next / previous | `secondary-g` / `secondary-shift-g` | M1-4 |
 | Format | `secondary-shift-f` | Reserved. Backlog, not M1-4. Do not bind it yet. |
 | Collapse editor | `secondary-shift-e` | M1-4 |
-| Accept completion | `Enter` while the popup is open | M3-2 |
+| Accept completion | `Enter` or `Tab` while the popup is open | M3-2 |
+| Manual trigger | `ctrl-space` (editor focused) | M3-2 |
 | Dismiss popup or find | `Escape` | M1-4 / M3-2 |
 
 `secondary-shift-enter` adds a filter row when the filter bar is focused. The two bindings use different focus contexts.
@@ -159,11 +200,17 @@ M1-4. Stay inside the theme: comments in `muted_foreground`, strings in `foregro
 - Keep a `Vec` of at most 8 result snapshots on the tab. Showing one calls the same grid update `apply_outcome` uses. Do not allocate a second `DataTable`.
 - Gutter and underline read an optional position. Parse Postgres `LINE n` only in one function with tests taken from real driver messages. If that parse fails, draw no gutter and no underline. The banner still shows the full message.
 - IME: while a composition is active, the autocomplete popup stays closed and Enter is not treated as “accept completion”.
+- Bind `ctrl-space` only on the SQL editor focus context. Accept on both Enter and Tab while the popup is open.
 - Do not enable `TableState::sortable(true)` on SQL results as a stand-in for ORDER BY.
 
 ## Decisions
 
-1. **Autocomplete stays in M3-2**, out of the M1-4 pull request. The popup section above is the M3-2 spec. M1-4 does not implement it.
-2. **Run-all stops at the first error.** Name that statement in the strip and the status (`Query failed · statement 2`). Keep every result that already finished. Do not start the rest.
-3. **Store at most 8 result sets.** Evict the oldest when a new one arrives.
-4. **No `sqlformat` in M1-4.** Format is backlog. `secondary-shift-f` is reserved for that later work and is not in the M1-4 binding set.
+1. **Autocomplete is M3-2.** Auto-trigger after `.` or 2 identifier chars; manual `ctrl-space`; Tab and Enter accept; Esc dismisses.
+2. **Catalog refresh:** connect, Refresh schema, successful DDL from the editor, switch database/schema. Loading row: `Loading schema…`.
+3. **Run-all stops at the first error.** Name that statement in the strip and the status (`Query failed · statement 2`). Keep every result that already finished. Do not start the rest.
+4. **Store at most 8 result sets.** Evict the oldest when a new one arrives.
+5. **No `sqlformat` in M1-4.** Format is backlog. `secondary-shift-f` is reserved for that later work and is not in the M1-4 binding set.
+
+## Open questions
+
+None for autocomplete product behavior. AU-15 tree-sitter remains optional per roadmap.

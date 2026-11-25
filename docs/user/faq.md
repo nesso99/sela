@@ -32,6 +32,10 @@ Yes: **Stop** or Cmd/Ctrl+.. Postgres and MySQL cancel on the server via a secon
 
 A per-connection setting (Off / Confirm writes / Read-only) that gates writes from the SQL editor and warns on `UPDATE` / `DELETE` without `WHERE`. See [Safe mode](./safe-mode.md).
 
+## Will there be SSH / export / a command palette?
+
+Yes — specified for v0.3 (M3). See [UX specs](../design/ux/README.md) and the [v0.3 test plan](../qa/v0.3-test-plan.md). Not all of those are in the binary yet.
+
 ## Can I edit cells in the grid?
 
 Yes on a table Data tab that has a primary key: Enter or double-click a cell, then Commit from the pending bar (or Cmd/Ctrl+S). Tables without a primary key, views, and SQL result tabs stay read-only. Preview SQL and Discard are on the pending bar. Safe mode gates editor writes and grid Commit — see [Safe mode](./safe-mode.md), [grid editing](../design/ux/07-grid-editing.md), and [preview / commit](../design/ux/08-preview-commit.md).

@@ -35,8 +35,8 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Filter bar + column sort (table tabs) | Done |
 | Query history (FTS, per-connection scope) | Done (M1-5) |
 | Grid selection + copy (TSV/CSV/JSON/INSERT); light/dark/system themes | Done (M1-7) |
-| Safe mode (editor) | Done (M2-4) — [safe mode](docs/user/safe-mode.md) |
-| Inline edit, connection color, SSH, export | Planned — edit/preview in [docs/design/ux](docs/design/ux/README.md); SSH and export later on the [roadmap](docs/design/roadmap.md) |
+| Inline edit, connection color, safe mode | Done (M2) — [safe mode](docs/user/safe-mode.md), [UX](docs/design/ux/README.md) |
+| SSH, autocomplete, export/import, command palette | Specced (M3) — [UX](docs/design/ux/README.md); [roadmap](docs/design/roadmap.md) |
 
 ## Documentation
 

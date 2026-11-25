@@ -32,4 +32,4 @@ SQL NULL copies as the keyword `NULL` in TSV/CSV/INSERT (and as JSON `null`). A 
 
 If the selection includes rows that are not loaded yet, copy is refused and the status bar shows how many rows are missing (scroll or narrow the selection). Unset cells on an Insert or Duplicate overlay row are not “not loaded”: copy succeeds and leaves those columns out (INSERT omits them so a DEFAULT / identity can apply; JSON omits the key; TSV/CSV write an empty field). INSERT is also refused when a selected cell is a decode error or unsupported type, or (on MySQL/SQLite) a non-finite number; the status bar names that column.
 
-Copy uses rows already present in the result window. Full-table export remains a later milestone.
+Copy uses rows already present in the result window. Full-table / result export and CSV import are specified for M3 in [export and import UX](../design/ux/11-export-import.md).

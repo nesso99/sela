@@ -1,6 +1,6 @@
 # Connection dialog
 
-The dialog that creates and edits a saved connection. It already ships as a 460px modal from `open_form` in `crates/sela-app/src/ui/workspace/state.rs`, rendered by `ConnectionForm` in `ui/form.rs`. The sections below keep that dialog and extend it. TLS modes are M1-8. Test connection is an acceptance check on US-01 and has no UI today. Query-history recording is the switch from [04-query-history.md](./04-query-history.md). Color, label, group, safe mode, and import-from-URL are M2-5 (US-01). Duplicate is a sidebar action, specified in [01-main-window.md](./01-main-window.md#connection-color-and-groups), not a button in this dialog.
+The dialog that creates and edits a saved connection. It already ships as a 460px modal from `open_form` in `crates/sela-app/src/ui/workspace/state.rs`, rendered by `ConnectionForm` in `ui/form.rs`. The sections below keep that dialog and extend it. TLS modes are M1-8. Test connection is an acceptance check on US-01 and has no UI today. Query-history recording is the switch from [04-query-history.md](./04-query-history.md). Color, label, group, safe mode, and import-from-URL are M2-5 (US-01). SSH tunnel (M3-1, US-02) is [10-ssh-tunnel.md](./10-ssh-tunnel.md). Duplicate is a sidebar action, specified in [01-main-window.md](./01-main-window.md#connection-color-and-groups), not a button in this dialog.
 
 Shortcut notation is in [README.md](./README.md). `secondary` is Command on macOS and Control on Linux and Windows. The dialog traps focus until it closes, which the main-window spec already requires.
 
@@ -43,14 +43,15 @@ There is no card around the TLS block. A 1px top border and an 11px `TLS` label 
 7. User, Database
 8. Password
 9. Password helper, then any keychain warning, then the validation error
-10. TLS mode
-11. The one-line explanation of the selected mode
-12. CA certificate
-13. Client certificate
-14. Client key
-15. Record query history
-16. Test result
-17. Cancel, Test, Save, Save & connect
+10. SSH tunnel block ([10-ssh-tunnel.md](./10-ssh-tunnel.md)) — hidden when the toggle is off; absent for SQLite
+11. TLS mode
+12. The one-line explanation of the selected mode
+13. CA certificate
+14. Client certificate
+15. Client key
+16. Record query history
+17. Test result
+18. Cancel, Test, Save, Save & connect
 
 ### SQLite
 
@@ -273,7 +274,7 @@ New fields use serde defaults. A v0.1 file with none of them still loads. Do not
 
 A single line at the top of the body, label `Import URL`, placeholder `postgres://user:pass@host:5432/db`, and a ghost `Import` button. `Enter` in the field and the button do the same thing. They fill the form. They do not save, do not connect, and do not write the keychain. `secondary-enter` is still Save & connect for the dialog.
 
-On success, clear the URL field so a password in the URL is not left in a plain field. Put the password, when the URL has one, into the password field (masked). Switch the engine to match the scheme. Result line, `text.muted`: `Filled from the URL. The password is only in the password field.`
+On success, clear the URL field so a password in the URL is not left in a plain field. Put the password, when the URL has one, into the password field (masked). Switch the engine to match the scheme. Result line, `text.muted`: `Filled from the URL. The password is only in the password field.` Import URL never changes SSH fields ([10-ssh-tunnel.md](./10-ssh-tunnel.md)); SSH query parameters in a URL are ignored in v0.3.
 
 A password is applied only when the URL has userinfo. `user:@host` sets the password field empty. A URL with no userinfo leaves the password field as it was, so an edit does not wipe a loaded secret.
 
