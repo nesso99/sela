@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      ssh: ${{ steps.filter.outputs.ssh }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +37,7 @@ jobs:
             || [ "${{ github.event_name }}" = "workflow_dispatch" ] \
             || { [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; }; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "ssh=true" >> "$GITHUB_OUTPUT"
             echo "Treating all code as changed (event=${{ github.event_name }})"
             exit 0
           fi
@@ -52,6 +54,7 @@ jobs:
           mapfile -t files < <(git diff --name-only "$BASE"..."$HEAD" || true)
 
           code=false
+          ssh=false
           for file in "${files[@]+"${files[@]}"}"; do
             [ -z "$file" ] && continue
             case "$file" in
@@ -59,13 +62,22 @@ jobs:
               *)
                 code=true
                 echo "Non-docs change: $file"
-                break
+                ;;
+            esac
+            # SSH integration paths (docs/md alone do not set ssh).
+            case "$file" in
+              *.md|docs|docs/*) ;;
+              crates/sela-ssh/*|crates/sela-drivers/*|scripts/run-ssh-bastion.sh|.github/workflows/ci.yml)
+                ssh=true
+                echo "SSH-related change: $file"
                 ;;
             esac
           done
 
           echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "ssh=$ssh" >> "$GITHUB_OUTPUT"
           echo "code=$code"
+          echo "ssh=$ssh"
 
   check:
     name: check
@@ -285,6 +297,64 @@ jobs:
       - name: cargo test (Postgres TLS)
         run: cargo test -p sela-drivers postgres_tls -- --nocapture
 
+  # SSH bastion in front of Postgres/MySQL (DBs not published to the runner).
+  # Throwaway keys generated at runtime by scripts/run-ssh-bastion.sh.
+  ssh-integration:
+    name: ssh-integration
+    needs: [changes, check]
+    if: needs.changes.outputs.ssh == 'true' && success()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libsqlite3-dev libssl-dev \
+            libdbus-1-dev openssh-client sshpass \
+            libvulkan-dev libwayland-dev libxkbcommon-dev \
+            libxcb1-dev libx11-dev libfontconfig1-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start SSH bastion + Postgres/MySQL (no DB host ports)
+        run: |
+          set -euo pipefail
+          eval "$(./scripts/run-ssh-bastion.sh)"
+          eval "$(ssh-agent -s)"
+          ssh-add "$SELA_SSH_KEY"
+          # Mask secrets before writing them to GITHUB_ENV.
+          echo "::add-mask::$SELA_SSH_PASSWORD"
+          echo "::add-mask::$SELA_SSH_KEY_PASSPHRASE"
+          echo "::add-mask::$SELA_SSH_DB_PASSWORD"
+          {
+            echo "SELA_SSH_HOST=$SELA_SSH_HOST"
+            echo "SELA_SSH_PORT=$SELA_SSH_PORT"
+            echo "SELA_SSH_USER=$SELA_SSH_USER"
+            echo "SELA_SSH_PASSWORD=$SELA_SSH_PASSWORD"
+            echo "SELA_SSH_KEY=$SELA_SSH_KEY"
+            echo "SELA_SSH_KEY_PASSPHRASE=$SELA_SSH_KEY_PASSPHRASE"
+            echo "SELA_SSH_KEY_ENCRYPTED=$SELA_SSH_KEY_ENCRYPTED"
+            echo "SELA_SSH_KNOWN_HOSTS=$SELA_SSH_KNOWN_HOSTS"
+            echo "SELA_SSH_KNOWN_HOSTS_BAD=$SELA_SSH_KNOWN_HOSTS_BAD"
+            echo "SELA_SSH_DB_HOST=$SELA_SSH_DB_HOST"
+            echo "SELA_SSH_DB_PORT=$SELA_SSH_DB_PORT"
+            echo "SELA_SSH_DB_USER=$SELA_SSH_DB_USER"
+            echo "SELA_SSH_DB_PASSWORD=$SELA_SSH_DB_PASSWORD"
+            echo "SELA_SSH_DB_NAME=$SELA_SSH_DB_NAME"
+            echo "SELA_SSH_MYSQL_HOST=$SELA_SSH_MYSQL_HOST"
+            echo "SELA_SSH_MYSQL_PORT=$SELA_SSH_MYSQL_PORT"
+            echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK"
+            echo "SELA_SSH_REQUIRED=1"
+          } >> "$GITHUB_ENV"
+
+      - name: cargo test (SSH tunnel)
+        run: cargo test -p sela-drivers --test ssh_tunnel -- --nocapture
+
   ci-gate:
     name: ci-gate
     if: always()
@@ -296,6 +366,7 @@ jobs:
       - test
       - db-integration
       - db-tls-postgres
+      - ssh-integration
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate gate
@@ -306,7 +377,9 @@ jobs:
           echo "$NEEDS_JSON"
 
           code="$(python3 -c 'import json,os; print(json.loads(os.environ["NEEDS_JSON"])["changes"]["outputs"].get("code",""))')"
+          ssh="$(python3 -c 'import json,os; print(json.loads(os.environ["NEEDS_JSON"])["changes"]["outputs"].get("ssh",""))')"
           echo "changes.outputs.code=$code"
+          echo "changes.outputs.ssh=$ssh"
 
           # Fail if any needed job failed or was cancelled.
           python3 - <<'PY'
@@ -322,6 +395,7 @@ jobs:
               sys.exit(1)
 
           code = needs["changes"]["outputs"].get("code", "")
+          ssh = needs["changes"]["outputs"].get("ssh", "")
           heavy = ["check", "deny", "docs", "test", "db-integration", "db-tls-postgres"]
           if code == "true":
               not_ok = []
@@ -334,6 +408,14 @@ jobs:
                   sys.exit(1)
           else:
               print("docs-only (or no code changes): heavy jobs may be skipped")
+
+          if ssh == "true":
+              result = needs["ssh-integration"].get("result")
+              if result != "success":
+                  print(f"ci-gate failed: ssh changed but ssh-integration={result}")
+                  sys.exit(1)
+          else:
+              print("no SSH-related changes: ssh-integration may be skipped")
 
           print("ci-gate passed")
           PY

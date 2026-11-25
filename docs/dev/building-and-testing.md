@@ -61,7 +61,7 @@ CI job `db-integration` sets the same URLs against service containers.
 
 ### SSH tunnel (M3-1)
 
-Tests in `crates/sela-drivers/tests/ssh_tunnel.rs` and `sela-ssh` unit tests skip unless `SELA_SSH_HOST` (and related vars) are set. Keys and known_hosts are generated at runtime — never committed.
+Tests in `crates/sela-drivers/tests/ssh_tunnel.rs` and `sela-ssh` unit tests skip unless `SELA_SSH_HOST` (and related vars) are set. Keys and known_hosts are generated at runtime — never committed. Once `SELA_SSH_HOST` is set, missing required vars or an unreachable bastion **fail** the test (they do not skip). CI sets `SELA_SSH_REQUIRED=1` so a missing `SELA_SSH_HOST` also fails.
 
 [`scripts/run-ssh-bastion.sh`](../../scripts/run-ssh-bastion.sh) starts a disposable Docker network with Postgres (and MySQL), an openssh-server bastion publishing only port `2222`, and throwaway keys under a temp home. The DBs are **not** published to the host — the client reaches them only through the bastion. Print `export` lines for `eval`:
 
@@ -90,7 +90,7 @@ Env vars (printed by the script):
 | `SELA_SSH_DB_USER` / `SELA_SSH_DB_PASSWORD` / `SELA_SSH_DB_NAME` | DB credentials |
 | `SELA_SSH_MYSQL_HOST` / `SELA_SSH_MYSQL_PORT` | Optional MySQL through the same bastion |
 
-Unit tests (config Include, host-key match/mismatch, secret `Debug` redaction, TLS-forward helper) run without Docker. CI job `ssh-integration` (Linux), added before the M3-1 PR merges and required by `ci-gate` when SSH code changes.
+Unit tests (config Include, host-key match/mismatch, secret `Debug` redaction, TLS-forward helper) run without Docker. CI job `ssh-integration` (Linux) starts the bastion via `scripts/run-ssh-bastion.sh`, masks generated SSH passwords/passphrases, exports those vars plus `SSH_AUTH_SOCK` and `SELA_SSH_REQUIRED=1`, and runs `cargo test -p sela-drivers --test ssh_tunnel`. It is required by `ci-gate` whenever `changes.outputs.code` is true (docs-only PRs skip it).
 
 While a tunnel is open, any local process can connect to its `127.0.0.1` forwarded port; the tunnel does not authenticate local clients.
 
