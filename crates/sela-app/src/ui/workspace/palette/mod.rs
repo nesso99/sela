@@ -739,16 +739,8 @@ impl Workspace {
             PaletteAction::NewQueryTab => self.new_query_tab(window, cx),
             PaletteAction::RunQuery => self.run_editor(window, cx),
             PaletteAction::RefreshSchema => self.refresh_catalog(cx),
-            PaletteAction::Export | PaletteAction::ImportCsv => {
-                // M3-3 UI not shipped yet; actions stay reachable but dimmed when N/A.
-                if let Some(view) = self.active_view_mut() {
-                    view.status = match action {
-                        PaletteAction::Export => "Export UI is not available yet.".into(),
-                        _ => "Import UI is not available yet.".into(),
-                    };
-                }
-                cx.notify();
-            }
+            PaletteAction::Export => self.open_export_dialog(window, cx),
+            PaletteAction::ImportCsv => self.open_import_dialog(window, cx),
             PaletteAction::ToggleTheme => {
                 let next = match self.theme_preference {
                     ThemePreference::Light => ThemePreference::Dark,

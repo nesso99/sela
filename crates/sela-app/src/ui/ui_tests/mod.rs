@@ -12,3 +12,4 @@ mod grid_editing;
 mod harness;
 mod reconnect;
 mod ssh_dialog;
+mod workspace_transfer;

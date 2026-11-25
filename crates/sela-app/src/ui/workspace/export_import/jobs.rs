@@ -446,7 +446,7 @@ impl Workspace {
         });
     }
 
-    fn start_export(&mut self, req: ExportRequest, cx: &mut Context<Self>) {
+    pub(crate) fn start_export(&mut self, req: ExportRequest, cx: &mut Context<Self>) {
         if self.transfer_job.is_some() {
             self.set_active_status(EXPORT_ALREADY_RUNNING, cx);
             return;
@@ -552,7 +552,7 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn finish_export(
+    pub(crate) fn finish_export(
         &mut self,
         tab_id: sela_core::TabId,
         generation: u64,
@@ -603,7 +603,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn start_import(
+    pub(crate) fn start_import(
         &mut self,
         req: ImportRequest,
         mapping: Option<Vec<Option<String>>>,

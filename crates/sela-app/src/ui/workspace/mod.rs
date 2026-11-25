@@ -27,6 +27,8 @@ mod tree;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+#[cfg(test)]
+use std::time::Instant;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
@@ -738,6 +740,110 @@ impl Workspace {
             .into_iter()
             .find(|c| c.id == id)
             .map(|c| c.safe_mode)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_open_table(
+        &mut self,
+        schema: &str,
+        table: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_table_tab(schema.to_string(), table.to_string(), window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_has_transfer_job(&self) -> bool {
+        self.transfer_job.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_transfer_generation(&self) -> u64 {
+        self.transfer_generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_transfer_job_generation(&self) -> Option<u64> {
+        self.transfer_job.as_ref().map(|j| j.generation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_status(&self) -> Option<String> {
+        self.active_view().map(|v| v.status.clone())
+    }
+
+    /// Start a real export job (exercises `transfer_generation` bump + cancel token).
+    #[cfg(test)]
+    pub(crate) fn test_start_export(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        use export_import::export_dialog::{ExportRequest, ExportScope};
+        use sela_core::{CsvExportOptions, ExportFormat};
+        self.start_export(
+            ExportRequest {
+                format: ExportFormat::Csv(CsvExportOptions::default()),
+                scope: ExportScope::WholeTable,
+                path,
+            },
+            cx,
+        );
+    }
+
+    /// Start a real import job against `path` (exercises the import generation bump).
+    #[cfg(test)]
+    pub(crate) fn test_start_import(
+        &mut self,
+        path: std::path::PathBuf,
+        schema: &str,
+        table: &str,
+        cx: &mut Context<Self>,
+    ) {
+        use export_import::import_dialog::ImportRequest;
+        use sela_core::CsvImportOptions;
+        self.start_import(
+            ImportRequest {
+                path,
+                options: CsvImportOptions {
+                    has_header: true,
+                    ..CsvImportOptions::default()
+                },
+                total_rows: 1,
+                schema: schema.into(),
+                table: table.into(),
+            },
+            None,
+            cx,
+        );
+    }
+
+    /// Advance the job slot's generation so a later `finish_*` with the old
+    /// generation is treated as stale (covers the completion gate).
+    #[cfg(test)]
+    pub(crate) fn test_supersede_transfer_generation(&mut self) {
+        if let Some(job) = self.transfer_job.as_mut() {
+            job.generation = job.generation.wrapping_add(1);
+            self.transfer_generation = job.generation;
+        } else {
+            self.transfer_generation = self.transfer_generation.wrapping_add(1);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_finish_export(
+        &mut self,
+        generation: u64,
+        dest: std::path::PathBuf,
+        result: Result<u64, sela_core::ExportError>,
+        cx: &mut Context<Self>,
+    ) {
+        use export_import::logic::export_temp_path;
+        let tab_id = self
+            .transfer_job
+            .as_ref()
+            .map(|j| j.tab_id)
+            .or_else(|| self.tabs.active().map(|t| t.id))
+            .expect("active tab for finish_export");
+        let tmp = export_temp_path(&dest);
+        self.finish_export(tab_id, generation, dest, tmp, Instant::now(), result, cx);
     }
 
     /// Connection the sidebar Edit / Delete buttons should target: the tree
