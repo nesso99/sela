@@ -11,10 +11,12 @@
 //! Selection (M1-7): cell / row / column via DataTable; optional Shift range on
 //! [`selection_rect`]. Copy formats live in [`sela_core::CopyFormat`].
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelection, TableState};
-use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, App, IntoElement, MouseButton, SharedString, Window};
 
@@ -25,8 +27,10 @@ use sela_core::{
 };
 
 use super::theme::SelaPalette;
-use super::workspace::edit_session::{EditRowId, RowMarker};
-use super::{CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection};
+use super::workspace::edit_session::{
+    visual_row_map_from_anchors, EditRowId, RowMarker, VisualRowRef,
+};
+use super::{CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, SetCellNull};
 
 /// Paint state synced from [`super::workspace::edit_session::EditSession`].
 #[derive(Debug, Clone, Default)]
@@ -52,6 +56,8 @@ pub struct OverlayPaintRow {
     pub insert_id: u64,
     pub marker: RowMarker,
     pub values: BTreeMap<String, String>,
+    /// `Some(server_row)` → paint under that server row; `None` → after the page.
+    pub after_server_row: Option<usize>,
     pub required_unset: Vec<String>,
     pub generated: Vec<String>,
 }
@@ -97,15 +103,25 @@ pub struct GridDelegate {
 }
 
 impl GridDelegate {
+    fn visual_rows(&self) -> Vec<VisualRowRef> {
+        let anchors: Vec<Option<usize>> = self
+            .edit_paint
+            .overlays
+            .iter()
+            .map(|o| o.after_server_row)
+            .collect();
+        visual_row_map_from_anchors(self.result.total_rows(), &anchors)
+    }
+
     fn render_overlay_td(
         &self,
-        row_ix: usize,
+        visual_row: usize,
+        overlay_ix: usize,
         col_ix: usize,
         col_name: &str,
         palette: &SelaPalette,
         cx: &gpui_kit::Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let overlay_ix = row_ix - self.result.total_rows();
         let overlay = self.edit_paint.overlays.get(overlay_ix);
         let marker = overlay.map(|o| o.marker).unwrap_or(RowMarker::Inserted);
         let display = overlay.and_then(|o| o.values.get(col_name).cloned());
@@ -126,6 +142,11 @@ impl GridDelegate {
         } else {
             None
         };
+        let gutter_tip = if col_ix == 0 {
+            marker.gutter_tooltip().map(str::to_string)
+        } else {
+            None
+        };
         let insert_id = overlay.map(|o| o.insert_id);
         let editing_here = self.edit_paint.editing.as_ref().is_some_and(|(row, c)| {
             *c == col_ix
@@ -136,7 +157,7 @@ impl GridDelegate {
         let table = cx.entity();
         let table_shift = table.clone();
         div()
-            .id(format!("grid-cell:{row_ix}:{col_ix}"))
+            .id(format!("grid-cell:{visual_row}:{col_ix}"))
             .h_full()
             .w_full()
             .px_2()
@@ -153,7 +174,20 @@ impl GridDelegate {
             .font_family(cx.theme().mono_font_family.clone())
             .when(nullish && !editing_here, |cell| cell.italic())
             .when_some(gutter, |cell, glyph| {
-                cell.child(div().w(px(16.)).flex_shrink_0().text_xs().child(glyph))
+                cell.child({
+                    let tip = gutter_tip.clone();
+                    let mut g = div()
+                        .id(("overlay-gutter", visual_row))
+                        .w(px(16.))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .child(glyph);
+                    if let Some(tip) = tip {
+                        g = g
+                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx));
+                    }
+                    g
+                })
             })
             .child({
                 if editing_here {
@@ -161,8 +195,21 @@ impl GridDelegate {
                         div()
                             .flex_1()
                             .min_w(px(0.))
+                            .flex()
+                            .items_center()
+                            .gap_1()
                             .key_context("CellEditor")
                             .child(Input::new(input).h(px(22.)))
+                            .child(
+                                Button::new(("ghost-null-ov", visual_row))
+                                    .xsmall()
+                                    .ghost()
+                                    .label("NULL")
+                                    .tooltip("Store NULL")
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(SetCellNull), cx);
+                                    }),
+                            )
                             .into_any_element()
                     } else {
                         div().child(text).into_any_element()
@@ -187,9 +234,11 @@ impl GridDelegate {
                 move |event, _, cx| {
                     if event.click_count() >= 2 {
                         table_dbl.update(cx, |state, cx| {
-                            state.set_selected_cell(row_ix, col_ix, cx);
-                            state.delegate_mut().note_cell_focus(row_ix, col_ix, false);
-                            state.delegate_mut().pending_edit_cell = Some((row_ix, col_ix));
+                            state.set_selected_cell(visual_row, col_ix, cx);
+                            state
+                                .delegate_mut()
+                                .note_cell_focus(visual_row, col_ix, false);
+                            state.delegate_mut().pending_edit_cell = Some((visual_row, col_ix));
                             state.refresh(cx);
                         });
                     }
@@ -199,9 +248,11 @@ impl GridDelegate {
                 table.update(menu_cx, |state, cx| {
                     let selection = state.selection();
                     let range = state.delegate().selection_rect;
-                    if !cell_in_selection(row_ix, col_ix, selection, range) {
-                        state.set_selected_cell(row_ix, col_ix, cx);
-                        state.delegate_mut().note_cell_focus(row_ix, col_ix, false);
+                    if !cell_in_selection(visual_row, col_ix, selection, range) {
+                        state.set_selected_cell(visual_row, col_ix, cx);
+                        state
+                            .delegate_mut()
+                            .note_cell_focus(visual_row, col_ix, false);
                     }
                 });
                 copy_context_menu(menu)
@@ -460,7 +511,7 @@ impl TableDelegate for GridDelegate {
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.result.total_rows() + self.edit_paint.overlays.len()
+        self.visual_rows().len()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
@@ -509,7 +560,6 @@ impl TableDelegate for GridDelegate {
         cx: &mut gpui_kit::Context<TableState<Self>>,
     ) -> impl IntoElement {
         let palette = SelaPalette::for_mode(cx.theme().mode);
-        let server_rows = self.result.total_rows();
         let col_name = self
             .result
             .columns()
@@ -517,40 +567,51 @@ impl TableDelegate for GridDelegate {
             .map(|c| c.name.clone())
             .unwrap_or_default();
 
-        // Overlay insert/duplicate rows sit after the ResultWindow page.
-        if row_ix >= server_rows {
+        let visual = self.visual_rows();
+        let Some(resolved) = visual.get(row_ix).copied() else {
+            return div().into_any_element();
+        };
+        if let VisualRowRef::Overlay { overlay_ix } = resolved {
             return self
-                .render_overlay_td(row_ix, col_ix, &col_name, &palette, cx)
+                .render_overlay_td(row_ix, overlay_ix, col_ix, &col_name, &palette, cx)
                 .into_any_element();
         }
+        let VisualRowRef::Server { row_ix: server_row } = resolved else {
+            return div().into_any_element();
+        };
 
         let marker = self
             .edit_paint
             .server
-            .get(&row_ix)
+            .get(&server_row)
             .map(|r| r.marker)
             .unwrap_or(RowMarker::Clean);
         let dirty_override = self
             .edit_paint
             .server
-            .get(&row_ix)
+            .get(&server_row)
             .and_then(|r| r.dirty_display.get(&col_name).cloned());
         let show_triangle = marker == RowMarker::Dirty
             && self
                 .edit_paint
                 .server
-                .get(&row_ix)
+                .get(&server_row)
                 .is_some_and(|r| r.dirty_display.contains_key(&col_name));
         let triangle_tip = self
             .edit_paint
             .server
-            .get(&row_ix)
+            .get(&server_row)
             .and_then(|r| r.original_display.get(&col_name))
             .map(|orig| format!("Edited · was {orig}"))
             .unwrap_or_else(|| "Edited".into());
+        let gutter_tip = if col_ix == 0 {
+            marker.gutter_tooltip().map(str::to_string)
+        } else {
+            None
+        };
 
         // Classify before taking the truncated display cache (needs &mut).
-        let kind = match self.result.cell_value(row_ix, col_ix) {
+        let kind = match self.result.cell_value(server_row, col_ix) {
             None => CellKind::Loading,
             Some(value) if value.is_null() && dirty_override.is_none() => CellKind::Null,
             Some(value) if value.is_decode_error() || value.is_unsupported_placeholder() => {
@@ -570,7 +631,7 @@ impl TableDelegate for GridDelegate {
                     (false, false, SharedString::from(format!("!{decode}")))
                 }
                 CellKind::Normal => {
-                    let text = match self.result.cell(row_ix, col_ix) {
+                    let text = match self.result.cell(server_row, col_ix) {
                         CellView::Loading => SharedString::from("…"),
                         CellView::Ready { display, .. } => SharedString::from(display),
                     };
@@ -598,7 +659,6 @@ impl TableDelegate for GridDelegate {
         // cells. Attach the copy menu on the cell content (innermost wins).
         let table = cx.entity();
         let table_shift = table.clone();
-        let _ = triangle_tip;
         div()
             .id(format!("grid-cell:{row_ix}:{col_ix}"))
             .h_full()
@@ -622,8 +682,10 @@ impl TableDelegate for GridDelegate {
             })
             .when(null || loading, |cell| cell.italic())
             .when_some(gutter, |cell, glyph| {
-                cell.child(
-                    div()
+                cell.child({
+                    let tip = gutter_tip.clone();
+                    let mut g = div()
+                        .id(("row-gutter", row_ix))
                         .w(px(16.))
                         .flex_shrink_0()
                         .text_xs()
@@ -632,15 +694,20 @@ impl TableDelegate for GridDelegate {
                         } else {
                             cx.theme().foreground
                         })
-                        .child(glyph),
-                )
+                        .child(glyph);
+                    if let Some(tip) = tip {
+                        g = g
+                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx));
+                    }
+                    g
+                })
             })
             .child({
                 let editing_here = self.edit_paint.editing.as_ref().is_some_and(|(row, c)| {
                     *c == col_ix
                         && matches!(
                             row,
-                            EditRowId::Server { row_ix: r } if *r == row_ix
+                            EditRowId::Server { row_ix: r } if *r == server_row
                         )
                 });
                 if editing_here {
@@ -648,8 +715,21 @@ impl TableDelegate for GridDelegate {
                         div()
                             .flex_1()
                             .min_w(px(0.))
+                            .flex()
+                            .items_center()
+                            .gap_1()
                             .key_context("CellEditor")
                             .child(Input::new(input).h(px(22.)))
+                            .child(
+                                Button::new(("ghost-null", row_ix))
+                                    .xsmall()
+                                    .ghost()
+                                    .label("NULL")
+                                    .tooltip("Store NULL")
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(SetCellNull), cx);
+                                    }),
+                            )
                             .into_any_element()
                     } else {
                         div().child(text).into_any_element()
@@ -660,10 +740,15 @@ impl TableDelegate for GridDelegate {
                         .min_w(px(0.))
                         .truncate()
                         .when(show_triangle && !deleted, |el| {
+                            let tip = triangle_tip.clone();
                             el.child(
                                 div()
+                                    .id(format!("dirty-triangle:{row_ix}:{col_ix}"))
                                     .text_xs()
                                     .text_color(palette.cell_dirty_mark)
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(tip.clone()).build(window, cx)
+                                    })
                                     .child("▲"),
                             )
                         })
@@ -734,44 +819,47 @@ impl TableDelegate for GridDelegate {
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
-        let server_rows = self.result.total_rows();
-        if row_ix >= server_rows {
-            let overlay_ix = row_ix - server_rows;
-            let col_name = self
-                .result
-                .columns()
-                .get(col_ix)
-                .map(|c| c.name.as_str())
-                .unwrap_or("");
-            return self
-                .edit_paint
-                .overlays
-                .get(overlay_ix)
-                .and_then(|o| o.values.get(col_name).cloned())
-                .unwrap_or_default();
-        }
-        match self.result.row(row_ix) {
-            RowState::Ready(cells) => {
+        let visual = self.visual_rows();
+        let Some(resolved) = visual.get(row_ix).copied() else {
+            return String::new();
+        };
+        match resolved {
+            VisualRowRef::Overlay { overlay_ix } => {
                 let col_name = self
                     .result
                     .columns()
                     .get(col_ix)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                if let Some(display) = self
-                    .edit_paint
-                    .server
-                    .get(&row_ix)
-                    .and_then(|r| r.dirty_display.get(&col_name))
-                {
-                    return display.clone();
-                }
-                cells
-                    .get(col_ix)
-                    .map(|cell| cell.display().into_owned())
-                    .unwrap_or_else(|| "NULL".into())
+                    .map(|c| c.name.as_str())
+                    .unwrap_or("");
+                self.edit_paint
+                    .overlays
+                    .get(overlay_ix)
+                    .and_then(|o| o.values.get(col_name).cloned())
+                    .unwrap_or_default()
             }
-            RowState::Loading => String::new(),
+            VisualRowRef::Server { row_ix: server_row } => match self.result.row(server_row) {
+                RowState::Ready(cells) => {
+                    let col_name = self
+                        .result
+                        .columns()
+                        .get(col_ix)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    if let Some(display) = self
+                        .edit_paint
+                        .server
+                        .get(&server_row)
+                        .and_then(|r| r.dirty_display.get(&col_name))
+                    {
+                        return display.clone();
+                    }
+                    cells
+                        .get(col_ix)
+                        .map(|cell| cell.display().into_owned())
+                        .unwrap_or_else(|| "NULL".into())
+                }
+                RowState::Loading => String::new(),
+            },
         }
     }
 

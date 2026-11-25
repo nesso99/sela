@@ -65,7 +65,6 @@ impl RowMarker {
         }
     }
 
-    #[allow(dead_code)]
     pub fn gutter_tooltip(self) -> Option<&'static str> {
         match self {
             Self::Clean => None,
@@ -108,6 +107,9 @@ pub(crate) struct CellEditor {
     pub original_display: String,
     /// Whether the cell was NULL when the editor opened.
     pub started_as_null: bool,
+    /// Set only by the ghost NULL button. Distinguishes explicit NULL from an
+    /// empty text accept that must store `''` (#77).
+    pub forced_null: bool,
     /// Captured primary key for server rows (stable across page reload).
     pub pk: Option<Vec<Value>>,
     /// Original server / pending value used for ChangeSet merge (`old_value`).
@@ -155,6 +157,58 @@ impl PendingCounts {
 pub(crate) struct OverlayRow {
     pub insert_id: u64,
     pub duplicated: bool,
+    /// When `Some(row)`, paint directly under that server row (Duplicate).
+    /// When `None`, paint after the loaded page (Insert).
+    pub after_server_row: Option<usize>,
+}
+
+/// One visual grid row: a server page row or an overlay insert/duplicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VisualRowRef {
+    Server { row_ix: usize },
+    Overlay { overlay_ix: usize },
+}
+
+/// Build the visual order: each duplicate sits under its source server row;
+/// blank inserts stay after the loaded page (07-grid-editing.md).
+pub(crate) fn visual_row_map(server_count: usize, overlays: &[OverlayRow]) -> Vec<VisualRowRef> {
+    let mut out = Vec::with_capacity(server_count + overlays.len());
+    for server_ix in 0..server_count {
+        out.push(VisualRowRef::Server { row_ix: server_ix });
+        for (overlay_ix, overlay) in overlays.iter().enumerate() {
+            if overlay.after_server_row == Some(server_ix) {
+                out.push(VisualRowRef::Overlay { overlay_ix });
+            }
+        }
+    }
+    for (overlay_ix, overlay) in overlays.iter().enumerate() {
+        if overlay.after_server_row.is_none() {
+            out.push(VisualRowRef::Overlay { overlay_ix });
+        }
+    }
+    out
+}
+
+/// Same mapping when only the `after_server_row` anchors are available (paint).
+pub(crate) fn visual_row_map_from_anchors(
+    server_count: usize,
+    after_server_rows: &[Option<usize>],
+) -> Vec<VisualRowRef> {
+    let mut out = Vec::with_capacity(server_count + after_server_rows.len());
+    for server_ix in 0..server_count {
+        out.push(VisualRowRef::Server { row_ix: server_ix });
+        for (overlay_ix, after) in after_server_rows.iter().enumerate() {
+            if *after == Some(server_ix) {
+                out.push(VisualRowRef::Overlay { overlay_ix });
+            }
+        }
+    }
+    for (overlay_ix, after) in after_server_rows.iter().enumerate() {
+        if after.is_none() {
+            out.push(VisualRowRef::Overlay { overlay_ix });
+        }
+    }
+    out
 }
 
 /// Per-tab editing session.
@@ -613,6 +667,7 @@ impl EditSession {
             is_null,
             original_display,
             started_as_null,
+            forced_null: false,
             pk,
             old_value,
             validation_error: None,
@@ -628,6 +683,7 @@ impl EditSession {
     pub fn set_editor_null(&mut self) {
         if let Some(ed) = &mut self.editor {
             ed.is_null = true;
+            ed.forced_null = true;
             ed.draft.clear();
             ed.validation_error = None;
         }
@@ -641,11 +697,21 @@ impl EditSession {
         if self.committing {
             return Err("Committing…".into());
         }
-        let editor = self
+        let mut editor = self
             .editor
             .as_ref()
             .ok_or_else(|| "No open editor.".to_string())?
             .clone();
+        // Text: empty field is `''`, not NULL. Opening on NULL leaves `is_null`
+        // until accept; a plain empty accept (not the ghost NULL button) stores
+        // the empty string and marks the cell dirty (07-grid-editing.md / #77).
+        if matches!(editor.kind, ColumnKind::Text)
+            && editor.is_null
+            && editor.draft.is_empty()
+            && !editor.forced_null
+        {
+            editor.is_null = false;
+        }
         // Unchanged cell: close without set_cell (avoids Bool↔Int / Text↔typed drift).
         if editor.is_null == editor.started_as_null
             && (editor.is_null || editor.draft == editor.original_display)
@@ -701,16 +767,21 @@ impl EditSession {
         self.overlay.push(OverlayRow {
             insert_id: id,
             duplicated: false,
+            after_server_row: None,
         });
         self.commit_failed = false;
         Ok(id)
     }
 
     /// Duplicate a server row: copy non-generated values; leave PK unset.
+    ///
+    /// `after_server_row` is the focused server row index so the overlay paints
+    /// directly under that row (07-grid-editing.md / #79).
     pub fn duplicate_server_row(
         &mut self,
         columns: &[(String, Value)],
         pk_columns: &[String],
+        after_server_row: usize,
     ) -> Result<u64, String> {
         self.mutation_allowed()?;
         let mut values = BTreeMap::new();
@@ -728,6 +799,7 @@ impl EditSession {
         self.overlay.push(OverlayRow {
             insert_id: id,
             duplicated: true,
+            after_server_row: Some(after_server_row),
         });
         self.commit_failed = false;
         Ok(id)
@@ -1213,6 +1285,7 @@ mod tests {
                     ("pages".into(), Value::Int(310)),
                 ],
                 &["id".into()],
+                2,
             )
             .unwrap();
         assert_eq!(session.row_marker_for_overlay(dup), RowMarker::Duplicated);
@@ -1222,9 +1295,64 @@ mod tests {
             session.overlay_value(dup, "title"),
             Some(&Value::text("Hobbit"))
         );
+        let dup_overlay = session.overlay.iter().find(|o| o.insert_id == dup).unwrap();
+        assert_eq!(dup_overlay.after_server_row, Some(2));
+        // Insert stays after the page; duplicate sits under server row 2.
+        let map = visual_row_map(4, &session.overlay);
+        assert_eq!(
+            map,
+            vec![
+                VisualRowRef::Server { row_ix: 0 },
+                VisualRowRef::Server { row_ix: 1 },
+                VisualRowRef::Server { row_ix: 2 },
+                VisualRowRef::Overlay { overlay_ix: 1 },
+                VisualRowRef::Server { row_ix: 3 },
+                VisualRowRef::Overlay { overlay_ix: 0 },
+            ]
+        );
 
         session.delete_overlay(id).unwrap();
         assert!(!session.overlay.iter().any(|o| o.insert_id == id));
+    }
+
+    #[test]
+    fn duplicate_overlay_sits_under_source_row() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        session.insert_blank_row().unwrap();
+        session
+            .duplicate_server_row(
+                &[
+                    ("id".into(), Value::Int(1)),
+                    ("title".into(), Value::text("a")),
+                ],
+                &["id".into()],
+                0,
+            )
+            .unwrap();
+        session
+            .duplicate_server_row(
+                &[
+                    ("id".into(), Value::Int(3)),
+                    ("title".into(), Value::text("c")),
+                ],
+                &["id".into()],
+                2,
+            )
+            .unwrap();
+        // overlay: [insert, dup@0, dup@2]
+        let map = visual_row_map(3, &session.overlay);
+        assert_eq!(
+            map,
+            vec![
+                VisualRowRef::Server { row_ix: 0 },
+                VisualRowRef::Overlay { overlay_ix: 1 },
+                VisualRowRef::Server { row_ix: 1 },
+                VisualRowRef::Server { row_ix: 2 },
+                VisualRowRef::Overlay { overlay_ix: 2 },
+                VisualRowRef::Overlay { overlay_ix: 0 },
+            ]
+        );
     }
 
     #[test]
@@ -1326,16 +1454,67 @@ mod tests {
             )
             .unwrap();
         assert!(session.editor.as_ref().unwrap().is_null);
-        // Accept empty text after clearing NULL → ''.
-        if let Some(ed) = &mut session.editor {
-            ed.is_null = false;
-            ed.draft.clear();
-        }
+        // Empty accept on a NULL text cell stores '' (#77).
         session.accept_editor().unwrap();
         assert_eq!(
             session.pending_server_value(&[Value::Int(1)], "title"),
             Some(&Value::text(""))
         );
+    }
+
+    #[test]
+    fn ghost_null_button_keeps_null_on_null_cell() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        session
+            .begin_edit(
+                EditRowId::Server { row_ix: 0 },
+                "title".into(),
+                1,
+                Some(&Value::Null),
+                false,
+                Some(vec![Value::Int(1)]),
+                Some(Value::Null),
+            )
+            .unwrap();
+        session.set_editor_null();
+        session.accept_editor().unwrap();
+        assert!(!session.is_server_cell_dirty(&[Value::Int(1)], "title"));
+    }
+
+    #[test]
+    fn ghost_null_button_nulls_non_null_text() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        session
+            .begin_edit(
+                EditRowId::Server { row_ix: 0 },
+                "title".into(),
+                1,
+                Some(&Value::text("hello")),
+                false,
+                Some(vec![Value::Int(1)]),
+                Some(Value::text("hello")),
+            )
+            .unwrap();
+        session.set_editor_null();
+        session.accept_editor().unwrap();
+        assert_eq!(
+            session.pending_server_value(&[Value::Int(1)], "title"),
+            Some(&Value::Null)
+        );
+    }
+
+    #[test]
+    fn gutter_tooltip_strings_match_ux() {
+        assert_eq!(RowMarker::Inserted.gutter_tooltip(), Some("New row"));
+        assert_eq!(
+            RowMarker::Duplicated.gutter_tooltip(),
+            Some("Duplicated row")
+        );
+        assert_eq!(RowMarker::Dirty.gutter_tooltip(), Some("Edited row"));
+        assert_eq!(RowMarker::Deleted.gutter_tooltip(), Some("Deleted row"));
+        assert_eq!(RowMarker::Clean.gutter_tooltip(), None);
     }
 
     #[test]

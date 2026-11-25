@@ -22,14 +22,20 @@ impl Workspace {
     }
 
     pub(super) fn show_table_data(&mut self, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
+            return;
+        };
         if !self.table_open() {
             return;
         }
-        let Some(view) = self.active_view_mut() else {
+        let Some(view) = self.view_mut(tab_id) else {
             return;
         };
         if view.table_pane != TablePane::Data {
             view.table_pane = TablePane::Data;
+            // Structure writes `Structure · {schema}.{table}`; Data must restore
+            // the row-count line via the shared status formatter (#75).
+            self.refresh_status_from_state(tab_id);
             cx.notify();
         }
     }

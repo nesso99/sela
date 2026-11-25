@@ -95,6 +95,17 @@ pub(super) struct TabView {
     pub cell_editor: Entity<InputState>,
     /// Set after a successful commit while the page reload is in flight.
     pub post_commit_reload: bool,
+    /// Open cell inspect popover (Space; 01-main-window.md).
+    pub cell_inspect: Option<CellInspect>,
+}
+
+/// Payload for the Space inspect popover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CellInspect {
+    pub column: String,
+    pub type_name: String,
+    pub body: String,
+    pub decode_error: bool,
 }
 
 impl TabView {
@@ -170,6 +181,7 @@ impl TabView {
             edit: None,
             cell_editor,
             post_commit_reload: false,
+            cell_inspect: None,
         }
     }
 

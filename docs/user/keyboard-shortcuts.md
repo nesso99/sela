@@ -38,7 +38,8 @@ Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below a
 | Extend selection | Shift+Arrow (grid focused) |
 | Copy selection as TSV | Cmd/Ctrl+C (grid focused) |
 | Edit focused cell | Enter or double-click (grid focused; table with PK) |
-| Cancel open cell editor | Escape (does not discard the pending set) |
+| Inspect focused cell | Space (grid focused; any cell, including read-only) |
+| Cancel open cell editor / close inspect | Escape (does not discard the pending set) |
 | Insert / Duplicate / Delete row | Cmd/Ctrl+I / Cmd/Ctrl+D / Cmd/Ctrl+Backspace (grid focused) |
 | Preview pending SQL | Cmd/Ctrl+Shift+P (table Data) |
 | Commit pending changes | Cmd/Ctrl+S (table Data; accepts open editor first) |

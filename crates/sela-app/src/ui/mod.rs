@@ -62,6 +62,7 @@ actions!(
         ResultStripPrev,
         ResultStripNext,
         EditCell,
+        InspectCell,
         CancelCellEditor,
         AcceptCellEditor,
         SetCellNull,
@@ -257,6 +258,8 @@ pub fn run() {
             bind_secondary(cx, "right", Box::new(ResultStripNext), Some("ResultStrip"));
             // M2-1 / M2-3 grid editing (DataTable context; not SqlEditor).
             bind_secondary(cx, "enter", Box::new(EditCell), Some("DataTable"));
+            // Space inspects; Enter edits (01-main-window.md / 07-grid-editing.md).
+            cx.bind_keys([KeyBinding::new("space", InspectCell, Some("DataTable"))]);
             bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("DataTable"));
             bind_secondary(cx, "escape", Box::new(CancelCellEditor), Some("CellEditor"));
             bind_secondary(cx, "enter", Box::new(AcceptCellEditor), Some("CellEditor"));

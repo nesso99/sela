@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Status bar restores the Data row-count line when switching Structure → Data (#75).
+- Cell editor ghost NULL control at the right edge of the inline editor (#76).
+- Accepting an empty text editor opened on NULL stores `''` and marks the cell dirty (#77).
+- Space opens the cell inspect popover (column, type, full `Value::display()`) (#78).
+- Duplicate overlay inserts directly under the source row, not at the bottom of the page (#79).
+- Dirty-triangle and gutter-mark tooltips (`Edited · was …`, `Edited row`, `New row`, `Duplicated row`, `Deleted row`) (#80).
+- Commit success status `Committed · N statements · … ms` is kept after the post-commit page reload (#81).
+
 ## [0.2.0] - 2026-11-25
 
 ### Added

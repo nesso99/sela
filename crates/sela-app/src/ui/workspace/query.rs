@@ -1047,7 +1047,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn refresh_status_from_state(&mut self, tab_id: TabId) {
+    pub(super) fn refresh_status_from_state(&mut self, tab_id: TabId) {
         let Some(view) = self.view_mut(tab_id) else {
             return;
         };
@@ -1105,12 +1105,24 @@ impl Workspace {
                         rows.note.clone()
                     };
                 }
-                self.refresh_status_from_state(tab_id);
+                // Successful post-commit reload: keep the Committed status line
+                // (08-preview-commit.md). Do not overwrite with the row-count line (#81).
                 if let Some(view) = self.view_mut(tab_id) {
-                    // Successful post-commit reload: keep the Committed status line.
-                    if view.post_commit_reload {
-                        view.post_commit_reload = false;
-                    }
+                    let ms = view
+                        .query_started
+                        .map(|t| t.elapsed().as_millis())
+                        .unwrap_or(0);
+                    let reload = format_status_line(
+                        view.row_count_kind,
+                        view.total_rows,
+                        view.page_len,
+                        view.truncated,
+                        ms,
+                        view.note.as_deref(),
+                    );
+                    view.status =
+                        status_after_rows_load(view.post_commit_reload, &view.status, reload);
+                    view.post_commit_reload = false;
                     let total_rows = rows.total_rows.map(|n| n as usize);
                     let paged = rows.paged;
                     view.grid.update(cx, |state, cx| {
@@ -1276,6 +1288,20 @@ pub(super) fn drain_pending_stream_batches(
     pending
 }
 
+/// Status after a successful rows load. When `post_commit_reload` is set, keep
+/// the existing `Committed · …` line instead of the ordinary row-count sentence.
+pub(crate) fn status_after_rows_load(
+    post_commit_reload: bool,
+    committed_status: &str,
+    reload_status: String,
+) -> String {
+    if post_commit_reload {
+        committed_status.to_string()
+    } else {
+        reload_status
+    }
+}
+
 /// Status-bar count sentence (extracted for unit tests / UX acceptance).
 pub(super) fn format_status_line(
     kind: RowCountKind,
@@ -1334,13 +1360,37 @@ pub(super) async fn run_source(
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_pending_stream_batches, format_status_line};
+    use super::{drain_pending_stream_batches, format_status_line, status_after_rows_load};
     use sela_core::{RowCountKind, StreamBatch};
 
     #[test]
     fn unknown_filtered_status_matches_ux() {
         let s = format_status_line(RowCountKind::Unknown, None, 100, false, 18, None);
         assert_eq!(s, "unknown rows · 100 on this page · 18 ms");
+    }
+
+    #[test]
+    fn post_commit_reload_keeps_committed_status() {
+        let committed = "Committed · 1 statements · 12 ms";
+        let reload = format_status_line(RowCountKind::Unknown, None, 5, false, 2, None);
+        assert_eq!(
+            status_after_rows_load(true, committed, reload.clone()),
+            committed
+        );
+        assert_eq!(
+            status_after_rows_load(false, committed, reload.clone()),
+            reload
+        );
+    }
+
+    #[test]
+    fn data_pane_status_is_row_count_not_structure() {
+        // #75: leaving Structure must restore the Data row-count line.
+        let structure = "Structure · public.big";
+        let data = format_status_line(RowCountKind::Estimated, Some(12_400), 100, false, 18, None);
+        assert!(structure.starts_with("Structure · "));
+        assert_eq!(data, "~12400 rows · 18 ms");
+        assert!(!data.starts_with("Structure · "));
     }
 
     #[test]
