@@ -13,6 +13,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -285,6 +288,70 @@ jobs:
       - name: cargo test (Postgres TLS)
         run: cargo test -p sela-drivers postgres_tls -- --nocapture
 
+  # SSH bastion in front of Postgres/MySQL (DBs not published to the runner).
+  # Throwaway keys/passwords generated at runtime by scripts/run-ssh-bastion.sh.
+  ssh-integration:
+    name: ssh-integration
+    needs: [changes, check]
+    if: needs.changes.outputs.code == 'true' && success()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libsqlite3-dev libssl-dev \
+            libdbus-1-dev openssh-client sshpass \
+            libvulkan-dev libwayland-dev libxkbcommon-dev \
+            libxcb1-dev libx11-dev libfontconfig1-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start SSH bastion + Postgres/MySQL (no DB host ports)
+        run: |
+          set -euo pipefail
+          eval "$(./scripts/run-ssh-bastion.sh)"
+          eval "$(ssh-agent -s)"
+          ssh-add "$SELA_SSH_KEY"
+          # Mask runtime-generated SSH secrets only (DB password stays fixed `sela`).
+          echo "::add-mask::$SELA_SSH_PASSWORD"
+          echo "::add-mask::$SELA_SSH_KEY_PASSPHRASE"
+          {
+            echo "SELA_SSH_HOST=$SELA_SSH_HOST"
+            echo "SELA_SSH_PORT=$SELA_SSH_PORT"
+            echo "SELA_SSH_USER=$SELA_SSH_USER"
+            echo "SELA_SSH_PASSWORD=$SELA_SSH_PASSWORD"
+            echo "SELA_SSH_KEY=$SELA_SSH_KEY"
+            echo "SELA_SSH_KEY_PASSPHRASE=$SELA_SSH_KEY_PASSPHRASE"
+            echo "SELA_SSH_KEY_ENCRYPTED=$SELA_SSH_KEY_ENCRYPTED"
+            echo "SELA_SSH_KNOWN_HOSTS=$SELA_SSH_KNOWN_HOSTS"
+            echo "SELA_SSH_KNOWN_HOSTS_BAD=$SELA_SSH_KNOWN_HOSTS_BAD"
+            echo "SELA_SSH_DB_HOST=$SELA_SSH_DB_HOST"
+            echo "SELA_SSH_DB_PORT=$SELA_SSH_DB_PORT"
+            echo "SELA_SSH_DB_USER=$SELA_SSH_DB_USER"
+            echo "SELA_SSH_DB_PASSWORD=$SELA_SSH_DB_PASSWORD"
+            echo "SELA_SSH_DB_NAME=$SELA_SSH_DB_NAME"
+            echo "SELA_SSH_MYSQL_HOST=$SELA_SSH_MYSQL_HOST"
+            echo "SELA_SSH_MYSQL_PORT=$SELA_SSH_MYSQL_PORT"
+            echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK"
+            echo "SELA_SSH_REQUIRED=1"
+          } >> "$GITHUB_ENV"
+
+      - name: cargo test (SSH tunnel)
+        run: cargo test -p sela-drivers --test ssh_tunnel -- --nocapture
+
+      - name: Tear down SSH bastion containers
+        if: always()
+        run: |
+          docker rm -f sela-ssh-bastion sela-ssh-pg sela-ssh-mysql >/dev/null 2>&1 || true
+          docker network rm sela-ssh-net >/dev/null 2>&1 || true
+
   ci-gate:
     name: ci-gate
     if: always()
@@ -296,6 +363,7 @@ jobs:
       - test
       - db-integration
       - db-tls-postgres
+      - ssh-integration
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate gate
@@ -322,7 +390,15 @@ jobs:
               sys.exit(1)
 
           code = needs["changes"]["outputs"].get("code", "")
-          heavy = ["check", "deny", "docs", "test", "db-integration", "db-tls-postgres"]
+          heavy = [
+              "check",
+              "deny",
+              "docs",
+              "test",
+              "db-integration",
+              "db-tls-postgres",
+              "ssh-integration",
+          ]
           if code == "true":
               not_ok = []
               for name in heavy:
