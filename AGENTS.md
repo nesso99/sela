@@ -18,7 +18,7 @@ How work gets done on Sela. Applies to every contributor and automated coding ag
 - **`main` is always green.** No merges while `main` is red. RCs are cut only from a fully green `main` (the `ci-gate` check).
 - **Automated tests first.** Manual checks cover only what automation can't (rendering, window manager, OS).
 - **English** in everything in the repo.
-- **At most 3 open PRs** per contributor.
+- **At most 3 open PRs** in total.
 - **One version per request.** Never start the next version unprompted; new ideas go to the backlog issue.
 - **Tags need QA + PM sign-off.**
 - **Keep cost low.** Coding agents use the Auto model; keep messages, logs and CI runs lean.
