@@ -90,7 +90,9 @@ Env vars (printed by the script):
 | `SELA_SSH_DB_USER` / `SELA_SSH_DB_PASSWORD` / `SELA_SSH_DB_NAME` | DB credentials |
 | `SELA_SSH_MYSQL_HOST` / `SELA_SSH_MYSQL_PORT` | Optional MySQL through the same bastion |
 
-Unit tests (config Include, host-key match/mismatch, secret `Debug` redaction, TLS-forward helper) run without Docker. Proposed CI job: `ssh-integration` (Linux; DevOps adds it after merge — see the M3-1 PR).
+Unit tests (config Include, host-key match/mismatch, secret `Debug` redaction, TLS-forward helper) run without Docker. CI job `ssh-integration` (Linux), added before the M3-1 PR merges and required by `ci-gate` when SSH code changes.
+
+While a tunnel is open, any local process can connect to its `127.0.0.1` forwarded port; the tunnel does not authenticate local clients.
 
 ### Postgres TLS (CI acceptance for M1-8)
 

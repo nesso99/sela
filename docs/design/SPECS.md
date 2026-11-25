@@ -37,7 +37,7 @@ UI never talks to sqlx directly. Library crates stay free of GPUI so CI can test
 crates/
   sela-core/     # DatabaseSession, Value, ResultWindow, SQL builder, ChangeSet/ChangePlan, structure types
   sela-drivers/  # postgres.rs, mysql.rs, sqlite.rs, stream, decode, runtime, apply_changes; opens sela-ssh
-  sela-ssh/      # SSH tunnel (russh), known_hosts, ~/.ssh/config subset (Host/HostName/User/Port/IdentityFile)
+  sela-ssh/      # SSH tunnel (russh), known_hosts; Import-only ~/.ssh/config Host alias → resolved fields
   sela-config/   # connections.json, SecretStore / keyring
   sela-app/      # GPUI binary `sela`: workspace/, grid/, form/, examples/grid_bench
   # planned:
@@ -99,7 +99,7 @@ Helpers: `run_user_sql`, `preview_table`, `exact_table_rows`, `is_safe_to_rerun_
 - Small pool for metadata (`max_connections` ~5) plus a dedicated connection per query tab (so cancel / transactions attach correctly) — shared pool today; per-tab connection is a follow-up.
 - States: Disconnected → Connecting → Connected → Reconnecting → Failed.
 - Connect timeout 12 s; keepalive and reconnect for tabs without an open transaction (planned).
-- SSH (M3-1): `sela-ssh` opens the tunnel first; the driver dials `127.0.0.1:<ephemeral>`; closing the session closes the tunnel. Auth: password, private key (+ passphrase), ssh-agent. Honour `~/.ssh/config` for Host/HostName/User/Port/IdentityFile; ProxyJump/ProxyCommand → clear unsupported error. known_hosts: match allows; changed key is a hard error (no override); unknown key returns a typed challenge with fingerprint — the caller must confirm before the key is written. Paths (config, known_hosts, home) are injectable for tests. SQLite rejects enabled SSH. SSH passwords/passphrases use the OS keychain (`{id}:ssh-password` / `{id}:ssh-passphrase`), never JSON. Failures are [`DbError::Ssh`].
+- SSH (M3-1): `sela-ssh` opens the tunnel first; the driver dials `127.0.0.1:<ephemeral>`; closing the session closes the tunnel. Auth: password, private key (+ passphrase), ssh-agent; default for new SSH settings is PrivateKey. Import from `~/.ssh/config` is explicit only: choosing a Host alias copies the resolved HostName/User/Port/IdentityFile into the saved connection (`host`, `port`, `user`, `private_key_path`); connect never re-reads the config. ProxyJump/ProxyCommand → clear unsupported error. known_hosts: match allows; changed key is a hard error (no override); unknown key returns a typed challenge with fingerprint — the caller must confirm before the key is written. Paths (config, known_hosts, home) are injectable for tests. SQLite rejects enabled SSH. SSH passwords/passphrases use the OS keychain (`{id}:ssh-password` / `{id}:ssh-passphrase`), never JSON. Failures are [`DbError::Ssh`].
 
 ---
 

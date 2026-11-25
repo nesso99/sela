@@ -159,12 +159,7 @@ pub struct SshSettings {
     #[serde(default)]
     pub auth: SshAuthMethod,
     /// Private key path (for [`SshAuthMethod::PrivateKey`]). `~` is expanded at connect.
-    /// Accepts legacy JSON key `identity_file`.
-    #[serde(
-        default,
-        alias = "identity_file",
-        skip_serializing_if = "String::is_empty"
-    )]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub private_key_path: String,
 }
 
@@ -940,28 +935,6 @@ mod tests {
         let text = serde_json::to_string(&copy).unwrap();
         assert!(!text.to_ascii_lowercase().contains("passphrase"));
         assert!(!text.contains("ssh-password"));
-    }
-
-    #[test]
-    fn legacy_identity_file_json_loads_as_private_key_path() {
-        let raw = r#"{
-            "id": "c1",
-            "name": "Local",
-            "engine": "postgres",
-            "host": "127.0.0.1",
-            "port": 5432,
-            "username": "sela",
-            "database": "sample",
-            "ssh": {
-                "enabled": true,
-                "host": "jump",
-                "user": "tunnel",
-                "auth": "private-key",
-                "identity_file": "~/.ssh/id_ed25519"
-            }
-        }"#;
-        let conn: SavedConnection = serde_json::from_str(raw).unwrap();
-        assert_eq!(conn.ssh.private_key_path, "~/.ssh/id_ed25519");
     }
 
     #[test]
