@@ -75,10 +75,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    # rust-cache save needs actions:write under a contents:read default.
-    permissions:
-      contents: read
-      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -148,9 +144,6 @@ jobs:
     needs: [changes, check]
     if: needs.changes.outputs.code == 'true' && success()
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -185,9 +178,6 @@ jobs:
     needs: [changes, check]
     if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
     services:
       postgres:
         image: postgres:16
@@ -246,9 +236,6 @@ jobs:
     needs: [changes, check]
     if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -309,9 +296,6 @@ jobs:
     if: needs.changes.outputs.code == 'true' && success()
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: read
-      actions: write
     steps:
       - uses: actions/checkout@v4
 

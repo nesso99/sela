@@ -200,6 +200,10 @@ if [[ "$SSH_PORT" != "22" ]]; then
   # keyscan may write without brackets; rewrite known_hosts with bracket form too.
   # Keep keyscan output; also ensure bracket form exists for russh.
   KEYLINE=$(grep -v '^#' "$WORKDIR/home/.ssh/known_hosts" | head -1 | awk '{print $2" "$3}')
+  if [[ -z "$KEYLINE" || "$KEYLINE" = " " ]]; then
+    echo "failed to build bracketed known_hosts line for [127.0.0.1]:${SSH_PORT} (empty KEYLINE)" >&2
+    exit 1
+  fi
   echo "[127.0.0.1]:${SSH_PORT} $KEYLINE" >> "$WORKDIR/home/.ssh/known_hosts"
 fi
 
