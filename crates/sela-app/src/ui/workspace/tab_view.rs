@@ -104,12 +104,15 @@ pub(super) struct TabView {
 }
 
 /// Payload for the Space inspect popover.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CellInspect {
     pub column: String,
     pub type_name: String,
     pub body: String,
     pub decode_error: bool,
+    /// Offset from the results-area origin to the focused cell (07-grid-editing.md).
+    pub anchor_left: f32,
+    pub anchor_top: f32,
 }
 
 impl TabView {

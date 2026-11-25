@@ -29,8 +29,8 @@ pub use column_kind::{ColumnKind, MAX_SORT_KEYS};
 pub use connection::{safe_mode_driven_by_color, SafeMode, SavedConnection, TlsMode, TlsSettings};
 pub use connection_color::{default_safety_level_for_color, ConnectionColor, DefaultSafetyLevel};
 pub use connection_org::{
-    connection_color_is_visible, duplicate_connection, existing_group_names, next_duplicate_name,
-    sidebar_connection_layout, SidebarConnectionNode,
+    connection_color_is_visible, duplicate_connection, duplicate_status_message,
+    existing_group_names, next_duplicate_name, sidebar_connection_layout, SidebarConnectionNode,
 };
 pub use connection_url::{parse_connection_url, ImportUrlError, ImportedConnection};
 pub use copy_format::{

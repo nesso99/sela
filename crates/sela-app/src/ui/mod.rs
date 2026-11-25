@@ -374,13 +374,13 @@ fn install_menus(cx: &mut gpui_kit::App) {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // File ▸ Quit (last item, after a separator). Keymap supplies the Ctrl+Q hint.
+        // File ▸ Quit is drawn with a DropdownMenu anchored to the File label
+        // (Workspace::file_menu_button). Keep the GPUI menu registration so the
+        // Quit action and Ctrl+Q hint stay wired; do not feed AppMenuBar — its
+        // deferred popup painted at the window origin (#101).
         cx.set_menus([
             Menu::new("File").items([MenuItem::separator(), MenuItem::action("Quit", Quit)])
         ]);
-        if let Some(menus) = cx.get_menus() {
-            gpui_kit::component::GlobalState::global_mut(cx).set_app_menus(menus);
-        }
     }
 }
 

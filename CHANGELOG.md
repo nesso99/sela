@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Commit success status `Committed · N statements · … ms` survives the post-commit page reload: `load_source_for` no longer clears `post_commit_reload` or overwrites the line with `Running…` before the reload finishes (#81).
 - Status `ms` after Structure → Data (and other idle refreshes) uses the last completed query duration, not wall time since the load started (#95).
 - Copy of an Insert/Duplicate overlay row with unset cells (e.g. unset PK) succeeds and omits those cells; it no longer reports `rows not loaded yet` (#99).
+- Enter in the Import URL field fills the form and keeps the New/Edit connection dialog open; it no longer dismisses via the dialog Confirm path (#96).
+- Duplicate of a SQLite (or any no-password) connection leaves `needs_password` false and connects without opening Edit (#97).
+- A failed Import URL clears the previous `Filled from the URL…` success line; a later success clears the error line (#100).
+- Linux/Windows File menu dropdown anchors under the File label (DropdownMenu/Popover) instead of the window top-left over the sidebar title (#101).
+- Space inspect popover anchors to the focused cell instead of the results-area top-left (#102).
 - Status bar restores the Data row-count line when switching Structure → Data (#75); does not overwrite a `Query failed` status.
 - Cell editor ghost NULL control at the right edge of the inline editor (#76).
 - Accepting an empty text editor opened on NULL stores `''` and marks the cell dirty; empty accept on an unset insert cell leaves the column out so DEFAULT applies (#77).

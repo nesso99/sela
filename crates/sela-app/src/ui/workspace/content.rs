@@ -355,8 +355,8 @@ impl Workspace {
                 area.child(
                     div()
                         .absolute()
-                        .top_2()
-                        .left_2()
+                        .top(px(info.anchor_top))
+                        .left(px(info.anchor_left))
                         .max_w(px(420.))
                         .max_h(px(280.))
                         .flex()

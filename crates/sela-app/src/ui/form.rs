@@ -252,7 +252,6 @@ impl ConnectionForm {
         }
         match parse_connection_url(trimmed) {
             Ok(imported) => {
-                self.error = None;
                 Self::set_value(&self.import_url, String::new(), window, cx);
                 self.set_engine(imported.engine, window, cx);
                 Self::set_value(&self.host, imported.host, window, cx);
@@ -281,10 +280,14 @@ impl ConnectionForm {
                         note.push_str(&extra);
                     }
                 }
-                self.import_note = Some(note);
+                apply_import_status_lines(&mut self.import_note, &mut self.error, Ok(note));
             }
             Err(err) => {
-                self.error = Some(err.message().into());
+                apply_import_status_lines(
+                    &mut self.import_note,
+                    &mut self.error,
+                    Err(err.message().into()),
+                );
             }
         }
         cx.notify();
@@ -654,4 +657,60 @@ fn safe_mode_button(
         .on_click(move |_, _, cx| {
             form.update(cx, |form, cx| form.set_safe_mode(mode, cx));
         })
+}
+
+/// Keep import success and error lines mutually exclusive (#100).
+fn apply_import_status_lines(
+    import_note: &mut Option<String>,
+    error: &mut Option<String>,
+    outcome: Result<String, String>,
+) {
+    match outcome {
+        Ok(note) => {
+            *error = None;
+            *import_note = Some(note);
+        }
+        Err(message) => {
+            *import_note = None;
+            *error = Some(message);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_import_status_lines;
+
+    #[test]
+    fn import_failure_clears_previous_success_note() {
+        let mut note =
+            Some("Filled from the URL. The password is only in the password field.".into());
+        let mut error = None;
+        apply_import_status_lines(
+            &mut note,
+            &mut error,
+            Err("Use a postgres://, mysql://, or sqlite: URL.".into()),
+        );
+        assert!(note.is_none());
+        assert_eq!(
+            error.as_deref(),
+            Some("Use a postgres://, mysql://, or sqlite: URL.")
+        );
+    }
+
+    #[test]
+    fn import_success_clears_previous_error() {
+        let mut note = None;
+        let mut error = Some("Use a postgres://, mysql://, or sqlite: URL.".into());
+        apply_import_status_lines(
+            &mut note,
+            &mut error,
+            Ok("Filled from the URL. The password is only in the password field.".into()),
+        );
+        assert!(error.is_none());
+        assert_eq!(
+            note.as_deref(),
+            Some("Filled from the URL. The password is only in the password field.")
+        );
+    }
 }

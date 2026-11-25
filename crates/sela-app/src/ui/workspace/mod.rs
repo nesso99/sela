@@ -26,9 +26,11 @@ mod tree;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tree::{TreeEvent, TreeState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, TitleBar};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window};
 
@@ -120,8 +122,6 @@ pub struct Workspace {
     pending_close_tabs: Option<PendingCloseTabs>,
     /// Updated each frame from `window.window_decorations()` for the CSD title bar.
     client_decorations: bool,
-    #[cfg(not(target_os = "macos"))]
-    menu_bar: Entity<gpui_kit::component::menu::AppMenuBar>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -253,8 +253,6 @@ impl Workspace {
             close_tabs_confirm_open: false,
             pending_close_tabs: None,
             client_decorations: false,
-            #[cfg(not(target_os = "macos"))]
-            menu_bar: gpui_kit::component::menu::AppMenuBar::new(cx),
             _subscriptions: vec![
                 tree_events,
                 tree_selection,
@@ -321,20 +319,37 @@ impl Workspace {
     }
 
     /// Linux/Windows in-window File menu under server-side decorations.
-    /// Height is fixed because `AppMenuBar` paints `size_full()`; an unbounded
-    /// slot swallows the column. When client-side decorations are active, the
-    /// menu lives inside [`Self::client_title_bar`] instead.
+    /// Height is fixed so the row does not swallow the column. When client-side
+    /// decorations are active, the menu lives inside [`Self::client_title_bar`]
+    /// instead.
     #[cfg(not(target_os = "macos"))]
-    fn menu_bar_row(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn menu_bar_row(&self, _cx: &Context<Self>) -> impl IntoElement {
         div()
             .id("sela-menu-bar")
             .w_full()
             .h(px(32.))
             .flex_shrink_0()
             .border_b_1()
-            .border_color(cx.theme().title_bar_border)
-            .bg(cx.theme().title_bar)
-            .child(self.menu_bar.clone())
+            .border_color(_cx.theme().title_bar_border)
+            .bg(_cx.theme().title_bar)
+            .items_center()
+            .px_1()
+            .child(Self::file_menu_button())
+    }
+
+    /// File ▸ Quit, anchored to the File label via DropdownMenu/Popover (#101).
+    /// `AppMenuBar`'s deferred `anchored()` popup was painted at the window
+    /// origin, so Quit overlapped the sidebar title and missed hit-tests.
+    #[cfg(not(target_os = "macos"))]
+    fn file_menu_button() -> impl IntoElement {
+        Button::new("file-menu")
+            .small()
+            .ghost()
+            .label("File")
+            .dropdown_menu(|menu, _, _| {
+                menu.separator()
+                    .item(PopupMenuItem::new("Quit").action(Box::new(Quit)))
+            })
     }
 
     /// Client-side title bar (GNOME Wayland and other CSD sessions): app title,
@@ -373,7 +388,7 @@ impl Workspace {
                             .map(|row| {
                                 #[cfg(not(target_os = "macos"))]
                                 {
-                                    row.child(self.menu_bar.clone())
+                                    row.child(Self::file_menu_button())
                                 }
                                 #[cfg(target_os = "macos")]
                                 {
