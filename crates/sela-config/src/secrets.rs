@@ -72,6 +72,20 @@ impl SecretStore for MemorySecretStore {
     }
 }
 
+impl SecretStore for Box<dyn SecretStore> {
+    fn get(&self, account: &str) -> Result<Option<String>, SecretError> {
+        (**self).get(account)
+    }
+
+    fn set(&self, account: &str, secret: &str) -> Result<(), SecretError> {
+        (**self).set(account, secret)
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        (**self).delete(account)
+    }
+}
+
 /// True when keyring's default builder is the in-process mock store.
 ///
 /// keyring v3 enables no platform backend unless Cargo features are set. The

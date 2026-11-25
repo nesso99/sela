@@ -39,6 +39,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | Inline edit, connection color / groups | Done (M2) — [safe mode](docs/user/safe-mode.md), [connecting](docs/user/connecting.md) |
 | SSH tunnel | Done (M3-1) — [connecting](docs/user/connecting.md#ssh-tunnel-postgresql-and-mysql) |
 | Export CSV/JSON/SQL + CSV import | Core done (M3-3); UI follows [11-export-import](docs/design/ux/11-export-import.md) — [export-import](docs/user/export-import.md) |
+| Command palette + quick open | Done (M3-4) — Cmd/Ctrl+P tables, Cmd/Ctrl+Shift+P actions; [keyboard shortcuts](docs/user/keyboard-shortcuts.md) |
 
 ## Documentation
 
