@@ -31,7 +31,9 @@ NETWORK="sela-ssh-net"
 echo "Generating throwaway SSH keys in $WORKDIR" >&2
 ssh-keygen -t ed25519 -N "" -f "$WORKDIR/keys/id_ed25519" -q
 ssh-keygen -t ed25519 -N "$PASSPHRASE" -f "$WORKDIR/keys/id_ed25519_enc" -q
-cp "$WORKDIR/keys/id_ed25519.pub" "$WORKDIR/keys/authorized_keys"
+# Both keypairs must be authorized (plain key + passphrase-protected key).
+cat "$WORKDIR/keys/id_ed25519.pub" "$WORKDIR/keys/id_ed25519_enc.pub" \
+  > "$WORKDIR/keys/authorized_keys"
 chmod 600 "$WORKDIR/keys/id_ed25519" "$WORKDIR/keys/id_ed25519_enc" \
   "$WORKDIR/keys/authorized_keys"
 
@@ -47,13 +49,15 @@ MYSQL_IMAGE="mysql@sha256:8c233bad33d520a7aae1c1e619c3a9775f4a1ba2d463d692fada04
 # lscr.io/linuxserver/openssh-server:latest
 OPENSSH_IMAGE="lscr.io/linuxserver/openssh-server@sha256:c8431b8982e7eb3935ebf9c46607d19c6417e39c12ce884cc66945df2e9334e8"
 
-docker run -d --name sela-ssh-pg --network "$NETWORK" \
+# Network aliases `postgres` / `mysql` match SELA_SSH_DB_HOST / SELA_SSH_MYSQL_HOST
+# (Docker DNS resolves the alias from the bastion, not the container name).
+docker run -d --name sela-ssh-pg --network "$NETWORK" --network-alias postgres \
   -e POSTGRES_USER=sela \
   -e POSTGRES_PASSWORD=sela \
   -e POSTGRES_DB=sample \
   "$PG_IMAGE" >/dev/null
 
-docker run -d --name sela-ssh-mysql --network "$NETWORK" \
+docker run -d --name sela-ssh-mysql --network "$NETWORK" --network-alias mysql \
   -e MYSQL_ROOT_PASSWORD=sela \
   -e MYSQL_USER=sela \
   -e MYSQL_PASSWORD=sela \
@@ -76,6 +80,7 @@ docker run -d --name sela-ssh-bastion --network "$NETWORK" \
 echo "Waiting for bastion, Postgres, and MySQL…" >&2
 bastion_up=false
 pg_up=false
+mysql_up=false
 for i in $(seq 1 90); do
   if docker exec sela-ssh-pg pg_isready -U sela -d sample >/dev/null 2>&1; then
     pg_up=true
@@ -92,10 +97,33 @@ for i in $(seq 1 90); do
   fi
   sleep 1
 done
+if ! $pg_up || ! $bastion_up; then
+  echo "Bastion/Postgres failed to become ready within timeout" >&2
+  exit 1
+fi
 # MySQL can take longer to accept connections.
 for i in $(seq 1 90); do
   if docker exec sela-ssh-mysql mysqladmin ping -h 127.0.0.1 -usela -psela --silent >/dev/null 2>&1; then
+    mysql_up=true
     break
+  fi
+  sleep 1
+done
+if ! $mysql_up; then
+  echo "MySQL failed to become ready within timeout" >&2
+  exit 1
+fi
+# Prove Docker DNS + TCP forwarding from the bastion before handing off to tests.
+for i in $(seq 1 30); do
+  if ssh -i "$WORKDIR/keys/id_ed25519" -o StrictHostKeyChecking=no \
+       -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -p "$SSH_PORT" \
+       "${USER_NAME}@127.0.0.1" "nc -z postgres 5432 && nc -z mysql 3306" \
+       >/dev/null 2>&1; then
+    break
+  fi
+  if [[ "$i" -eq 30 ]]; then
+    echo "Bastion cannot reach postgres:5432 / mysql:3306 (DNS or TCP forward)" >&2
+    exit 1
   fi
   sleep 1
 done
