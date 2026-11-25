@@ -59,6 +59,41 @@ Optional schema overrides: `SELA_POSTGRES_SCHEMA` (default `public`) and `SELA_M
 
 CI job `db-integration` sets the same URLs against service containers.
 
+### SSH tunnel (M3-1)
+
+Tests in `crates/sela-drivers/tests/ssh_tunnel.rs` and `sela-ssh` unit tests skip unless `SELA_SSH_HOST` (and related vars) are set. Keys and known_hosts are generated at runtime — never committed.
+
+[`scripts/run-ssh-bastion.sh`](../../scripts/run-ssh-bastion.sh) starts a disposable Docker network with Postgres (and MySQL), an openssh-server bastion publishing only port `2222`, and throwaway keys under a temp home. The DBs are **not** published to the host — the client reaches them only through the bastion. Print `export` lines for `eval`:
+
+```bash
+eval "$(./scripts/run-ssh-bastion.sh)"
+cargo test -p sela-ssh
+cargo test -p sela-drivers --test ssh_tunnel -- --nocapture
+# optional: ssh-agent for SSH-04
+eval "$(ssh-agent -s)"
+ssh-add "$SELA_SSH_KEY"
+cargo test -p sela-drivers --test ssh_tunnel ssh04 -- --nocapture
+# tear down
+docker rm -f sela-ssh-bastion sela-ssh-pg sela-ssh-mysql
+docker network rm sela-ssh-net
+```
+
+Env vars (printed by the script):
+
+| Var | Role |
+| --- | --- |
+| `SELA_SSH_HOST` / `SELA_SSH_PORT` / `SELA_SSH_USER` | Bastion endpoint (usually `127.0.0.1:2222`) |
+| `SELA_SSH_PASSWORD` | Bastion password auth |
+| `SELA_SSH_KEY` / `SELA_SSH_KEY_ENCRYPTED` / `SELA_SSH_KEY_PASSPHRASE` | Key files |
+| `SELA_SSH_KNOWN_HOSTS` / `SELA_SSH_KNOWN_HOSTS_BAD` | Matching and deliberately wrong host keys |
+| `SELA_SSH_DB_HOST` / `SELA_SSH_DB_PORT` | DB hostname **as seen from the bastion** (Docker DNS) |
+| `SELA_SSH_DB_USER` / `SELA_SSH_DB_PASSWORD` / `SELA_SSH_DB_NAME` | DB credentials |
+| `SELA_SSH_MYSQL_HOST` / `SELA_SSH_MYSQL_PORT` | Optional MySQL through the same bastion |
+
+Unit tests (config Include, host-key match/mismatch, secret `Debug` redaction, TLS-forward helper) run without Docker. CI job `ssh-integration` (Linux), added before the M3-1 PR merges and required by `ci-gate` when SSH code changes.
+
+While a tunnel is open, any local process can connect to its `127.0.0.1` forwarded port; the tunnel does not authenticate local clients.
+
 ### Postgres TLS (CI acceptance for M1-8)
 
 Tests skip unless both env vars are set. They use the real `sela_drivers::connect` path:

@@ -23,6 +23,17 @@ pub enum DbError {
         sqlstate: Option<String>,
         vendor_code: Option<String>,
     },
+    /// SSH tunnel failure (auth, host key, config, or transport).
+    ///
+    /// Distinct from database [`Auth`] / [`Connection`] so the UI can show an
+    /// SSH-specific hint (US-02). Host-key mismatch and unknown-host cases use
+    /// this variant; a good tunnel with a bad DB password stays [`Auth`].
+    #[error("{message}")]
+    Ssh {
+        message: String,
+        sqlstate: Option<String>,
+        vendor_code: Option<String>,
+    },
     /// Authentication or authorization failed.
     #[error("{message}")]
     Auth {
@@ -102,6 +113,14 @@ impl DbError {
 
     pub fn tls(message: impl Into<String>) -> Self {
         Self::Tls {
+            message: message.into(),
+            sqlstate: None,
+            vendor_code: None,
+        }
+    }
+
+    pub fn ssh(message: impl Into<String>) -> Self {
+        Self::Ssh {
             message: message.into(),
             sqlstate: None,
             vendor_code: None,
@@ -203,6 +222,7 @@ impl DbError {
         match self {
             Self::Connection { message, .. }
             | Self::Tls { message, .. }
+            | Self::Ssh { message, .. }
             | Self::Auth { message, .. }
             | Self::Query { message, .. }
             | Self::Timeout { message, .. }
@@ -218,6 +238,7 @@ impl DbError {
         match self {
             Self::Connection { sqlstate, .. }
             | Self::Tls { sqlstate, .. }
+            | Self::Ssh { sqlstate, .. }
             | Self::Auth { sqlstate, .. }
             | Self::Query { sqlstate, .. }
             | Self::Timeout { sqlstate, .. }
@@ -233,6 +254,7 @@ impl DbError {
         match self {
             Self::Connection { vendor_code, .. }
             | Self::Tls { vendor_code, .. }
+            | Self::Ssh { vendor_code, .. }
             | Self::Auth { vendor_code, .. }
             | Self::Query { vendor_code, .. }
             | Self::Timeout { vendor_code, .. }

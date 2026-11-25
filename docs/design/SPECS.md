@@ -18,14 +18,14 @@ flowchart TB
   bridge["Runtime bridge<br/>drive() + CancellationToken"]
   core["sela-core<br/>DatabaseSession, Value, ResultWindow, SQL helpers"]
   drivers["sela-drivers<br/>postgres, mysql, sqlite (sqlx)"]
-  ssh["sela-ssh (planned)<br/>Tunnel local port-forward"]
+  ssh["sela-ssh<br/>Tunnel local port-forward (russh)"]
   cfg["sela-config<br/>connections.json, history.sqlite, keychain"]
 
   ui --> state
   state -->|"spawn"| bridge
   bridge -->|"tokio"| core
   core --> drivers
-  core --> ssh
+  drivers --> ssh
   state --> cfg
 ```
 
@@ -36,11 +36,11 @@ UI never talks to sqlx directly. Library crates stay free of GPUI so CI can test
 ```text
 crates/
   sela-core/     # DatabaseSession, Value, ResultWindow, SQL builder, ChangeSet/ChangePlan, structure types
-  sela-drivers/  # postgres.rs, mysql.rs, sqlite.rs, stream, decode, runtime, apply_changes
+  sela-drivers/  # postgres.rs, mysql.rs, sqlite.rs, stream, decode, runtime, apply_changes; opens sela-ssh
+  sela-ssh/      # SSH tunnel (russh), known_hosts; Import-only ~/.ssh/config Host alias → resolved fields
   sela-config/   # connections.json, SecretStore / keyring
   sela-app/      # GPUI binary `sela`: workspace/, grid/, form/, examples/grid_bench
   # planned:
-  sela-ssh/      # SSH tunnel (russh), known_hosts
   sela-testkit/  # fixtures, docker helpers, golden SQL
 ```
 
@@ -99,7 +99,7 @@ Helpers: `run_user_sql`, `preview_table`, `exact_table_rows`, `is_safe_to_rerun_
 - Small pool for metadata (`max_connections` ~5) plus a dedicated connection per query tab (so cancel / transactions attach correctly) — shared pool today; per-tab connection is a follow-up.
 - States: Disconnected → Connecting → Connected → Reconnecting → Failed.
 - Connect timeout 12 s; keepalive and reconnect for tabs without an open transaction (planned).
-- SSH (M3): open tunnel first, driver connects to `127.0.0.1:<ephemeral>`; closing the connection closes the tunnel.
+- SSH (M3-1): `sela-ssh` opens the tunnel first; the driver dials `127.0.0.1:<ephemeral>`; closing the session closes the tunnel. Auth: password, private key (+ passphrase), ssh-agent; default for new SSH settings is PrivateKey. Import from `~/.ssh/config` is explicit only: choosing a Host alias copies the resolved HostName/User/Port/IdentityFile into the saved connection (`host`, `port`, `user`, `private_key_path`); connect never re-reads the config. ProxyJump/ProxyCommand → clear unsupported error. known_hosts: match allows; changed key is a hard error (no override); unknown key returns a typed challenge with fingerprint — the caller must confirm before the key is written. Paths (config, known_hosts, home) are injectable for tests. SQLite rejects enabled SSH. SSH passwords/passphrases use the OS keychain (`{id}:ssh-password` / `{id}:ssh-passphrase`), never JSON. Failures are [`DbError::Ssh`].
 
 ---
 
@@ -252,7 +252,7 @@ Env for integration tests: `SELA_POSTGRES_URL`, `SELA_MYSQL_URL` (optional schem
 | Unit | SQL builder, classify / split / load-more safety, `ResultWindow`, config, fake `SecretStore` | Every PR, 3 OS (Windows gated) |
 | Integration SQLite | Introspection, types, paging/stream, cancel behavior | Every PR, no service |
 | Integration PG/MySQL | Same suite via docker-compose / CI services; cancel + streaming | CI Linux `db-integration`; local `docker compose up` |
-| SSH | openssh-server bastion in front of PG | CI Linux (M3) |
+| SSH | openssh-server bastion in front of PG (+ MySQL); `scripts/run-ssh-bastion.sh`; skip unless `SELA_SSH_*` | CI Linux `ssh-integration` (proposed) |
 | UI | GPUI headless state tests; Xvfb + lavapipe smoke | CI Linux; manual macOS/Windows each release |
 | Perf | `grid_bench`, `value_display` bench; flag >10% regressions | Nightly / when grid code changes |
 | Licenses | `cargo deny check licenses bans sources` (see `deny.toml`; project is GPL-3.0-or-later) | Every PR + push (`cargo-deny` CI job) |

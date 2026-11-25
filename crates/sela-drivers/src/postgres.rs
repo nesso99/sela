@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -16,16 +17,32 @@ use sqlx::Row;
 
 pub struct PostgresSession {
     pool: PgPool,
+    /// Keeps the local SSH forward alive for the session lifetime (SSH-10).
+    _ssh_tunnel: Option<sela_ssh::SshTunnel>,
 }
 
 impl PostgresSession {
     pub async fn connect(connection: &SavedConnection, password: &str) -> Result<Self, DbError> {
+        Self::connect_with_tunnel(connection, password, None, None).await
+    }
+
+    /// When `dial` is set (SSH tunnel), connect to that loopback address while
+    /// keeping [`SavedConnection::host`] for TLS SNI / verify-full (via `hostaddr`).
+    pub(crate) async fn connect_with_tunnel(
+        connection: &SavedConnection,
+        password: &str,
+        dial: Option<SocketAddr>,
+        ssh_tunnel: impl Into<Option<sela_ssh::SshTunnel>>,
+    ) -> Result<Self, DbError> {
         let mut options = PgConnectOptions::new()
             .host(connection.host.trim())
             .port(connection.port)
             .username(connection.username.trim())
             .password(password)
             .database(connection.database.trim());
+        if let Some(addr) = dial {
+            options = options.hostaddr(addr.ip()).port(addr.port());
+        }
         if connection.safe_mode == SafeMode::ReadOnly {
             // Server-side guard for M2-4 Read-only (blocks nextval, DML, etc.).
             options = options.options([("default_transaction_read_only", "on")]);
@@ -37,7 +54,10 @@ impl PostgresSession {
             .connect_with(options)
             .await
             .map_err(crate::sqlx_err)?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            _ssh_tunnel: ssh_tunnel.into(),
+        })
     }
 
     #[cfg(test)]
@@ -62,7 +82,10 @@ impl PostgresSession {
             .connect_with(options)
             .await
             .map_err(crate::sqlx_err)?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            _ssh_tunnel: None,
+        })
     }
 
     async fn load_columns(
@@ -517,6 +540,8 @@ impl DatabaseSession for PostgresSession {
 
     async fn close(&self) {
         self.pool.close().await;
+        // Tunnel drops when the session is dropped (SSH-10). Pool close first so
+        // in-flight queries fail closed before the listener goes away.
     }
 }
 

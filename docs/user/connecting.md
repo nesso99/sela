@@ -22,6 +22,20 @@ Click another saved connection in the sidebar to switch. Sela cancels queries on
 
 **Disconnect** cancels running queries for the active connection, closes its tabs, and drops the session (with the same confirm when SQL would be lost). Tabs are not left open for a disconnected connection.
 
+## SSH tunnel (PostgreSQL and MySQL)
+
+Postgres and MySQL connections can reach the database through an SSH bastion (local port forward). SQLite does not use SSH (the form will hide it once the dialog lands; enabling SSH on a SQLite row is rejected on validate).
+
+Auth methods: bastion password, private key (optional passphrase), or ssh-agent. Import from `~/.ssh/config` is an explicit host picker that fills resolved Host / Port / User / key path into the saved connection (connect does not re-read the config). `ProxyJump` and `ProxyCommand` are not supported.
+
+Host keys: a matching `known_hosts` entry is required for a silent connect. A **changed** host key is always refused. A **first-seen** host key returns a typed challenge with a fingerprint so the UI can ask before writing `known_hosts` (core API is ready; dialog UX follows the v0.3 UX spec).
+
+SSH passwords and key passphrases use the same OS keychain path as database passwords (accounts `{connection-id}:ssh-password` and `{connection-id}:ssh-passphrase`). They are never written to `connections.json`.
+
+The local forwarded port binds on `127.0.0.1` and is reachable by other processes on the same machine for as long as the connection stays open.
+
+TLS modes (including `verify-full`) still apply inside the tunnel: Sela keeps the original database hostname for certificate checks while dialing the loopback listener.
+
 ## TLS (PostgreSQL and MySQL)
 
 SQLite has no TLS options (hidden in the form).

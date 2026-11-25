@@ -92,6 +92,96 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn default_ssh_port() -> u16 {
+    22
+}
+
+fn is_default_ssh_port(port: &u16) -> bool {
+    *port == 0 || *port == 22
+}
+
+/// Expand a leading `~/` using `$HOME` / `USERPROFILE`. Other paths are unchanged.
+fn expand_tilde_path(path: &str) -> std::path::PathBuf {
+    if path == "~" {
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            return std::path::PathBuf::from(home);
+        }
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            return std::path::PathBuf::from(home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
+/// How the SSH bastion authenticates the client.
+///
+/// Passwords and key passphrases are never stored on this type — they go to the
+/// OS keychain (same path as the database password).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SshAuthMethod {
+    /// SSH password (secret store account `{id}:ssh-password`).
+    Password,
+    /// Private key file; optional passphrase in the secret store (`{id}:ssh-passphrase`).
+    /// Default for new SSH rows (UX 10-ssh-tunnel).
+    #[default]
+    PrivateKey,
+    /// Keys from `ssh-agent` (`SSH_AUTH_SOCK` / Pageant).
+    Agent,
+}
+
+/// Per-connection SSH tunnel settings. Missing JSON field loads as disabled.
+///
+/// No `schema_version` bump: serde defaults keep v0.2 files loadable (ADR 0006).
+/// SSH passwords and key passphrases are never written here.
+///
+/// Saved JSON stores **resolved** Host/Port/User/key path after an explicit
+/// Import from `~/.ssh/config` — connect does not re-read the config file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshSettings {
+    /// When false, the driver connects directly (no tunnel).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub enabled: bool,
+    /// Bastion host (resolved `HostName`, or the alias when none was set).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host: String,
+    /// Bastion port. `0` or `22` omit on save; connect treats omitted as 22.
+    #[serde(
+        default = "default_ssh_port",
+        skip_serializing_if = "is_default_ssh_port"
+    )]
+    pub port: u16,
+    /// Bastion user.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub user: String,
+    #[serde(default)]
+    pub auth: SshAuthMethod,
+    /// Private key path (for [`SshAuthMethod::PrivateKey`]). `~` is expanded at connect.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub private_key_path: String,
+}
+
+impl Default for SshSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: String::new(),
+            port: 22,
+            user: String::new(),
+            auth: SshAuthMethod::PrivateKey,
+            private_key_path: String::new(),
+        }
+    }
+}
+
+impl SshSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Per-connection write guard (M2-4). Missing JSON field loads as [`SafeMode::Off`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -166,6 +256,9 @@ pub struct SavedConnection {
     /// TLS options for Postgres/MySQL. Defaults when absent (v1 files load fine).
     #[serde(default, skip_serializing_if = "TlsSettings::is_default")]
     pub tls: TlsSettings,
+    /// SSH tunnel for Postgres/MySQL. Missing field loads as disabled (v0.2 files).
+    #[serde(default, skip_serializing_if = "SshSettings::is_default")]
+    pub ssh: SshSettings,
     /// When false, editor runs on this connection are not written to history.
     #[serde(default = "default_true")]
     pub record_history: bool,
@@ -211,6 +304,9 @@ impl<'de> Deserialize<'de> for SavedConnection {
             /// Legacy v1 boolean. Used only when `tls` is absent.
             #[serde(default)]
             ssl: Option<bool>,
+            /// Missing field means disabled (M3-1). No schema_version bump.
+            #[serde(default)]
+            ssh: SshSettings,
             /// Missing field means record (M1-5). No schema_version bump.
             #[serde(default = "default_true")]
             record_history: bool,
@@ -244,6 +340,7 @@ impl<'de> Deserialize<'de> for SavedConnection {
             database: raw.database,
             file_path: raw.file_path,
             tls,
+            ssh: raw.ssh,
             record_history: raw.record_history,
             color: raw.color,
             label: raw.label,
@@ -276,6 +373,7 @@ impl SavedConnection {
             database: String::new(),
             file_path: String::new(),
             tls,
+            ssh: SshSettings::default(),
             record_history: true,
             color: ConnectionColor::None,
             label: String::new(),
@@ -317,6 +415,11 @@ impl SavedConnection {
                 if self.file_path.trim().is_empty() {
                     return Err("Choose a SQLite file path.".into());
                 }
+                // SSH does not apply to SQLite (file on disk). Reject enabled SSH
+                // so a bad save cannot leave a half-configured row.
+                if self.ssh.enabled {
+                    return Err("SSH tunnel is not used with SQLite.".into());
+                }
             }
             Engine::Postgres | Engine::Mysql => {
                 if self.host.trim().is_empty() {
@@ -345,6 +448,27 @@ impl SavedConnection {
                     return Err(
                         "CA certificate path is required for verify-ca and verify-full.".into(),
                     );
+                }
+                if self.ssh.enabled {
+                    if self.ssh.host.trim().is_empty() {
+                        return Err("SSH host is required.".into());
+                    }
+                    if self.ssh.port == 0 {
+                        return Err("SSH port must be a number from 1 to 65535.".into());
+                    }
+                    if self.ssh.user.trim().is_empty() {
+                        return Err("SSH user is required.".into());
+                    }
+                    if self.ssh.auth == SshAuthMethod::PrivateKey {
+                        let path = self.ssh.private_key_path.trim();
+                        if path.is_empty() {
+                            return Err("Private key path is required.".into());
+                        }
+                        let expanded = expand_tilde_path(path);
+                        if !expanded.is_file() {
+                            return Err("Private key was not found.".into());
+                        }
+                    }
                 }
             }
         }
@@ -737,5 +861,109 @@ mod tests {
         assert!(flagged_text.contains("\"needs_password\":true"));
         let back: SavedConnection = serde_json::from_str(&flagged_text).unwrap();
         assert!(back.needs_password);
+    }
+
+    #[test]
+    fn missing_ssh_defaults_disabled_and_omits_on_save() {
+        let raw = r#"{
+            "id": "c1",
+            "name": "Local",
+            "engine": "postgres",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "username": "sela",
+            "database": "sample"
+        }"#;
+        let conn: SavedConnection = serde_json::from_str(raw).unwrap();
+        assert!(!conn.ssh.enabled);
+        assert_eq!(conn.ssh.auth, SshAuthMethod::PrivateKey);
+        let text = serde_json::to_string(&conn).unwrap();
+        assert!(
+            !text.contains("\"ssh\""),
+            "default SSH must omit on save: {text}"
+        );
+        assert!(
+            !text.to_ascii_lowercase().contains("password"),
+            "SSH must never put a password field in JSON: {text}"
+        );
+    }
+
+    #[test]
+    fn ssh_settings_round_trip_without_secrets() {
+        let mut conn = SavedConnection::new(Engine::Postgres);
+        conn.name = "Bastion".into();
+        conn.username = "sela".into();
+        conn.database = "sample".into();
+        conn.ssh = SshSettings {
+            enabled: true,
+            host: "jump".into(),
+            port: 2222,
+            user: "tunnel".into(),
+            auth: SshAuthMethod::PrivateKey,
+            private_key_path: "~/.ssh/id_ed25519".into(),
+        };
+        let text = serde_json::to_string(&conn).unwrap();
+        assert!(text.contains("\"enabled\":true"));
+        assert!(text.contains("\"auth\":\"private-key\""));
+        assert!(text.contains("\"private_key_path\""));
+        assert!(!text.contains("identity_file"));
+        assert!(!text.to_ascii_lowercase().contains("passphrase"));
+        assert!(!text.to_ascii_lowercase().contains("\"password\""));
+        let back: SavedConnection = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.ssh, conn.ssh);
+    }
+
+    #[test]
+    // SSH-20 unit: duplicate keeps SSH host settings; secrets are not on the type.
+    fn ssh20_duplicate_copies_ssh_host_settings_not_secrets() {
+        use crate::duplicate_connection;
+        let mut source = SavedConnection::new(Engine::Postgres);
+        source.name = "Prod".into();
+        source.username = "sela".into();
+        source.database = "sample".into();
+        source.ssh = SshSettings {
+            enabled: true,
+            host: "bastion.example".into(),
+            port: 2222,
+            user: "tunnel".into(),
+            auth: SshAuthMethod::Password,
+            private_key_path: String::new(),
+        };
+        let copy = duplicate_connection(&source, ["Prod"]);
+        assert_ne!(copy.id, source.id);
+        assert_eq!(copy.ssh, source.ssh);
+        let text = serde_json::to_string(&copy).unwrap();
+        assert!(!text.to_ascii_lowercase().contains("passphrase"));
+        assert!(!text.contains("ssh-password"));
+    }
+
+    #[test]
+    fn sqlite_rejects_enabled_ssh() {
+        let mut c = SavedConnection::new(Engine::Sqlite);
+        c.name = "Lib".into();
+        c.file_path = "/tmp/a.sqlite".into();
+        c.ssh.enabled = true;
+        c.ssh.host = "bastion".into();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            "SSH tunnel is not used with SQLite."
+        );
+    }
+
+    #[test]
+    fn ssh_enabled_requires_host_user_and_key_when_private_key() {
+        let mut c = SavedConnection::new(Engine::Postgres);
+        c.name = "Remote".into();
+        c.username = "sela".into();
+        c.database = "sample".into();
+        c.ssh.enabled = true;
+        assert_eq!(c.validate().unwrap_err(), "SSH host is required.");
+        c.ssh.host = "bastion".into();
+        assert_eq!(c.validate().unwrap_err(), "SSH user is required.");
+        c.ssh.user = "tunnel".into();
+        c.ssh.auth = SshAuthMethod::PrivateKey;
+        assert_eq!(c.validate().unwrap_err(), "Private key path is required.");
+        c.ssh.auth = SshAuthMethod::Password;
+        assert!(c.validate().is_ok());
     }
 }

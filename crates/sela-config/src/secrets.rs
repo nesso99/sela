@@ -17,6 +17,31 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, account: &str) -> Result<(), SecretError>;
 }
 
+/// Keychain account for the database password (`connections.json` id).
+pub fn db_password_account(connection_id: &str) -> &str {
+    connection_id
+}
+
+/// Keychain account for the SSH bastion password (SSH-13).
+pub fn ssh_password_account(connection_id: &str) -> String {
+    format!("{connection_id}:ssh-password")
+}
+
+/// Keychain account for the SSH private-key passphrase (SSH-13).
+pub fn ssh_passphrase_account(connection_id: &str) -> String {
+    format!("{connection_id}:ssh-passphrase")
+}
+
+/// Delete every secret tied to a saved connection (DB + SSH).
+///
+/// Call when the user deletes a connection so SSH passwords / passphrases do
+/// not linger after the JSON row is gone (SSH-13).
+pub fn delete_connection_secrets(store: &impl SecretStore, connection_id: &str) {
+    let _ = store.delete(db_password_account(connection_id));
+    let _ = store.delete(&ssh_password_account(connection_id));
+    let _ = store.delete(&ssh_passphrase_account(connection_id));
+}
+
 /// In-memory store used by tests and as the session fallback.
 #[derive(Default)]
 pub struct MemorySecretStore {
@@ -228,6 +253,13 @@ impl<S: SecretStore> CachingSecrets<S> {
         let _ = self.inner.delete(account);
         self.memory.lock().expect("secret lock").remove(account);
     }
+
+    /// Remove the database password and any SSH secrets for this connection (SSH-13).
+    pub fn delete_connection(&self, connection_id: &str) {
+        self.delete(connection_id);
+        self.delete(&ssh_password_account(connection_id));
+        self.delete(&ssh_passphrase_account(connection_id));
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +283,34 @@ mod tests {
         assert_eq!(secrets.get_optional("a").unwrap().as_deref(), Some(""));
         // An account that was never set stays missing (Duplicate → prompt).
         assert_eq!(secrets.get_optional("never-set").unwrap(), None);
+    }
+
+    #[test]
+    // SSH-13: account helpers and delete_connection clear DB + SSH secrets.
+    fn ssh13_delete_connection_clears_ssh_secrets() {
+        let secrets = CachingSecrets::new(MemorySecretStore::default());
+        let id = "conn-1";
+        assert_eq!(secrets.set(id, "db"), PasswordPersistence::Keychain);
+        assert_eq!(
+            secrets.set(&ssh_password_account(id), "ssh-pw"),
+            PasswordPersistence::Keychain
+        );
+        assert_eq!(
+            secrets.set(&ssh_passphrase_account(id), "ssh-pp"),
+            PasswordPersistence::Keychain
+        );
+        secrets.delete_connection(id);
+        assert_eq!(secrets.get_optional(id).unwrap(), None);
+        assert_eq!(
+            secrets.get_optional(&ssh_password_account(id)).unwrap(),
+            None
+        );
+        assert_eq!(
+            secrets.get_optional(&ssh_passphrase_account(id)).unwrap(),
+            None
+        );
+        assert_eq!(ssh_password_account(id), "conn-1:ssh-password");
+        assert_eq!(ssh_passphrase_account(id), "conn-1:ssh-passphrase");
     }
 
     #[test]

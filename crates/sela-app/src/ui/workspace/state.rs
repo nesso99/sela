@@ -552,7 +552,8 @@ impl Workspace {
     }
 
     pub(super) fn delete_connection(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.secrets.delete(id);
+        // SSH-13: drop DB password and SSH password/passphrase together.
+        self.secrets.delete_connection(id);
         self.connections.retain(|item| item.id != id);
         if self.selected_connection_id.as_deref() == Some(id) {
             self.selected_connection_id = None;

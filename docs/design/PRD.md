@@ -112,7 +112,7 @@ Developers work with databases every day and need a tool that opens instantly, s
 | ID | Story | Acceptance criteria | Status |
 | --- | --- | --- | --- |
 | US-01 | As a developer, I save a connection and reopen it with one click | Create/edit/delete/duplicate; Test connection; password never in config file; survives app restart | Mostly done |
-| US-02 | I connect through an SSH bastion | Password, private key (+ passphrase), ssh-agent, `~/.ssh/config`; known_hosts checked; SSH errors distinct from DB errors | Not started (M3 UX planned: [10](./ux/10-ssh-tunnel.md)) |
+| US-02 | I connect through an SSH bastion | Password, private key (+ passphrase), ssh-agent, `~/.ssh/config`; known_hosts checked; SSH errors distinct from DB errors | Core/drivers done (UI deferred; UX: [10](./ux/10-ssh-tunnel.md)) |
 | US-03 | I open many tables and queries in tabs | Cmd+T new query, Cmd+W close, Cmd+1..9 switch; tab remembers its connection; dirty close prompts when pending edits exist | Done (M1-1); dirty prompt is M2 |
 | US-04 | I filter and sort without writing SQL | Filter bar: column + op (`=`, `!=`, `LIKE`, `IN`, `IS NULL`, `>`, `<`) + value, AND combine; header click to sort; generated SQL visible | Done (M1-3) |
 | US-05 | I edit data on the grid | Double-click or Enter to edit; edited cells highlighted; insert/delete/duplicate rows; Cmd+S commits in one transaction; Esc cancels the open cell editor only; Cmd+Shift+Z and Discard drop pending edits after confirm; no primary key → read-only with a reason | Not started |
