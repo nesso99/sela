@@ -85,6 +85,8 @@ pub struct Workspace {
     views: HashMap<TabId, TabView>,
     /// Workspace-level load error (e.g. connections.json), shown when no tab error.
     boot_error: Option<String>,
+    /// Transient status when no tab is open (e.g. Duplicate with an empty pane).
+    workspace_status: Option<String>,
     /// Shown in the status bar when a password is held in memory only this session.
     keychain_session_warning: Option<String>,
     last_selection: Option<String>,
@@ -227,6 +229,7 @@ impl Workspace {
             tabs: TabList::new(),
             views: HashMap::new(),
             boot_error,
+            workspace_status: None,
             keychain_session_warning: None,
             last_selection: None,
             selected_connection_id: None,
@@ -890,6 +893,9 @@ impl Render for Workspace {
                                 column
                                     .when_some(self.boot_error.clone(), |column, error| {
                                         column.child(self.error_banner(cx, error))
+                                    })
+                                    .when_some(self.workspace_status.clone(), |column, status| {
+                                        column.child(self.workspace_status_banner(cx, status))
                                     })
                                     .child(self.empty_content(cx))
                             }),

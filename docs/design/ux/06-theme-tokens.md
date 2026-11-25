@@ -291,7 +291,7 @@ These stay fixed at every step. Text inside them may grow until the largest step
 | SSD menu row | 32 | Linux and Windows when the OS draws the frame. [01-main-window.md](./01-main-window.md#client-side-title-bar). |
 | Client title bar | 34 | gpui-component `TitleBar`. Does not scale. |
 | editor.band | 176 | The splitter default, not a font metric. Fewer lines fit when the line height grows. |
-| sidebar.width, dialog.width, window size | unchanged | Layout, not type. |
+| sidebar.width, dialog.width, window size | unchanged | Layout, not type. The sidebar footer button row wraps at large UI steps so **Disconnect** is not clipped. |
 | space.1–space.6, radius, border, focus | unchanged | The 4px scale. |
 
 The control is a status-bar menu, `xsmall` ghost, immediately before the theme menu. The label is the current UI size (`13`). The items are `11` through `18`, with a check on the current size, then `Reset`. The bar stays 28px. There is still no settings window. `secondary-,` stays reserved.

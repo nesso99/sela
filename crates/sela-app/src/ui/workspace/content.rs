@@ -302,6 +302,20 @@ impl Workspace {
             .child(error)
     }
 
+    /// Non-error status when no tab is open (e.g. Duplicate).
+    pub(super) fn workspace_status_banner(
+        &self,
+        cx: &Context<Self>,
+        status: String,
+    ) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_2()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(status)
+    }
+
     pub(super) fn results_area(&self, cx: &Context<Self>) -> impl IntoElement {
         let this = cx.entity();
         let grid = self.active_view().map(|view| view.grid.clone());
