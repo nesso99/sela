@@ -2118,11 +2118,7 @@ mod tests {
         )
         .unwrap();
         let plan = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
-        let where_sql = plan.statements[0]
-            .sql
-            .split(" WHERE ")
-            .nth(1)
-            .unwrap_or("");
+        let where_sql = plan.statements[0].sql.split(" WHERE ").nth(1).unwrap_or("");
         assert!(
             where_sql.contains("AND \"score\" =")
                 && where_sql.contains("AND \"doc\" =")
