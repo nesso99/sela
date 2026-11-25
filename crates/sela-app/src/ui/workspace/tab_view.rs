@@ -201,7 +201,6 @@ impl TabView {
         }
     }
 
-    #[allow(dead_code)]
     pub fn cell_editor_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         self.cell_editor
             .read(cx)

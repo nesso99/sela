@@ -124,7 +124,7 @@ impl CommitCancelHost {
     fn finish_cancelled(&mut self, generation: u64) {
         let err = DbError::cancelled("apply cancelled");
         let (banner, status) = format_commit_failure(&err, 1);
-        let _ = self.edit.note_commit_failure(generation, false);
+        let _ = self.edit.note_commit_failure(generation, false, true);
         self.busy = false;
         self.cancel = None;
         self.banner = Some(banner);
@@ -136,7 +136,7 @@ impl CommitCancelHost {
         let err =
             DbError::change_conflict(&TableRef::new("public", "books"), 0, 0, &[Value::Int(3)]);
         let (banner, status) = format_commit_failure(&err, 1);
-        let _ = self.edit.note_commit_failure(generation, true);
+        let _ = self.edit.note_commit_failure(generation, true, false);
         self.busy = false;
         self.cancel = None;
         self.banner = Some(banner);
@@ -267,7 +267,8 @@ fn can01_can03_stop_cancels_commit_keeps_edits(cx: &mut TestAppContext) {
         );
         assert!(!host.status.starts_with("Committed"));
         assert!(host.edit.is_dirty());
-        assert!(host.edit.commit_failed);
+        assert!(host.edit.commit_cancelled);
+        assert!(!host.edit.commit_failed);
         assert!(!host.edit.committing);
         assert!(!host.busy);
     })

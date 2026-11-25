@@ -90,7 +90,7 @@ impl Workspace {
         self.proceed_connect_id(id, window, cx);
     }
 
-    fn proceed_connect_id(
+    pub(super) fn proceed_connect_id(
         &mut self,
         id: String,
         window: Option<&mut Window>,

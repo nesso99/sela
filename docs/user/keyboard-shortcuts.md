@@ -6,7 +6,7 @@ Newer shortcuts use GPUI’s `secondary-` modifier (⌘ on macOS, Ctrl elsewhere
 
 The design target for shortcuts that are not built yet is [docs/design/ux/README.md](../design/ux/README.md). That folder writes the platform key as `secondary`. `secondary-shift-f` is reserved for format and is backlog. This page stays the list of what the app binds today.
 
-Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below are bound.
+Font size (Cmd/Ctrl+= / − / 0), the command palette / quick open, and grid edit / preview / commit chords below are bound.
 
 | Action | Shortcut |
 | --- | --- |
@@ -44,7 +44,9 @@ Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below a
 | Inspect focused cell | Space (grid focused; any cell, including read-only). Inside the cell editor, Space types a space. |
 | Cancel open cell editor / close inspect | Escape (does not discard the pending set) |
 | Insert / Duplicate / Delete row | Cmd/Ctrl+I / Cmd/Ctrl+D / Cmd/Ctrl+Backspace (grid focused) |
-| Preview pending SQL | Cmd/Ctrl+Shift+V (table Data; pending bar Preview button unchanged) |
+| Quick open (tables) | Cmd/Ctrl+P |
+| Command palette (actions) | Cmd/Ctrl+Shift+P |
+| Preview pending SQL | Cmd/Ctrl+Shift+V (table Data; not while a text input has focus; pending bar Preview button unchanged) |
 | Commit pending changes | Cmd/Ctrl+S (table Data; accepts open editor first) |
 | Cancel in-flight commit | Cmd/Ctrl+. / Stop / pending-bar Cancel (while Committing…) |
 | Discard pending changes | Cmd/Ctrl+Shift+Z (table Data, editor closed; confirms) |

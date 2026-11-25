@@ -1,22 +1,25 @@
 //! M3-2 SQL autocomplete headless UI tests (AU-* from v0.3-test-plan).
 //!
-//! Drives the real [`Editor`] after [`install_sela_keybindings`], with a
-//! [`CompletionProvider`] backed by an in-memory schema cache — not a
-//! re-implementation of the popup.
-//!
-//! `AutocompleteHost` mirrors the Workspace `ShowSqlCompletions` /
-//! `AcceptCompletionOrIndent` handlers until `Workspace::new_for_tests`
-//! lands (see M3-4 / #121). Prefix ranking and DDL refresh live in pure
-//! functions and are covered by unit tests, not this host.
+//! Geometry and in-memory catalog cases use [`AutocompleteHost`] (real
+//! [`Editor`] + [`CompletionProvider`]). Keybindings and schema refresh go
+//! through [`Workspace::new_for_tests`] so Tab / Control+Space / Refresh
+//! hit the production handlers (not a host re-implementation).
+
+use std::time::Duration;
 
 use gpui_kit::component::input::{Editor, EditorState, Enter};
 use gpui_kit::prelude::*;
-use gpui_kit::test::TestWindowExt;
-use gpui_kit::{div, point, px, size, App, Context, Entity, Focusable, TestAppContext, Window};
+use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+use gpui_kit::{
+    div, point, px, size, App, Context, Entity, Focusable, TestAppContext, Window,
+};
+use tempfile::TempDir;
 
 use sela_core::{ColumnMeta, Dialect, SchemaEntry, SchemaSnapshot, TableEntry};
+use sela_drivers::create_sample_database;
 
 use crate::ui::workspace::sql_autocomplete::{install_test_completions, SchemaCacheHandle};
+use crate::ui::workspace::Workspace;
 use crate::ui::{AcceptCompletionOrIndent, ShowSqlCompletions};
 
 struct AutocompleteHost {
@@ -621,3 +624,176 @@ async fn au16_loading_row_not_inserted(cx: &mut TestAppContext) {
 /// composition is active.
 #[gpui_kit::test]
 async fn au04_ime_documented_manual_at_rc(_cx: &mut TestAppContext) {}
+
+// --- Workspace::new_for_tests paths (production handlers + catalog refresh) ---
+
+struct WorkspaceFix {
+    _dir: TempDir,
+    handle: gpui_kit::AnyWindowHandle,
+    workspace: Entity<Workspace>,
+}
+
+fn seed_sample_db(path: &std::path::Path) {
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("seed runtime")
+            .block_on(create_sample_database(&path))
+    })
+    .join()
+    .expect("seed thread")
+    .expect("sample sqlite");
+}
+
+async fn open_workspace(cx: &mut TestAppContext) -> WorkspaceFix {
+    cx.executor().allow_parking();
+    let dir = TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("sample.sqlite");
+    seed_sample_db(&db_path);
+    let dir_path = dir.path().to_path_buf();
+    let (handle, workspace) =
+        super::harness::open_window(cx, size(px(1180.), px(760.)), |window, cx| {
+            cx.new(|cx| Workspace::new_for_tests(&dir_path, window, cx))
+        });
+    let handle = handle.into();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let id = workspace.update(cx, |ws, cx| {
+            ws.test_seed_sqlite_connection("Sample", &db_path, cx)
+        });
+        workspace.update(cx, |ws, cx| ws.test_connect(id, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.wait_for(handle, Duration::from_secs(8), |_, cx| {
+        workspace.read(cx).test_is_connected()
+            && workspace.read(cx).test_schema_cache_is_ready()
+            && workspace.read(cx).test_schema_cache_ready_table_count() > 0
+    })
+    .await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        workspace.update(cx, |ws, cx| {
+            ws.test_new_query_tab(window, cx);
+            ws.test_focus_sql_editor(window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    WorkspaceFix {
+        _dir: dir,
+        handle,
+        workspace,
+    }
+}
+
+/// Production ShowSqlCompletions / AcceptCompletionOrIndent (not AutocompleteHost).
+#[gpui_kit::test]
+async fn workspace_ctrl_space_and_tab_accept(cx: &mut TestAppContext) {
+    let fix = open_workspace(cx).await;
+    cx.set_platform_info(gpui_kit::PlatformInfo {
+        os: gpui_kit::OperatingSystem::Mac,
+        target: gpui_kit::PlatformTarget::Native,
+    });
+    cx.update_window(fix.handle, |_, window, cx| {
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_sql("bo", window, cx);
+            ws.test_focus_sql_editor(window, cx);
+        });
+        window.press("secondary-space", cx);
+    })
+    .unwrap();
+    settle(fix.handle, cx);
+    cx.update_window(fix.handle, |_, window, cx| {
+        assert!(
+            !fix.workspace.read(cx).test_completion_popup_open(cx),
+            "secondary-space must stay free"
+        );
+        window.press("ctrl-space", cx);
+    })
+    .unwrap();
+    settle(fix.handle, cx);
+    cx.update_window(fix.handle, |_, window, cx| {
+        assert!(
+            fix.workspace.read(cx).test_completion_popup_open(cx),
+            "ctrl-space must open via Workspace handler"
+        );
+        let labels = fix.workspace.read(cx).test_completion_labels(cx);
+        assert!(
+            labels.iter().any(|l| l.eq_ignore_ascii_case("books")),
+            "expected books; got {labels:?}"
+        );
+        window.dispatch_action(Box::new(AcceptCompletionOrIndent), cx);
+    })
+    .unwrap();
+    settle(fix.handle, cx);
+    cx.update_window(fix.handle, |_, _, cx| {
+        let buf = fix.workspace.read(cx).test_sql_buffer(cx);
+        assert!(
+            buf.to_ascii_lowercase().contains("books"),
+            "Tab accept via Workspace; buffer={buf:?}"
+        );
+    })
+    .unwrap();
+}
+
+/// AU-16: Refresh schema reloads the autocomplete cache (Workspace path).
+#[gpui_kit::test]
+async fn workspace_refresh_reloads_schema_cache(cx: &mut TestAppContext) {
+    let fix = open_workspace(cx).await;
+    let before = cx.update(|cx| fix.workspace.read(cx).test_schema_cache_generation());
+    cx.update_window(fix.handle, |_, _, cx| {
+        fix.workspace.update(cx, |ws, cx| ws.test_refresh_catalog(cx));
+    })
+    .unwrap();
+    cx.wait_for(fix.handle, Duration::from_secs(8), |_, cx| {
+        let ws = fix.workspace.read(cx);
+        ws.test_schema_cache_is_ready() && ws.test_schema_cache_generation() != before
+    })
+    .await;
+    cx.update(|cx| {
+        let ws = fix.workspace.read(cx);
+        assert!(ws.test_schema_cache_ready_table_count() > 0);
+        assert_ne!(ws.test_schema_cache_generation(), before);
+    });
+}
+
+/// AU-16: successful DDL triggers the catalog-refresh predicate → cache reload.
+#[gpui_kit::test]
+async fn workspace_ddl_triggers_schema_cache_reload(cx: &mut TestAppContext) {
+    let fix = open_workspace(cx).await;
+    let before = cx.update(|cx| fix.workspace.read(cx).test_schema_cache_generation());
+    // Drive the same Workspace entry as query.rs after a successful run.
+    cx.update_window(fix.handle, |_, _, cx| {
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_maybe_refresh_schema_after_sql(
+                "CREATE TABLE au_ddl_probe (id INTEGER PRIMARY KEY)",
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    cx.wait_for(fix.handle, Duration::from_secs(8), |_, cx| {
+        let ws = fix.workspace.read(cx);
+        ws.test_schema_cache_is_ready() && ws.test_schema_cache_generation() != before
+    })
+    .await;
+    // SELECT must not refresh.
+    let mid = cx.update(|cx| fix.workspace.read(cx).test_schema_cache_generation());
+    cx.update_window(fix.handle, |_, _, cx| {
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_maybe_refresh_schema_after_sql("SELECT 1", cx);
+        });
+    })
+    .unwrap();
+    settle(fix.handle, cx);
+    cx.update(|cx| {
+        assert_eq!(
+            fix.workspace.read(cx).test_schema_cache_generation(),
+            mid,
+            "SELECT must not reload the schema cache"
+        );
+    });
+}

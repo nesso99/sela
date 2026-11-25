@@ -40,6 +40,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | SSH tunnel | Done (M3-1) — [connecting](docs/user/connecting.md#ssh-tunnel-postgresql-and-mysql) |
 | SQL autocomplete (keywords + schema cache) | In progress (M3-2) — [keyboard shortcuts](docs/user/keyboard-shortcuts.md) |
 | Export CSV/JSON/SQL + CSV import | Core done (M3-3); UI follows [11-export-import](docs/design/ux/11-export-import.md) — [export-import](docs/user/export-import.md) |
+| Command palette + quick open | Done (M3-4) — Cmd/Ctrl+P tables, Cmd/Ctrl+Shift+P actions; [keyboard shortcuts](docs/user/keyboard-shortcuts.md) |
 
 ## Documentation
 
