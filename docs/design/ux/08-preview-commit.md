@@ -15,7 +15,7 @@ A 26px bar, shown only when the active table tab has at least one pending change
 
 `Commit` is disabled when a required primary-key cell on a new row is still unset ([07-grid-editing.md](./07-grid-editing.md)), when safe mode is Read-only, or while the tab is `busy`. The tooltip says which. `Discard` and `Preview` stay enabled while changes exist. `Discard` is also disabled while `busy`.
 
-The status bar does not repeat the count. On commit failure it replaces the tab status with the failure line below. After a successful commit the bar closes and the status line is the normal row count from the reload.
+The status bar does not repeat the count. On commit failure it replaces the tab status with the failure line below. After a successful commit the bar closes and the status line stays `Committed · N statements · … ms` (see [Commit](#commit)); the ordinary row-count line does not overwrite it.
 
 `secondary-s`, `secondary-shift-p`, and `secondary-shift-z` are no longer free. They stay out of every other feature.
 

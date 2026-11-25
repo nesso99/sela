@@ -49,8 +49,8 @@ use super::{
     ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
     ExtendGridSelectionUp, FindInSql, FindNext, FindPrevious, FocusHistorySearch, HistoryCopy,
     HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun, HistorySelectDown, HistorySelectUp,
-    IncreaseFontSize, InsertEditRow, InsertFilterRow, NewQueryTab, PreviewChanges, Quit,
-    RemoveFilterRow, ResetFontSize, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery,
+    IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab, PreviewChanges,
+    Quit, RemoveFilterRow, ResetFontSize, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery,
     SelectAllGrid, SetCellNull, ShowTableData, ShowTableStructure, ToggleEditor, ToggleFilterBar,
     ToggleHistory,
 };
@@ -748,6 +748,12 @@ impl Render for Workspace {
                 let this = this.clone();
                 move |_: &EditCell, window, cx| {
                     this.update(cx, |workspace, cx| workspace.begin_cell_edit(window, cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &InspectCell, _, cx| {
+                    this.update(cx, |workspace, cx| workspace.inspect_focused_cell(cx));
                 }
             })
             .on_action({

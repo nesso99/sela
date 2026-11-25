@@ -254,7 +254,7 @@ Minimize calls `minimize_window`. Maximize and restore call `zoom_window`. None 
 
 ## Status text
 
-`refresh_status_from_state` is the single formatter. It should not concatenate `view.note` after it has already spelled the same fact.
+`refresh_status_from_state` is the single formatter. It should not concatenate `view.note` after it has already spelled the same fact. Switching Structure → Data calls it so the left side leaves `Structure · {schema}.{table}` and returns to the row-count line below.
 
 | Situation | Left side of the status bar |
 | --- | --- |

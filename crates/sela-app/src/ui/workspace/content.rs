@@ -317,24 +317,112 @@ impl Workspace {
     }
 
     pub(super) fn results_area(&self, cx: &Context<Self>) -> impl IntoElement {
+        let this = cx.entity();
         let grid = self.active_view().map(|view| view.grid.clone());
+        let inspect = self
+            .active_view()
+            .and_then(|view| view.cell_inspect.clone());
         let row_h = content_row_height(self.font_size);
         let table_size = if self.font_size <= DEFAULT_FONT_SIZE {
             Size::XSmall
         } else {
             Size::Size(px(f32::from(row_h)))
         };
-        let _ = cx;
         div()
             .flex_1()
             .min_h(px(0.))
             .overflow_hidden()
+            .relative()
             .when_some(grid, |area, grid| {
                 area.child(
                     DataTable::new(&grid)
                         .stripe(true)
                         .bordered(true)
                         .with_size(table_size),
+                )
+            })
+            .when_some(inspect, |area, info| {
+                let title = if info.decode_error {
+                    "Decode error · not NULL".to_string()
+                } else {
+                    format!("{} · {}", info.column, info.type_name)
+                };
+                let subtitle = if info.decode_error {
+                    format!("{} · {}", info.column, info.type_name)
+                } else {
+                    String::new()
+                };
+                area.child(
+                    div()
+                        .absolute()
+                        .top_2()
+                        .left_2()
+                        .max_w(px(420.))
+                        .max_h(px(280.))
+                        .flex()
+                        .flex_col()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .rounded(px(6.))
+                        .bg(cx.theme().background)
+                        .key_context("CellInspect")
+                        .child(
+                            h_flex()
+                                .px_3()
+                                .pt_2()
+                                .pb_1()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    v_flex()
+                                        .gap_0()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                                .child(title),
+                                        )
+                                        .when(!subtitle.is_empty(), |col| {
+                                            col.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(subtitle),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    Button::new("inspect-close")
+                                        .xsmall()
+                                        .ghost()
+                                        .label("×")
+                                        .tooltip("Close inspect (Escape)")
+                                        .on_click({
+                                            let this = this.clone();
+                                            move |_, _, cx| {
+                                                this.update(cx, |workspace, cx| {
+                                                    if let Some(view) = workspace.active_view_mut()
+                                                    {
+                                                        view.cell_inspect = None;
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h(px(0.))
+                                .px_3()
+                                .pb_2()
+                                .overflow_y_scrollbar()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_xs()
+                                .child(info.body),
+                        ),
                 )
             })
     }

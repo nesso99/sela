@@ -22,14 +22,24 @@ impl Workspace {
     }
 
     pub(super) fn show_table_data(&mut self, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
+            return;
+        };
         if !self.table_open() {
             return;
         }
-        let Some(view) = self.active_view_mut() else {
+        let Some(view) = self.view_mut(tab_id) else {
             return;
         };
         if view.table_pane != TablePane::Data {
             view.table_pane = TablePane::Data;
+            view.cell_inspect = None;
+            // Structure writes `Structure · {schema}.{table}`; Data must restore
+            // the row-count line via the shared status formatter (#75). Do not
+            // overwrite an active Query failed status.
+            if should_refresh_data_pane_status(&view.status) {
+                self.refresh_status_from_state(tab_id);
+            }
             cx.notify();
         }
     }
@@ -50,6 +60,7 @@ impl Workspace {
         let cached = view.structure_cache.contains_key(&key);
         if let Some(view) = self.view_mut(tab_id) {
             view.table_pane = TablePane::Structure;
+            view.cell_inspect = None;
             if cached {
                 view.status = format!("Structure · {schema}.{table}");
                 cx.notify();
@@ -181,6 +192,11 @@ impl Workspace {
                 _ => status_copy("Open a table to view its structure.", cx).into_any_element(),
             })
     }
+}
+
+/// Whether switching Structure → Data should rewrite the status line.
+pub(crate) fn should_refresh_data_pane_status(status: &str) -> bool {
+    !status.starts_with("Query failed")
 }
 
 fn structure_key(schema: &str, table: &str) -> String {
@@ -355,3 +371,18 @@ fn data_row(values: &[String], cx: &Context<Workspace>) -> impl IntoElement {
 
 /// Cache type shared with [`super::tab_view::TabView`].
 pub(super) type StructureCache = HashMap<String, TableStructure>;
+
+#[cfg(test)]
+mod tests {
+    use super::should_refresh_data_pane_status;
+
+    #[test]
+    fn data_pane_keeps_query_failed_status() {
+        assert!(!should_refresh_data_pane_status(
+            "Query failed · statement 1 · SQLSTATE 42P01"
+        ));
+        assert!(!should_refresh_data_pane_status("Query failed"));
+        assert!(should_refresh_data_pane_status("~12400 rows · 18 ms"));
+        assert!(should_refresh_data_pane_status("Structure · public.big"));
+    }
+}

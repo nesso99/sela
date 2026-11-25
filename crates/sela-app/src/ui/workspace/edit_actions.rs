@@ -7,9 +7,29 @@ use gpui_kit::{Context, Focusable as _, Window};
 
 use sela_core::{RelationKind, RowState, TabId, TableStructure, Value};
 
-use super::edit_session::{EditRowId, EditSession, ReadOnlyReason, RowMarker};
+use super::edit_session::{
+    resolve_overlay_anchors, visual_row_map, visual_row_map_for_overlays, EditRowId, EditSession,
+    OverlayRow, ReadOnlyReason, RowMarker, VisualRowRef,
+};
+use super::tab_view::CellInspect;
 use super::{GridSource, Workspace};
 use crate::ui::grid::{EditPaintRow, EditPaintState, OverlayPaintRow};
+
+/// Visual order for the current page, resolving duplicate anchors by source PK.
+fn visual_rows_for(
+    result: &sela_core::ResultWindow,
+    overlays: &[OverlayRow],
+    pk_cols: &[String],
+) -> Vec<VisualRowRef> {
+    let server_count = result.total_rows();
+    if overlays.is_empty() {
+        return visual_row_map(server_count, &[]);
+    }
+    let page_pks: Vec<_> = (0..server_count)
+        .map(|i| extract_pk(result, i, pk_cols))
+        .collect();
+    visual_row_map_for_overlays(server_count, overlays, &page_pks)
+}
 
 impl Workspace {
     /// Relation kind from the loaded catalog, defaulting to Table.
@@ -185,6 +205,9 @@ impl Workspace {
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return;
         };
+        if let Some(view) = self.view_mut(tab_id) {
+            view.cell_inspect = None;
+        }
         let Some(view) = self.views.get(&tab_id) else {
             return;
         };
@@ -210,32 +233,49 @@ impl Workspace {
                 return;
             }
         };
-        let server_rows = view.grid.read(cx).delegate().result.total_rows();
-        let edit_row = if row < server_rows {
-            EditRowId::Server { row_ix: row }
-        } else {
-            let overlay_ix = row - server_rows;
-            let insert_id = view
+        let pk_cols = view
+            .edit
+            .as_ref()
+            .and_then(|e| e.changeset.as_ref())
+            .map(|cs| cs.pk_columns().to_vec())
+            .unwrap_or_default();
+        let (resolved, column) = {
+            let state = view.grid.read(cx);
+            let overlays = view
                 .edit
                 .as_ref()
-                .and_then(|e| e.overlay.get(overlay_ix).map(|o| o.insert_id));
-            let Some(insert_id) = insert_id else {
-                return;
-            };
-            EditRowId::Overlay { insert_id }
+                .map(|e| e.overlay.as_slice())
+                .unwrap_or(&[]);
+            let visual = visual_rows_for(&state.delegate().result, overlays, &pk_cols);
+            let resolved = visual.get(row).copied();
+            let column = state
+                .delegate()
+                .result
+                .columns()
+                .get(col)
+                .map(|c| c.name.clone());
+            (resolved, column)
         };
-        let column = view
-            .grid
-            .read(cx)
-            .delegate()
-            .result
-            .columns()
-            .get(col)
-            .map(|c| c.name.clone());
+        let Some(resolved) = resolved else {
+            return;
+        };
+        let edit_row = match resolved {
+            VisualRowRef::Server { row_ix } => EditRowId::Server { row_ix },
+            VisualRowRef::Overlay { overlay_ix } => {
+                let insert_id = view
+                    .edit
+                    .as_ref()
+                    .and_then(|e| e.overlay.get(overlay_ix).map(|o| o.insert_id));
+                let Some(insert_id) = insert_id else {
+                    return;
+                };
+                EditRowId::Overlay { insert_id }
+            }
+        };
         let Some(column) = column else {
             return;
         };
-        let (pk, current, deleted) = self.server_row_edit_context(tab_id, row, &column, cx);
+        let (pk, current, deleted) = self.server_row_edit_context(tab_id, resolved, &column, cx);
         let old_value = match &edit_row {
             EditRowId::Server { .. } => pk.as_ref().and_then(|p| {
                 self.views
@@ -312,7 +352,7 @@ impl Workspace {
     fn server_row_edit_context(
         &self,
         tab_id: TabId,
-        row: usize,
+        resolved: VisualRowRef,
         column: &str,
         cx: &Context<Self>,
     ) -> (Option<Vec<Value>>, Option<Value>, bool) {
@@ -323,38 +363,47 @@ impl Workspace {
             return (None, None, false);
         };
         let delegate = view.grid.read(cx).delegate();
-        let server_rows = delegate.result.total_rows();
-        if row >= server_rows {
-            let overlay_ix = row - server_rows;
-            let insert_id = edit.overlay.get(overlay_ix).map(|o| o.insert_id);
-            let value = insert_id.and_then(|id| edit.overlay_value(id, column).cloned());
-            return (None, value, false);
-        }
-        let pk_cols = edit
-            .changeset
-            .as_ref()
-            .map(|cs| cs.pk_columns().to_vec())
-            .unwrap_or_default();
-        let pk = extract_pk(&delegate.result, row, &pk_cols);
-        let deleted = pk
-            .as_ref()
-            .is_some_and(|p| edit.row_marker_for_server(p) == RowMarker::Deleted);
-        let current = if let Some(ref p) = pk {
-            if let Some(pending) = edit.pending_server_value(p, column) {
-                Some(pending.clone())
-            } else {
-                cell_value_at(&delegate.result, row, column)
+        match resolved {
+            VisualRowRef::Overlay { overlay_ix } => {
+                let insert_id = edit.overlay.get(overlay_ix).map(|o| o.insert_id);
+                let value = insert_id.and_then(|id| edit.overlay_value(id, column).cloned());
+                (None, value, false)
             }
-        } else {
-            cell_value_at(&delegate.result, row, column)
-        };
-        (pk, current, deleted)
+            VisualRowRef::Server { row_ix } => {
+                let pk_cols = edit
+                    .changeset
+                    .as_ref()
+                    .map(|cs| cs.pk_columns().to_vec())
+                    .unwrap_or_default();
+                let pk = extract_pk(&delegate.result, row_ix, &pk_cols);
+                let deleted = pk
+                    .as_ref()
+                    .is_some_and(|p| edit.row_marker_for_server(p) == RowMarker::Deleted);
+                let current = if let Some(ref p) = pk {
+                    if let Some(pending) = edit.pending_server_value(p, column) {
+                        Some(pending.clone())
+                    } else {
+                        cell_value_at(&delegate.result, row_ix, column)
+                    }
+                } else {
+                    cell_value_at(&delegate.result, row_ix, column)
+                };
+                (pk, current, deleted)
+            }
+        }
     }
 
     pub(super) fn cancel_cell_editor(&mut self, cx: &mut Context<Self>) {
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
             return;
         };
+        // Escape closes inspect first, then the cell editor / preview sheet.
+        if let Some(view) = self.view_mut(tab_id) {
+            if view.cell_inspect.take().is_some() {
+                cx.notify();
+                return;
+            }
+        }
         if let Some(edit) = self.view_mut(tab_id).and_then(|v| v.edit.as_mut()) {
             if edit.preview_open && edit.editor.is_none() {
                 edit.preview_open = false;
@@ -364,6 +413,98 @@ impl Workspace {
             edit.cancel_editor();
         }
         self.sync_grid_edit_paint(tab_id, cx);
+        cx.notify();
+    }
+
+    /// Space: open the inspect popover for the focused cell (01 / 07).
+    pub(super) fn inspect_focused_cell(&mut self, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
+            return;
+        };
+        let Some(view) = self.views.get(&tab_id) else {
+            return;
+        };
+        if !matches!(view.table_pane, super::TablePane::Data) {
+            return;
+        }
+        // Do not inspect while the cell editor is open (Space must type a space).
+        if view.edit.as_ref().is_some_and(|e| e.editor.is_some()) {
+            return;
+        }
+        let selection = view.grid.read(cx).selection();
+        let (row, col) = match selection {
+            TableSelection::Cell(r, c) => (r, c),
+            _ => return,
+        };
+        let delegate = view.grid.read(cx).delegate();
+        let overlays = view
+            .edit
+            .as_ref()
+            .map(|e| e.overlay.as_slice())
+            .unwrap_or(&[]);
+        let pk_cols = view
+            .edit
+            .as_ref()
+            .and_then(|e| e.changeset.as_ref())
+            .map(|cs| cs.pk_columns().to_vec())
+            .unwrap_or_default();
+        let visual = visual_rows_for(&delegate.result, overlays, &pk_cols);
+        let Some(resolved) = visual.get(row).copied() else {
+            return;
+        };
+        let col_meta = delegate.result.columns().get(col);
+        let Some(col_meta) = col_meta else {
+            return;
+        };
+        let column = col_meta.name.clone();
+        let type_name = col_meta.type_name.clone();
+        let (value, dirty_display) = match resolved {
+            VisualRowRef::Server { row_ix } => {
+                let dirty = view.edit.as_ref().and_then(|edit| {
+                    let pk_cols = edit
+                        .changeset
+                        .as_ref()
+                        .map(|cs| cs.pk_columns().to_vec())
+                        .unwrap_or_default();
+                    let pk = extract_pk(&delegate.result, row_ix, &pk_cols)?;
+                    edit.pending_server_value(&pk, &column)
+                        .map(|v| v.display().into_owned())
+                });
+                (delegate.result.cell_value(row_ix, col).cloned(), dirty)
+            }
+            VisualRowRef::Overlay { overlay_ix } => {
+                let insert_id = view
+                    .edit
+                    .as_ref()
+                    .and_then(|e| e.overlay.get(overlay_ix).map(|o| o.insert_id));
+                let value = insert_id.and_then(|id| {
+                    view.edit
+                        .as_ref()
+                        .and_then(|e| e.overlay_value(id, &column).cloned())
+                });
+                (value, None)
+            }
+        };
+        let inspect = match dirty_display {
+            Some(display) => CellInspect {
+                column,
+                type_name,
+                body: display,
+                decode_error: false,
+            },
+            None => match value.as_ref() {
+                Some(v) => cell_inspect_for_value(&column, &type_name, v),
+                None => CellInspect {
+                    column,
+                    type_name,
+                    body: inspect_body_for_absent_value().into(),
+                    decode_error: false,
+                },
+            },
+        };
+        if let Some(view) = self.view_mut(tab_id) {
+            view.cell_inspect = Some(inspect);
+        }
         cx.notify();
     }
 
@@ -377,19 +518,16 @@ impl Workspace {
             .get(&tab_id)
             .map(|v| v.cell_editor.read(cx).value().to_string())
             .unwrap_or_default();
-        let was_null_button = {
-            let view = self.views.get(&tab_id).ok_or("No active tab.")?;
-            let edit = view.edit.as_ref().ok_or("Not editable.")?;
-            let editor = edit.editor.as_ref().ok_or("No open editor.")?;
-            editor.is_null && draft.is_empty()
-        };
-        // Sync draft from the input unless NULL was set via the button and left empty.
+        // Sync draft from the input. The ghost NULL button sets `forced_null` and
+        // clears the input before accept; leave that path alone.
         if let Some(edit) = self.view_mut(tab_id).and_then(|v| v.edit.as_mut()) {
             if let Some(ed) = &mut edit.editor {
-                if !(ed.is_null && draft.is_empty() && was_null_button) {
-                    // Typing into an empty NULL field clears NULL → '' for text.
+                if ed.forced_null && draft.is_empty() {
+                    // Keep explicit NULL from the ghost button.
+                } else {
                     if ed.is_null && !draft.is_empty() {
                         ed.is_null = false;
+                        ed.forced_null = false;
                     }
                     ed.draft = draft;
                 }
@@ -460,30 +598,51 @@ impl Workspace {
                 return;
             }
         };
-        let columns = {
+        let (columns, source_pk) = {
             let Some(view) = self.views.get(&tab_id) else {
                 return;
             };
             let delegate = view.grid.read(cx).delegate();
-            let server_rows = delegate.result.total_rows();
-            if row >= server_rows {
+            let overlays = view
+                .edit
+                .as_ref()
+                .map(|e| e.overlay.as_slice())
+                .unwrap_or(&[]);
+            let pk_columns = view
+                .edit
+                .as_ref()
+                .and_then(|e| e.changeset.as_ref())
+                .map(|cs| cs.pk_columns().to_vec())
+                .unwrap_or_default();
+            let visual = visual_rows_for(&delegate.result, overlays, &pk_columns);
+            let Some(VisualRowRef::Server { row_ix }) = visual.get(row).copied() else {
                 if let Some(view) = self.view_mut(tab_id) {
                     view.status = "Select a row first.".into();
                 }
                 cx.notify();
                 return;
-            }
+            };
             let names: Vec<String> = delegate
                 .result
                 .columns()
                 .iter()
                 .map(|c| c.name.clone())
                 .collect();
-            match delegate.result.row(row) {
-                RowState::Ready(cells) => names
-                    .into_iter()
-                    .zip(cells.iter().cloned())
-                    .collect::<Vec<_>>(),
+            let Some(source_pk) = extract_pk(&delegate.result, row_ix, &pk_columns) else {
+                if let Some(view) = self.view_mut(tab_id) {
+                    view.status = "Select a row first.".into();
+                }
+                cx.notify();
+                return;
+            };
+            match delegate.result.row(row_ix) {
+                RowState::Ready(cells) => (
+                    names
+                        .into_iter()
+                        .zip(cells.iter().cloned())
+                        .collect::<Vec<_>>(),
+                    source_pk,
+                ),
                 RowState::Loading => {
                     if let Some(view) = self.view_mut(tab_id) {
                         view.status = "Select a row first.".into();
@@ -502,7 +661,7 @@ impl Workspace {
             .unwrap_or_default();
         if let Some(view) = self.view_mut(tab_id) {
             if let Some(edit) = view.edit.as_mut() {
-                if let Err(e) = edit.duplicate_server_row(&columns, &pk_columns) {
+                if let Err(e) = edit.duplicate_server_row(&columns, &pk_columns, source_pk) {
                     view.status = e;
                 }
             } else {
@@ -539,56 +698,94 @@ impl Workspace {
                 return;
             }
         };
-        let server_rows = self
-            .views
-            .get(&tab_id)
-            .map(|v| v.grid.read(cx).delegate().result.total_rows())
-            .unwrap_or(0);
-        if row >= server_rows {
-            let insert_id = self
-                .views
-                .get(&tab_id)
-                .and_then(|v| v.edit.as_ref())
-                .and_then(|e| e.overlay.get(row - server_rows).map(|o| o.insert_id));
-            if let Some(id) = insert_id {
-                if let Some(view) = self.view_mut(tab_id) {
-                    if let Some(edit) = view.edit.as_mut() {
-                        if let Err(e) = edit.delete_overlay(id) {
-                            view.status = e;
+        let resolved = {
+            let Some(view) = self.views.get(&tab_id) else {
+                return;
+            };
+            let delegate = view.grid.read(cx).delegate();
+            let overlays = view
+                .edit
+                .as_ref()
+                .map(|e| e.overlay.as_slice())
+                .unwrap_or(&[]);
+            let pk_cols = view
+                .edit
+                .as_ref()
+                .and_then(|e| e.changeset.as_ref())
+                .map(|cs| cs.pk_columns().to_vec())
+                .unwrap_or_default();
+            visual_rows_for(&delegate.result, overlays, &pk_cols)
+                .get(row)
+                .copied()
+        };
+        match resolved {
+            Some(VisualRowRef::Overlay { overlay_ix }) => {
+                let insert_id = self
+                    .views
+                    .get(&tab_id)
+                    .and_then(|v| v.edit.as_ref())
+                    .and_then(|e| e.overlay.get(overlay_ix).map(|o| o.insert_id));
+                if let Some(id) = insert_id {
+                    if let Some(view) = self.view_mut(tab_id) {
+                        if let Some(edit) = view.edit.as_mut() {
+                            if let Err(e) = edit.delete_overlay(id) {
+                                view.status = e;
+                            }
                         }
                     }
                 }
             }
-        } else {
-            let pk_cols = self
-                .views
-                .get(&tab_id)
-                .and_then(|v| v.edit.as_ref())
-                .and_then(|e| e.changeset.as_ref())
-                .map(|cs| cs.pk_columns().to_vec())
-                .unwrap_or_default();
-            let pk = self
-                .views
-                .get(&tab_id)
-                .and_then(|v| extract_pk(&v.grid.read(cx).delegate().result, row, &pk_cols));
-            if let Some(pk) = pk {
-                if let Some(view) = self.view_mut(tab_id) {
-                    if let Some(edit) = view.edit.as_mut() {
-                        match edit.delete_or_restore_server(&pk) {
-                            Ok(_) => {}
-                            Err(e) => view.status = e,
+            Some(VisualRowRef::Server { row_ix }) => {
+                let pk_cols = self
+                    .views
+                    .get(&tab_id)
+                    .and_then(|v| v.edit.as_ref())
+                    .and_then(|e| e.changeset.as_ref())
+                    .map(|cs| cs.pk_columns().to_vec())
+                    .unwrap_or_default();
+                let pk = self
+                    .views
+                    .get(&tab_id)
+                    .and_then(|v| extract_pk(&v.grid.read(cx).delegate().result, row_ix, &pk_cols));
+                if let Some(pk) = pk {
+                    if let Some(view) = self.view_mut(tab_id) {
+                        if let Some(edit) = view.edit.as_mut() {
+                            match edit.delete_or_restore_server(&pk) {
+                                Ok(_) => {}
+                                Err(e) => view.status = e,
+                            }
+                        } else {
+                            view.status = "This table is read-only.".into();
                         }
-                    } else {
-                        view.status = "This table is read-only.".into();
                     }
+                } else if let Some(view) = self.view_mut(tab_id) {
+                    view.status = "Select a row first.".into();
                 }
-            } else if let Some(view) = self.view_mut(tab_id) {
-                view.status = "Select a row first.".into();
+            }
+            None => {
+                if let Some(view) = self.view_mut(tab_id) {
+                    view.status = "Select a row first.".into();
+                }
             }
         }
         self.sync_tab_dirty(tab_id);
         self.sync_grid_edit_paint(tab_id, cx);
         cx.notify();
+    }
+}
+
+/// Build the Space inspect popover payload from a full [`Value`] (not truncated).
+/// Inspect body when the cell has no value (unset insert column).
+pub(crate) fn inspect_body_for_absent_value() -> &'static str {
+    "Unset"
+}
+
+pub(crate) fn cell_inspect_for_value(column: &str, type_name: &str, value: &Value) -> CellInspect {
+    CellInspect {
+        column: column.to_string(),
+        type_name: type_name.to_string(),
+        body: value.display().into_owned(),
+        decode_error: value.is_decode_error(),
     }
 }
 
@@ -658,15 +855,19 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
             },
         );
     }
-    for overlay in &edit.overlay {
+    let page_pks: Vec<_> = (0..result.total_rows())
+        .map(|i| extract_pk(result, i, &pk_cols))
+        .collect();
+    let overlay_anchors = resolve_overlay_anchors(&edit.overlay, &page_pks);
+    for (overlay, after_server_row) in edit.overlay.iter().zip(overlay_anchors) {
         let marker = edit.row_marker_for_overlay(overlay.insert_id);
-        let mut values = BTreeMap::new();
+        let mut raw = BTreeMap::new();
         if let Some(cs) = &edit.changeset {
             for change in cs.changes() {
                 if let sela_core::RowChange::Insert { id, values: vals } = change {
                     if *id == overlay.insert_id {
                         for (k, v) in vals {
-                            values.insert(k.clone(), v.display().into_owned());
+                            raw.insert(k.clone(), v.clone());
                         }
                     }
                 }
@@ -675,7 +876,8 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
         paint.overlays.push(OverlayPaintRow {
             insert_id: overlay.insert_id,
             marker,
-            values,
+            raw,
+            after_server_row,
             required_unset: edit
                 .changeset
                 .as_ref()
@@ -698,4 +900,35 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
         paint.editor_error = ed.validation_error.clone();
     }
     paint
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cell_inspect_for_value;
+    use sela_core::Value;
+
+    #[test]
+    fn inspect_unset_body_is_unset_not_ellipsis() {
+        assert_eq!(super::inspect_body_for_absent_value(), "Unset");
+        assert_ne!(super::inspect_body_for_absent_value(), "…");
+    }
+
+    #[test]
+    fn inspect_uses_full_display_not_truncated() {
+        let long = "x".repeat(250);
+        let value = Value::text(long.as_str());
+        let inspect = cell_inspect_for_value("note", "text", &value);
+        assert_eq!(inspect.column, "note");
+        assert_eq!(inspect.type_name, "text");
+        assert_eq!(inspect.body, long);
+        assert!(!inspect.decode_error);
+    }
+
+    #[test]
+    fn inspect_marks_decode_error() {
+        let value = Value::decode_error("jsonb");
+        let inspect = cell_inspect_for_value("payload", "jsonb", &value);
+        assert!(inspect.decode_error);
+        assert!(inspect.body.contains("decode error"));
+    }
 }

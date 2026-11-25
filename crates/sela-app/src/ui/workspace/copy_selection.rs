@@ -3,8 +3,7 @@
 use gpui_kit::{ClipboardItem, Context};
 
 use sela_core::{
-    extract_selection_matrix, format_selection, value_to_copy_cell, CellPos, CopyCell, CopyFormat,
-    RowState, SelectionRect,
+    extract_selection_matrix, format_selection, CellPos, CopyCell, CopyFormat, SelectionRect,
 };
 
 use super::{GridSource, Workspace};
@@ -107,13 +106,13 @@ impl Workspace {
             let (min_row, max_row, min_col, max_col) = rect.normalized();
             // Rows are sliced to the selection; remap the rect to local 0-based
             // indices so extract_selection_matrix does not re-apply absolute rows.
+            // Visual indices (after Duplicate overlays) must not be passed to
+            // result.row as server indices (#79 regression).
             let mut rows = Vec::with_capacity(max_row.saturating_sub(min_row) + 1);
             for row_ix in min_row..=max_row {
-                match delegate.result.row(row_ix) {
-                    RowState::Ready(cells) => {
-                        rows.push(cells.iter().map(value_to_copy_cell).collect());
-                    }
-                    RowState::Loading => {
+                match delegate.copy_row_cells(row_ix) {
+                    Some(cells) => rows.push(cells),
+                    None => {
                         rows.push(vec![CopyCell::NotLoaded; columns.len().max(1)]);
                     }
                 }
