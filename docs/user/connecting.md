@@ -22,10 +22,6 @@ Click another saved connection in the sidebar to switch. Sela cancels queries on
 
 **Disconnect** cancels running queries for the active connection, closes its tabs, and drops the session (with the same confirm when SQL would be lost). Tabs are not left open for a disconnected connection.
 
-## SSH tunnel (v0.3)
-
-PostgreSQL and MySQL connections can open an SSH tunnel (password, private key + passphrase, or SSH agent; import from `~/.ssh/config`). SQLite has no SSH section. First-seen host keys show a SHA256 fingerprint and can be accepted into `known_hosts`; a *changed* host key is a hard error. Design target: [SSH tunnel UX](../design/ux/10-ssh-tunnel.md). Not shipped until M3 lands.
-
 ## TLS (PostgreSQL and MySQL)
 
 SQLite has no TLS options (hidden in the form).

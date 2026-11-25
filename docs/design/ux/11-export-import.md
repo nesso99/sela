@@ -36,7 +36,7 @@ Buttons: Cancel (ghost), Export (primary).
 | Current result on SQL tab | Rows already loaded for that result. If capped, status note `Exporting the loaded result (capped at {N} rows).` Do not re-run the SQL. |
 | Whole table | Stream from the server; memory bounded; not a giant `ResultWindow` (**EX-10**). |
 
-Formats follow copy contracts where applicable (**EX-02**, **EX-03**, **EX-07**, **EX-08**, **EX-11**): JSON NULL → `null`; INSERT uses dialect quoting; decode-error / non-finite MySQL·SQLite numbers refuse INSERT with a column name in the status; CSV/JSON do not invent NULL for decode errors (use the display / copy behavior).
+Formats follow copy contracts where applicable (**EX-02**, **EX-03**, **EX-07**, **EX-08**, **EX-11**): JSON NULL → `null`; INSERT uses dialect quoting; decode-error / non-finite MySQL·SQLite numbers refuse INSERT with a column name in the status; CSV/JSON do not invent NULL for decode errors (use the display / copy behavior). SQL INSERT files batch at **100 rows or ~1 MiB of statement text per statement, whichever comes first** (Decision 6).
 
 ### Progress and cancel (**EX-05**, **EX-06**)
 
@@ -101,6 +101,7 @@ Export CSV (default NULL = empty field) + import (empty field = NULL) restores N
 3. Cancel export deletes the partial file.
 4. Import: existing table only; preview 100 rows; empty field = NULL option; single transaction; abort+rollback on first row error.
 5. Read-only copy: `Import is disabled in Read-only mode.` Confirm: `Import {N} rows into {schema.table}?`
+6. **SQL INSERT export batching:** emit at most **100 rows** or about **1 MiB** of statement text per `INSERT`, whichever comes first, so multi-value statements stay under MySQL’s default `max_allowed_packet`. Start a new statement when either limit would be exceeded.
 
 ## Answers to QA (#110)
 
@@ -110,4 +111,4 @@ Export CSV (default NULL = empty field) + import (empty field = NULL) restores N
 
 ## Open questions
 
-1. Multi-row INSERT batch size for `.sql` export (default 100) — SE confirms against MySQL `max_allowed_packet`.
+None.

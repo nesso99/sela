@@ -150,6 +150,7 @@ Local ephemeral port collision: retry another port or fail with a clear SSH erro
 6. Changed key: **hard error**, fix `known_hosts` manually; no override.
 7. No ProxyJump in v0.3.
 8. Import URL never fills SSH; no SSH URL scheme in v0.3.
+9. Implementation lives in a separate **`sela-ssh`** crate (SE confirmed; matches [SPECS.md](../SPECS.md)).
 
 ## Answers to QA (#110)
 
@@ -161,4 +162,4 @@ Local ephemeral port collision: retry another port or fail with a clear SSH erro
 
 ## Open questions
 
-None for product. SE crate layout (`sela-ssh` vs module) stays an SE item in #110.
+None.

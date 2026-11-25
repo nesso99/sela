@@ -4,7 +4,7 @@ Bindings are registered in `crates/sela-app/src/ui/mod.rs`. On macOS use **⌘**
 
 Newer shortcuts use GPUI’s `secondary-` modifier (⌘ on macOS, Ctrl elsewhere) as a single binding. Older shortcuts still register both `cmd-` and `ctrl-`.
 
-The design target for shortcuts that are not built yet is [docs/design/ux/README.md](../design/ux/README.md). That folder writes the platform key as `secondary`. `secondary-shift-f` is reserved for format and is backlog. M3 targets: `secondary-p` quick open, `secondary-shift-p` command palette (Preview SQL moves to `secondary-shift-v`), editor `ctrl-space` for autocomplete. This page stays the list of what the app binds today.
+The design target for shortcuts that are not built yet is [docs/design/ux/README.md](../design/ux/README.md). That folder writes the platform key as `secondary`. `secondary-shift-f` is reserved for format and is backlog. This page stays the list of what the app binds today.
 
 Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below are bound.
 
@@ -41,7 +41,7 @@ Font size (Cmd/Ctrl+= / − / 0) and grid edit / preview / commit chords below a
 | Inspect focused cell | Space (grid focused; any cell, including read-only). Inside the cell editor, Space types a space. |
 | Cancel open cell editor / close inspect | Escape (does not discard the pending set) |
 | Insert / Duplicate / Delete row | Cmd/Ctrl+I / Cmd/Ctrl+D / Cmd/Ctrl+Backspace (grid focused) |
-| Preview pending SQL | Cmd/Ctrl+Shift+P (table Data; M3 design target moves Preview to Cmd/Ctrl+Shift+V so Shift+P can open the action palette) |
+| Preview pending SQL | Cmd/Ctrl+Shift+P (table Data) |
 | Commit pending changes | Cmd/Ctrl+S (table Data; accepts open editor first) |
 | Discard pending changes | Cmd/Ctrl+Shift+Z (table Data, editor closed; confirms) |
 | Previous / next SQL result | Left / Right (result strip focused) |
