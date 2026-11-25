@@ -36,7 +36,7 @@ Buttons: Cancel (ghost), Export (primary).
 | Current result on SQL tab | Rows already loaded for that result. If capped, status note `Exporting the loaded result (capped at {N} rows).` Do not re-run the SQL. |
 | Whole table | Stream from the server; memory bounded; not a giant `ResultWindow` (**EX-10**). |
 
-Formats follow copy contracts where applicable (**EX-02**, **EX-03**, **EX-07**, **EX-08**, **EX-11**): JSON NULL → `null`; INSERT uses dialect quoting; decode-error / non-finite MySQL·SQLite numbers refuse INSERT with a column name in the status; CSV/JSON do not invent NULL for decode errors (use the display / copy behavior). On a **SQL result** tab, SQL INSERT uses the copy placeholder target `table` plus a leading comment `-- replace table name` (no invented `{schema.table}`). SQL INSERT files batch at **100 rows or ~1 MiB of statement text per statement, whichever comes first** (Decision 6).
+Formats follow copy contracts where applicable (**EX-02**, **EX-03**, **EX-07**, **EX-08**, **EX-11**): JSON NULL → `null`; INSERT uses dialect quoting; decode-error / non-finite MySQL·SQLite numbers refuse INSERT with a column name in the status; CSV/JSON do not invent NULL for decode errors (use the display / copy behavior). On a **SQL result** tab, SQL INSERT uses the copy placeholder target `table` plus a trailing comment `-- replace table name` (no invented `{schema.table}`), matching clipboard copy. SQL INSERT files batch at **100 rows or ~1 MiB of statement text per statement, whichever comes first** (Decision 6).
 
 ### Progress and cancel (**EX-05**, **EX-06**)
 
