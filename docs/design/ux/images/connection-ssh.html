@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Connection dialog SSH</title><style>
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; color: #e8e8e8; }
+body {
+  font-family: Inter, "DejaVu Sans", sans-serif;
+  width: 1200px; height: 800px; overflow: hidden;
+  padding: 14px 18px 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.kicker {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a;
+}
+.kicker b { color: #f2f2f2; font-weight: 600; letter-spacing: 0.04em; }
+.win {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  background: #161616; border: 1px solid #3a3a3a; position: relative;
+}
+.titlebar {
+  height: 22px; flex: none; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #bdbdbd; border-bottom: 1px solid #3a3a3a; background: #1c1c1c;
+}
+.body { flex: 1; min-height: 0; display: flex; }
+.side {
+  width: 232px; flex: none; background: #1e1e1e; border-right: 1px solid #3a3a3a;
+  display: flex; flex-direction: column;
+}
+.side .brand { padding: 10px 10px 4px; font-size: 15px; font-weight: 600; }
+.side .sub { padding: 0 10px 8px; font-size: 10px; color: #8d8d8d; }
+.tree { flex: 1; min-height: 0; padding: 2px 0 8px; font-size: 12px; }
+.tree .item { height: 22px; display: flex; align-items: center; padding: 0 10px; gap: 6px; color: #d0d0d0; }
+.tree .item.sel { background: #2e2e2e; }
+.tree .k { color: #8d8d8d; width: 14px; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tabs { height: 28px; flex: none; display: flex; background: #1c1c1c; border-bottom: 1px solid #3a3a3a; }
+.tab { display: flex; align-items: center; padding: 0 10px; border-right: 1px solid #333; font-size: 12px; color: #f2f2f2; background: #161616; }
+.status {
+  height: 28px; flex: none; background: #242424; border-top: 1px solid #3a3a3a;
+  display: flex; align-items: center; padding: 0 10px; font-size: 11px; color: #d0d0d0;
+}
+.dimwin { position: absolute; inset: 22px 0 0 0; background: rgba(0,0,0,.55); }
+.dialog {
+  position: absolute; left: 50%; top: 36px; transform: translateX(-50%);
+  width: 560px; background: #1c1c1c; border: 1px solid #6a6a6a;
+  display: flex; flex-direction: column; max-height: 680px;
+}
+.dtitle {
+  height: 28px; display: flex; align-items: center; padding: 0 12px;
+  font-size: 12px; font-weight: 600; border-bottom: 1px solid #3a3a3a; background: #242424;
+}
+.dbody { padding: 10px 12px 8px; display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
+.lab { font-size: 10px; color: #8d8d8d; margin-top: 2px; }
+.field {
+  height: 22px; border: 1px solid #555; background: #141414; color: #e8e8e8;
+  font: 12px/20px Inter, sans-serif; padding: 0 8px; display: flex; align-items: center;
+  justify-content: space-between;
+}
+.field.mono { font-family: "JetBrains Mono", monospace; font-size: 11px; }
+.field .eye { color: #8d8d8d; font-size: 10px; }
+.pair { display: flex; gap: 8px; }
+.pair .grow { flex: 1; min-width: 0; }
+.port { width: 88px; flex: none; }
+.engines { display: flex; gap: 6px; }
+.btn {
+  height: 20px; padding: 0 8px; border: 1px solid #555; background: #2a2a2a;
+  color: #e8e8e8; font: 11px/18px Inter, sans-serif; display: inline-flex; align-items: center;
+}
+.btn.primary { background: #e8e8e8; color: #161616; border-color: #e8e8e8; font-weight: 600; }
+.btn.ghost { background: transparent; border-color: transparent; color: #bdbdbd; }
+.ssh {
+  border-top: 1px solid #3a3a3a; padding-top: 6px; margin-top: 2px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.ssh h3 {
+  margin: 0; font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: #bdbdbd;
+}
+.check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: #e8e8e8; }
+.box { width: 12px; height: 12px; border: 1px solid #888; background: #e8e8e8; color: #161616; font: 700 11px/10px Inter, sans-serif; text-align: center; }
+.path { display: flex; gap: 6px; align-items: center; }
+.path .field { flex: 1; }
+.help { font-size: 10px; color: #8d8d8d; line-height: 1.35; }
+.dfoot {
+  height: 40px; flex: none; display: flex; justify-content: flex-end; align-items: center;
+  gap: 8px; padding: 0 12px; border-top: 1px solid #3a3a3a;
+}
+.caption { font-size: 12px; color: #bdbdbd; line-height: 1.3; }
+</style></head>
+<body>
+  <div class="kicker"><b>Sela</b><span>Connection dialog · SSH tunnel · private key</span></div>
+  <div class="win">
+    <div class="titlebar">Sela — Edit connection</div>
+    <div class="body">
+      <aside class="side">
+        <div class="brand">Sela</div>
+        <div class="sub">PostgreSQL, MySQL, and SQLite</div>
+        <div class="tree">
+          <div class="item sel"><span class="k">●</span>PG &nbsp; prod-orders</div>
+        </div>
+      </aside>
+      <div class="main">
+        <div class="tabs"><div class="tab">Query</div></div>
+        <div style="flex:1"></div>
+        <div class="status">Connected</div>
+      </div>
+    </div>
+    <div class="dimwin"></div>
+    <div class="dialog">
+      <div class="dtitle">Edit connection</div>
+      <div class="dbody">
+        <div class="engines"><span class="btn primary">PostgreSQL</span><span class="btn">MySQL</span><span class="btn">SQLite</span></div>
+        <div class="lab">Name</div>
+        <div class="field">prod-orders</div>
+        <div class="pair">
+          <div class="grow"><div class="lab">Host</div><div class="field mono">10.0.0.5</div></div>
+          <div class="port"><div class="lab">Port</div><div class="field mono">5432</div></div>
+        </div>
+        <div class="lab">Password</div>
+        <div class="field">••••••••<span class="eye">Show</span></div>
+        <div class="ssh">
+          <h3>SSH</h3>
+          <div class="check"><span class="box">✓</span>Use SSH tunnel</div>
+          <div class="pair">
+            <div class="grow"><div class="lab">Host</div><div class="field mono">bastion.example.com</div></div>
+            <div class="port"><div class="lab">Port</div><div class="field mono">22</div></div>
+          </div>
+          <div class="lab">User</div>
+          <div class="field">ubuntu</div>
+          <div class="lab">Auth</div>
+          <div class="field">Private key<span class="eye">▾</span></div>
+          <div class="lab">Private key</div>
+          <div class="path"><div class="field mono">~/.ssh/id_ed25519</div><span class="btn">Browse</span></div>
+          <div class="lab">Passphrase</div>
+          <div class="field">••••••••<span class="eye">Show</span></div>
+          <span class="btn ghost" style="align-self:flex-start;padding:0">Import from ~/.ssh/config</span>
+          <div class="help">Passwords and passphrases use the OS keychain. SQLite has no SSH section.</div>
+        </div>
+      </div>
+      <div class="dfoot">
+        <span class="btn ghost">Cancel</span>
+        <span class="btn">Test</span>
+        <span class="btn">Save</span>
+        <span class="btn primary">Save &amp; connect</span>
+      </div>
+    </div>
+  </div>
+  <div class="caption">SSH between Password and TLS. First-seen host key: Accept &amp; save. Changed key: hard error.</div>
+</body></html>
