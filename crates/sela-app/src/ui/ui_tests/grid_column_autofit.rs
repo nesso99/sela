@@ -109,7 +109,7 @@ async fn double_click_autofit_data_grid_matches_widest_visible_cell(cx: &mut Tes
                 "title auto-fit must be wider than id (before_id={before_id}, title={title_w}, id={id_w})"
             );
             assert!(
-                title_w >= COLUMN_MIN_WIDTH && title_w <= COLUMN_AUTO_FIT_MAX_WIDTH + 1.0,
+                (COLUMN_MIN_WIDTH..=COLUMN_AUTO_FIT_MAX_WIDTH + 1.0).contains(&title_w),
                 "fit must respect min/max, got {title_w}"
             );
         });
