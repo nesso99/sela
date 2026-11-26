@@ -925,14 +925,20 @@ impl TableDelegate for GridDelegate {
 }
 
 /// Copy formats for the grid context menu (TC-COPY-01 / US-14).
+///
+/// Export… / Import CSV… are always listed; Import is a no-op with status copy
+/// when the active tab is not table Data or safe mode is Read-only (handlers).
 fn copy_context_menu(menu: PopupMenu) -> PopupMenu {
-    use super::{DeleteEditRow, DuplicateEditRow, InsertEditRow};
+    use super::{DeleteEditRow, DuplicateEditRow, ExportData, ImportCsv, InsertEditRow};
     menu.item(PopupMenuItem::new("Copy").action(Box::new(CopySelection)))
         .separator()
         .item(PopupMenuItem::new("Copy as TSV").action(Box::new(CopyAsTsv)))
         .item(PopupMenuItem::new("Copy as CSV").action(Box::new(CopyAsCsv)))
         .item(PopupMenuItem::new("Copy as JSON").action(Box::new(CopyAsJson)))
         .item(PopupMenuItem::new("Copy as INSERT").action(Box::new(CopyAsInsert)))
+        .separator()
+        .item(PopupMenuItem::new("Export…").action(Box::new(ExportData)))
+        .item(PopupMenuItem::new("Import CSV…").action(Box::new(ImportCsv)))
         .separator()
         .item(PopupMenuItem::new("Insert").action(Box::new(InsertEditRow)))
         .item(PopupMenuItem::new("Duplicate").action(Box::new(DuplicateEditRow)))

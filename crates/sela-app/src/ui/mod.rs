@@ -81,6 +81,8 @@ actions!(
         PreviewChanges,
         CommitChanges,
         DiscardChanges,
+        ExportData,
+        ImportCsv,
         ToggleQuickOpen,
         ToggleCommandPalette,
         EscapePalette,

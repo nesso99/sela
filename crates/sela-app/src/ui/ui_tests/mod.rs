@@ -6,9 +6,11 @@
 mod command_palette;
 mod commit_cancel;
 mod connection_dialog;
+mod export_import;
 mod file_menu;
 mod grid_editing;
 mod harness;
 mod reconnect;
 mod sql_autocomplete;
 mod ssh_dialog;
+mod workspace_transfer;

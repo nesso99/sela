@@ -677,6 +677,30 @@ async fn workspace_schema_select_during_reload_keeps_ready(cx: &mut TestAppConte
     });
 }
 
+/// `reload_schema_cache` generation gate: bump the load counter while a real
+/// reload is in flight; the stale apply must be dropped (status stays Loading).
+/// Fails if apply uses `cache.generation()` instead of the captured `generation`.
+#[gpui_kit::test]
+async fn workspace_reload_schema_cache_drops_stale_generation(cx: &mut TestAppContext) {
+    let fix = open_workspace(cx).await;
+    cx.update_window(fix.handle, |_, _, cx| {
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_reload_schema_cache(cx); // captures gen G, status Loading
+            let _ = ws.test_begin_schema_reload(); // bumps to G+1 before G finishes
+        });
+    })
+    .unwrap();
+    // Drive the first async load so it attempts apply (and must be rejected).
+    settle(fix.handle, cx);
+    settle(fix.handle, cx);
+    cx.update(|cx| {
+        assert!(
+            fix.workspace.read(cx).test_schema_cache_is_loading(),
+            "stale reload_schema_cache apply must be dropped; cache must stay Loading"
+        );
+    });
+}
+
 /// AU-16: successful DDL via RunQuery refreshes the autocomplete cache.
 /// Fails if `maybe_refresh_schema_after_sql` is removed from query.rs.
 #[gpui_kit::test]
