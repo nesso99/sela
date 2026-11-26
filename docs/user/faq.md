@@ -24,6 +24,12 @@ No unlocked Secret Service was available when you saved the connection. Sela kep
 
 Disconnect closes that connection’s tabs on purpose so a later connect cannot restore or show tables from the wrong database. If a tab has typed SQL or a query is still running, Sela asks first (*Close N tabs for …?*); Cancel keeps the session and tabs as they were. Save any SQL you need before confirming, or leave the connection connected.
 
+## How does SQL autocomplete work?
+
+Suggestions come from dialect keywords and the same schema cache as the sidebar (schemas, tables, columns, and aliases in the current statement). The popup opens after `.` or two identifier characters, or with Control+Space in the SQL editor. Enter/Tab accept; Escape dismisses. Catalog refresh follows connect, Refresh schema, successful DDL, and schema/database switches. See [Keyboard shortcuts](./keyboard-shortcuts.md) and the [editor UX](../design/ux/03-sql-editor.md#autocomplete).
+
+On Linux, Control+Space commonly toggles fcitx or ibus input methods; on macOS with multiple input sources the OS may swallow the same chord. If manual autocomplete does nothing, check the OS / IME shortcut settings before filing a Sela bug.
+
 ## Can I cancel a long query?
 
 Yes: **Stop** or Cmd/Ctrl+.. Postgres and MySQL cancel on the server via a second connection; SQLite only stops consuming the local stream. See [ADR 0003](../adr/0003-cancel-second-connection.md).
