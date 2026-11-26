@@ -28,12 +28,8 @@ fn seed_sample_db_with(path: &std::path::Path, extra_sql: Option<&str>) {
             .block_on(create_sample_database(&path))
             .expect("sample sqlite");
         if let Some(sql) = extra {
-            let status = std::process::Command::new("sqlite3")
-                .arg(&path)
-                .arg(&sql)
-                .status()
-                .expect("spawn sqlite3");
-            assert!(status.success(), "sqlite3 extra seed failed: {status}");
+            let conn = rusqlite::Connection::open(&path).expect("open sample sqlite");
+            conn.execute_batch(&sql).expect("extra seed sql");
         }
     })
     .join()
