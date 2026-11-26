@@ -10,6 +10,11 @@ pub(crate) enum FilePickerOutcome {
     Failed(String),
 }
 
+/// Prefix marking an error raised by Browse (so cancel does not wipe other errors).
+pub(crate) const FILE_PICKER_ERROR_MARKER: &str = "FILE_PICKER:";
+
+const ONESHOT_CANCELED: &str = "oneshot canceled";
+
 /// `prompt_for_new_path` receiver result (`Ok(Ok(Some|None|Err))`).
 pub(crate) fn classify_new_path_result(
     result: Result<Result<Option<PathBuf>, impl ToString>, impl ToString>,
@@ -17,8 +22,8 @@ pub(crate) fn classify_new_path_result(
     match result {
         Ok(Ok(Some(path))) => FilePickerOutcome::Picked(path),
         Ok(Ok(None)) => FilePickerOutcome::Cancelled,
-        Ok(Err(err)) => FilePickerOutcome::Failed(err.to_string()),
-        Err(err) => FilePickerOutcome::Failed(err.to_string()),
+        Ok(Err(err)) => FilePickerOutcome::Failed(normalize_picker_failure(err.to_string())),
+        Err(err) => FilePickerOutcome::Failed(normalize_picker_failure(err.to_string())),
     }
 }
 
@@ -33,23 +38,44 @@ pub(crate) fn classify_paths_result(
             .map(FilePickerOutcome::Picked)
             .unwrap_or(FilePickerOutcome::Cancelled),
         Ok(Ok(None)) => FilePickerOutcome::Cancelled,
-        Ok(Err(err)) => FilePickerOutcome::Failed(err.to_string()),
-        Err(err) => FilePickerOutcome::Failed(err.to_string()),
+        Ok(Err(err)) => FilePickerOutcome::Failed(normalize_picker_failure(err.to_string())),
+        Err(err) => FilePickerOutcome::Failed(normalize_picker_failure(err.to_string())),
     }
 }
 
-/// Returns a user-facing error when the picker fails; cancel is silent.
-pub(crate) fn apply_file_picker_outcome(
+fn normalize_picker_failure(message: String) -> String {
+    if message.eq_ignore_ascii_case(ONESHOT_CANCELED) {
+        "File picker closed unexpectedly".into()
+    } else {
+        message
+    }
+}
+
+pub(crate) fn is_picker_error(message: &str) -> bool {
+    message.starts_with(FILE_PICKER_ERROR_MARKER)
+}
+
+fn wrap_picker_error(message: String) -> String {
+    format!("{FILE_PICKER_ERROR_MARKER}{message}")
+}
+
+/// Apply a browse outcome: update `error` only on failure; clear picker errors on success.
+pub(crate) fn apply_browse_outcome_to_error(
+    error: &mut Option<String>,
     outcome: FilePickerOutcome,
     on_picked: impl FnOnce(PathBuf),
-) -> Option<String> {
+) {
     match outcome {
         FilePickerOutcome::Picked(path) => {
             on_picked(path);
-            None
+            if error.as_ref().is_some_and(|e| is_picker_error(e)) {
+                *error = None;
+            }
         }
-        FilePickerOutcome::Cancelled => None,
-        FilePickerOutcome::Failed(message) => Some(message),
+        FilePickerOutcome::Cancelled => {}
+        FilePickerOutcome::Failed(message) => {
+            *error = Some(wrap_picker_error(message));
+        }
     }
 }
 
@@ -75,9 +101,9 @@ mod tests {
         );
         assert_eq!(
             classify_new_path_result(Err::<Result<Option<PathBuf>, &str>, _>(
-                "task dropped".to_string(),
+                ONESHOT_CANCELED.to_string(),
             )),
-            FilePickerOutcome::Failed("task dropped".into())
+            FilePickerOutcome::Failed("File picker closed unexpectedly".into())
         );
     }
 
@@ -100,16 +126,39 @@ mod tests {
     }
 
     #[test]
-    fn apply_outcome_picked_cancelled_failed() {
-        assert!(
-            apply_file_picker_outcome(FilePickerOutcome::Picked(PathBuf::from("/x")), |_| {},)
-                .is_none()
+    fn browse_cancel_preserves_unrelated_error() {
+        let mut err = Some("Choose a file path.".into());
+        apply_browse_outcome_to_error(&mut err, FilePickerOutcome::Cancelled, |_| {});
+        assert_eq!(err.as_deref(), Some("Choose a file path."));
+    }
+
+    #[test]
+    fn browse_failed_sets_marked_error() {
+        let mut err = None;
+        apply_browse_outcome_to_error(
+            &mut err,
+            FilePickerOutcome::Failed("portal missing".into()),
+            |_| {},
         );
-        assert!(apply_file_picker_outcome(FilePickerOutcome::Cancelled, |_| {}).is_none());
-        assert_eq!(
-            apply_file_picker_outcome(FilePickerOutcome::Failed("portal".into()), |_| {},)
-                .as_deref(),
-            Some("portal")
+        assert!(err.as_ref().is_some_and(|e| is_picker_error(e)));
+        assert!(err.unwrap().contains("portal missing"));
+    }
+
+    #[test]
+    fn browse_picked_clears_only_picker_error() {
+        let mut err = Some(wrap_picker_error("old".into()));
+        apply_browse_outcome_to_error(
+            &mut err,
+            FilePickerOutcome::Picked(PathBuf::from("/x")),
+            |_| {},
         );
+        assert!(err.is_none());
+        let mut validation = Some("Choose a file path.".into());
+        apply_browse_outcome_to_error(
+            &mut validation,
+            FilePickerOutcome::Picked(PathBuf::from("/x")),
+            |_| {},
+        );
+        assert_eq!(validation.as_deref(), Some("Choose a file path."));
     }
 }

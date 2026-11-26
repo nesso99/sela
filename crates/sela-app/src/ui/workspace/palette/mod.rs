@@ -18,6 +18,8 @@ use gpui_kit::{
 use sela_config::{ThemePreference, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use sela_core::{LoadedSchema, SafeMode};
 
+use crate::ui::palette_list::palette_list_colors;
+
 use super::Workspace;
 
 pub(crate) const PALETTE_KEY_CONTEXT: &str = "CommandPalette";
@@ -840,6 +842,7 @@ impl Workspace {
             PaletteMode::Actions => "Actions",
         };
         let query = palette.query.clone();
+        let list_colors = palette_list_colors(cx.theme());
 
         div()
             .id("command-palette-root")
@@ -948,7 +951,9 @@ impl Workspace {
                                         .mx_1()
                                         .rounded(px(4.))
                                         .when(selected_row, |row| {
-                                            row.bg(cx.theme().tokens.table_active)
+                                            row.bg(list_colors.selected_row_background)
+                                                .border_l(px(2.))
+                                                .border_color(list_colors.selection_indicator)
                                         })
                                         .when(muted, |row| {
                                             row.text_color(cx.theme().muted_foreground)
@@ -970,7 +975,12 @@ impl Workspace {
                                                 .items_center()
                                                 .justify_between()
                                                 .gap_2()
-                                                .child(highlight_label(&label, &indices, muted, cx))
+                                                .child(highlight_label(
+                                                    &label,
+                                                    &indices,
+                                                    muted,
+                                                    list_colors.match_highlight,
+                                                ))
                                                 .when_some(right, |row, text| {
                                                     row.child(
                                                         div()
@@ -992,7 +1002,7 @@ fn highlight_label(
     label: &str,
     indices: &[usize],
     muted: bool,
-    cx: &Context<Workspace>,
+    match_highlight: gpui_kit::Hsla,
 ) -> impl IntoElement {
     if indices.is_empty() {
         return div().child(label.to_string()).into_any_element();
@@ -1001,11 +1011,7 @@ fn highlight_label(
     let mut parts: Vec<AnyElement> = Vec::new();
     let mut buf = String::new();
     let mut buf_matched = false;
-    let flush = |buf: &mut String,
-                 buf_matched: bool,
-                 parts: &mut Vec<AnyElement>,
-                 muted: bool,
-                 cx: &Context<Workspace>| {
+    let flush = |buf: &mut String, buf_matched: bool, parts: &mut Vec<AnyElement>, muted: bool| {
         if buf.is_empty() {
             return;
         }
@@ -1013,7 +1019,7 @@ fn highlight_label(
         let el = if buf_matched && !muted {
             div()
                 .font_weight(gpui_kit::FontWeight::BOLD)
-                .text_color(cx.theme().ring)
+                .text_color(match_highlight)
                 .child(text)
                 .into_any_element()
         } else {
@@ -1024,14 +1030,14 @@ fn highlight_label(
     for (byte_ix, ch) in label.char_indices() {
         let is_m = matched.contains(&byte_ix);
         if !buf.is_empty() && is_m != buf_matched {
-            flush(&mut buf, buf_matched, &mut parts, muted, cx);
+            flush(&mut buf, buf_matched, &mut parts, muted);
             buf_matched = is_m;
         } else if buf.is_empty() {
             buf_matched = is_m;
         }
         buf.push(ch);
     }
-    flush(&mut buf, buf_matched, &mut parts, muted, cx);
+    flush(&mut buf, buf_matched, &mut parts, muted);
     h_flex().children(parts).into_any_element()
 }
 
@@ -1120,89 +1126,43 @@ mod tests {
         assert!(PaletteAction::all().contains(&PaletteAction::ToggleSafeMode));
     }
 
-    /// #132: match highlight and selected row use high-contrast tokens in both themes.
+    /// #132: palette list paints opaque selection + match colors with WCAG contrast.
     #[test]
     fn pal32_palette_list_contrast_tokens() {
         use std::rc::Rc;
 
         use gpui_kit::component::{Theme, ThemeColor, ThemeMode};
-        use gpui_kit::Hsla;
         use sela_config::DEFAULT_FONT_SIZE;
 
+        use crate::ui::palette_list::contrast::{
+            assert_palette_list_contrast, composite_luminance, contrast_ratio, relative_luminance,
+        };
+        use crate::ui::palette_list::palette_list_colors;
         use crate::ui::theme::sela_theme_config;
-
-        fn ratio(a: Hsla, b: Hsla) -> f32 {
-            let l1 = relative_luminance(a);
-            let l2 = relative_luminance(b);
-            let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
-            (hi + 0.05) / (lo + 0.05)
-        }
-
-        fn relative_luminance(c: Hsla) -> f32 {
-            let rgba = c.to_rgb();
-            let channel = |v: f32| {
-                if v <= 0.03928 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            let r = channel(rgba.r);
-            let g = channel(rgba.g);
-            let b = channel(rgba.b);
-            0.2126 * r + 0.7152 * g + 0.0722 * b
-        }
-
-        fn over_luminance(fg: Hsla, bg: Hsla) -> f32 {
-            let fa = fg.a.clamp(0., 1.);
-            let f = fg.to_rgb();
-            let b = bg.to_rgb();
-            let inv = 1.0 - fa;
-            let mix = |x: f32, y: f32| x * fa + y * inv;
-            let channel = |v: f32| {
-                if v <= 0.03928 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            let r = channel(mix(f.r, b.r));
-            let g = channel(mix(f.g, b.g));
-            let bl = channel(mix(f.b, b.b));
-            0.2126 * r + 0.7152 * g + 0.0722 * bl
-        }
 
         for mode in [ThemeMode::Light, ThemeMode::Dark] {
             let mut theme = Theme::from(ThemeColor::light().as_ref());
             theme.apply_config(&Rc::new(sela_theme_config(mode, DEFAULT_FONT_SIZE)));
-            let canvas = theme.background;
-            let highlight = theme.ring;
-            let selected = theme.table_active;
-            let tab_bar = theme.tab_bar;
-            let accent = theme.accent;
+            let colors = palette_list_colors(&theme);
+            assert_palette_list_contrast(colors, mode);
 
-            assert_ne!(highlight, accent, "{mode:?} highlight must not use accent");
-            assert_ne!(
-                highlight, tab_bar,
-                "{mode:?} highlight must not use tab_bar"
-            );
-            assert_ne!(
-                highlight, canvas,
-                "{mode:?} highlight must not match canvas"
-            );
-            assert_ne!(selected, tab_bar, "{mode:?} selection must not use tab_bar");
-            assert_ne!(selected, canvas, "{mode:?} selection must not match canvas");
-
+            // Regression: old tab_bar / table_active washes must fail.
+            let panel = colors.panel_background;
+            let tab_bar_l = composite_luminance(theme.tab_bar, panel);
+            let table_active_l = composite_luminance(theme.table_active, panel);
+            let selected_l = relative_luminance(colors.selected_row_background);
             assert!(
-                ratio(highlight, canvas) >= 4.5,
-                "{mode:?} match highlight on canvas: {}",
-                ratio(highlight, canvas)
+                (selected_l - tab_bar_l).abs() > 0.02,
+                "{mode:?} selection must not match tab_bar wash"
             );
-            let tab_bar_on_canvas = over_luminance(tab_bar, canvas);
-            let row_on_canvas = over_luminance(selected, canvas);
             assert!(
-                (row_on_canvas - tab_bar_on_canvas).abs() > 0.002,
-                "{mode:?} selection wash must not match tab_bar on canvas"
+                (selected_l - table_active_l).abs() > 0.02,
+                "{mode:?} selection must not match table_active wash"
+            );
+            let bad_highlight = theme.accent;
+            assert!(
+                contrast_ratio(bad_highlight, panel) < 4.5,
+                "{mode:?} accent must fail match contrast"
             );
         }
     }

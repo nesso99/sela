@@ -22,7 +22,9 @@ use sela_core::{
     IMPORT_REFUSED_READ_ONLY_STATUS,
 };
 
-use crate::ui::file_picker::{apply_file_picker_outcome, classify_paths_result};
+use crate::ui::file_picker::{
+    apply_browse_outcome_to_error, classify_paths_result, FilePickerOutcome,
+};
 
 use super::messages::format_import_failure;
 
@@ -136,6 +138,10 @@ impl ImportDialog {
     #[cfg(test)]
     pub fn test_error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    fn apply_browse_outcome(&mut self, outcome: FilePickerOutcome) {
+        wire_import_browse(&mut self.error, &mut self.pending_browse_path, outcome);
     }
 
     #[cfg(test)]
@@ -255,9 +261,7 @@ impl ImportDialog {
         cx.spawn(async move |this, async_cx| {
             let outcome = classify_paths_result(receiver.await);
             this.update(async_cx, |dialog, cx| {
-                dialog.error = apply_file_picker_outcome(outcome, |path| {
-                    dialog.pending_browse_path = Some(path.to_string_lossy().to_string());
-                });
+                dialog.apply_browse_outcome(outcome);
                 cx.notify();
             })
             .ok();
@@ -687,4 +691,54 @@ fn load_preview_and_count_streaming(
         },
         total,
     ))
+}
+
+fn wire_import_browse(
+    error: &mut Option<String>,
+    pending_browse_path: &mut Option<String>,
+    outcome: FilePickerOutcome,
+) {
+    apply_browse_outcome_to_error(error, outcome, |path| {
+        *pending_browse_path = Some(path.to_string_lossy().to_string());
+    });
+}
+
+#[cfg(test)]
+mod browse_wiring_tests {
+    use std::path::PathBuf;
+
+    use super::wire_import_browse;
+    use crate::ui::file_picker::{is_picker_error, FilePickerOutcome};
+
+    #[test]
+    fn import_browse_failed_sets_picker_error() {
+        let mut err = None;
+        let mut pending = None;
+        wire_import_browse(
+            &mut err,
+            &mut pending,
+            FilePickerOutcome::Failed("portal".into()),
+        );
+        assert!(err.as_ref().is_some_and(|e| is_picker_error(e)));
+    }
+
+    #[test]
+    fn import_browse_cancel_keeps_validation_error() {
+        let mut err = Some("Missing file".into());
+        let mut pending = None;
+        wire_import_browse(&mut err, &mut pending, FilePickerOutcome::Cancelled);
+        assert_eq!(err.as_deref(), Some("Missing file"));
+    }
+
+    #[test]
+    fn import_browse_picked_sets_pending_path() {
+        let mut err = None;
+        let mut pending = None;
+        wire_import_browse(
+            &mut err,
+            &mut pending,
+            FilePickerOutcome::Picked(PathBuf::from("/tmp/a.csv")),
+        );
+        assert_eq!(pending.as_deref(), Some("/tmp/a.csv"));
+    }
 }

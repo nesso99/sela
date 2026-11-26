@@ -4,6 +4,7 @@ mod decorations;
 mod file_picker;
 mod form;
 pub(crate) mod grid;
+mod palette_list;
 mod theme;
 mod workspace;
 
