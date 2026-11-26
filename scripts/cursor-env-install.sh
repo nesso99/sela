@@ -57,11 +57,11 @@ done
 if ((${#MISSING[@]} > 0)); then
   echo "Installing missing packages: ${MISSING[*]}"
   if [[ "$(id -u)" -eq 0 ]]; then
-    apt-get update
-    apt-get install -y --no-install-recommends "${MISSING[@]}"
+    DEBIAN_FRONTEND=noninteractive apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING[@]}"
   else
-    sudo apt-get update
-    sudo apt-get install -y --no-install-recommends "${MISSING[@]}"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING[@]}"
   fi
 else
   echo "All system packages already installed; skipping apt-get."
@@ -90,13 +90,32 @@ fi
 
 echo "==> Step C: Pre-warm Cargo/Rust target/"
 
+# Configure mold in the VM user cargo config (never committed) so subsequent
+# cargo invocations outside this script share the same fingerprint. Do not
+# export RUSTFLAGS — that would rebuild when later commands omit it.
 if command -v mold >/dev/null 2>&1 && [[ "$(uname -m)" == "x86_64" ]]; then
-  if [[ "${RUSTFLAGS:-}" != *"-C link-arg=-fuse-ld=mold"* ]]; then
-    export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
+  CARGO_HOME_DIR="${HOME}/.cargo"
+  CARGO_CONFIG="${CARGO_HOME_DIR}/config.toml"
+  mkdir -p "${CARGO_HOME_DIR}"
+  if [[ -f "${CARGO_CONFIG}" ]] && grep -Fqe 'fuse-ld=mold' "${CARGO_CONFIG}"; then
+    echo "mold already configured in ${CARGO_CONFIG}; leaving untouched."
+  else
+    if [[ -f "${CARGO_CONFIG}" && -s "${CARGO_CONFIG}" ]]; then
+      # Ensure a trailing newline before appending so we do not glue lines.
+      if [[ "$(tail -c1 "${CARGO_CONFIG}" | wc -l)" -eq 0 ]]; then
+        printf '\n' >> "${CARGO_CONFIG}"
+      fi
+      printf '\n' >> "${CARGO_CONFIG}"
+    fi
+    cat >> "${CARGO_CONFIG}" <<'EOF'
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+EOF
+    echo "Configured mold linker in ${CARGO_CONFIG}"
   fi
-  echo "Using mold linker (RUSTFLAGS=${RUSTFLAGS})"
 fi
 
-"${CARGO[@]}" test --workspace --no-run
+"${CARGO[@]}" test --workspace --no-run --locked
+"${CARGO[@]}" clippy --workspace --all-targets --locked
 
 echo "==> cursor-env-install.sh complete."
