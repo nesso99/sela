@@ -1002,6 +1002,23 @@ impl Workspace {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_active_grid(
+        &self,
+    ) -> Option<Entity<gpui_kit::component::table::TableState<crate::ui::grid::GridDelegate>>> {
+        self.active_view().map(|v| v.grid.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_view_page_len(&self) -> Option<usize> {
+        self.active_view().map(|v| v.page_len)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_view_busy(&self) -> Option<bool> {
+        self.active_view().map(|v| v.busy)
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_has_transfer_job(&self) -> bool {
         self.transfer_job.is_some()
     }

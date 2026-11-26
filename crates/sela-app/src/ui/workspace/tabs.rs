@@ -362,6 +362,11 @@ impl Workspace {
                             view.cell_inspect = None;
                         }
                     }
+                    TableEvent::ColumnWidthsChanged(widths) => {
+                        grid.update(cx, |state, _| {
+                            state.delegate_mut().apply_column_widths(widths);
+                        });
+                    }
                     _ => {}
                 }
             },

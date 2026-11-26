@@ -103,6 +103,8 @@ pub struct GridDelegate {
     pub edit_paint: EditPaintState,
     /// Double-click requested edit for this cell (consumed by the workspace).
     pub pending_edit_cell: Option<(usize, usize)>,
+    /// User-resized column widths keyed by result column name (session-local).
+    column_widths: BTreeMap<String, f32>,
 }
 
 impl GridDelegate {
@@ -306,7 +308,41 @@ impl GridDelegate {
             suppress_select_collapse: false,
             edit_paint: EditPaintState::default(),
             pending_edit_cell: None,
+            column_widths: BTreeMap::new(),
         }
+    }
+
+    fn default_column_width(header: &str) -> f32 {
+        (header.chars().count() as f32 * 7.5).clamp(140.0, 360.0)
+    }
+
+    fn prune_column_widths(&mut self) {
+        let names: std::collections::HashSet<&str> = self
+            .result
+            .columns()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        self.column_widths
+            .retain(|name, _| names.contains(name.as_str()));
+    }
+
+    /// Persist widths from [`TableEvent::ColumnWidthsChanged`]; indices align
+    /// with [`TableDelegate::column`] (data columns only — not the row header).
+    pub fn apply_column_widths(&mut self, widths: &[gpui_kit::Pixels]) {
+        let columns = self.result.columns();
+        for (col_ix, width) in widths.iter().enumerate() {
+            if let Some(meta) = columns.get(col_ix) {
+                self.column_widths
+                    .insert(meta.name.clone(), f32::from(*width));
+            }
+        }
+    }
+
+    /// Headless UI tests: read session column-width cache.
+    #[cfg(test)]
+    pub(crate) fn test_cached_column_width(&self, name: &str) -> Option<f32> {
+        self.column_widths.get(name).copied()
     }
 
     pub fn set_loading_message(&mut self) {
@@ -318,6 +354,7 @@ impl GridDelegate {
         self.pending_pages.clear();
         self.loading = false;
         self.clear_selection_range();
+        self.prune_column_widths();
         if self.result.total_rows() == 0 {
             self.empty_message = "The query returned no rows.".into();
         }
@@ -345,6 +382,7 @@ impl GridDelegate {
         self.pending_pages.clear();
         self.loading = false;
         self.clear_selection_range();
+        self.column_widths.clear();
         self.empty_message = message.into();
     }
 
@@ -556,7 +594,11 @@ impl TableDelegate for GridDelegate {
             (None, true) => meta.name.clone(),
             (None, false) => format!("{}   {}", meta.name, meta.type_name),
         };
-        let width = (header.chars().count() as f32 * 7.5).clamp(140.0, 360.0);
+        let width = self
+            .column_widths
+            .get(&meta.name)
+            .copied()
+            .unwrap_or_else(|| Self::default_column_width(&header));
         let mut col = Column::new(format!("{col_ix}:{}", meta.name), header)
             .width(px(width))
             .resizable(true)
@@ -1532,5 +1574,62 @@ mod tests {
             grid.selection_rect.expect("click range").normalized(),
             (0, 2, 0, 1)
         );
+    }
+
+    fn id_name_page() -> QueryPage {
+        QueryPage {
+            columns: vec![
+                ColumnMeta {
+                    name: "id".into(),
+                    type_name: "INTEGER".into(),
+                },
+                ColumnMeta {
+                    name: "name".into(),
+                    type_name: "TEXT".into(),
+                },
+            ],
+            rows: vec![vec![Value::Int(1), Value::Text("alpha".into())]],
+            duration: Duration::from_millis(0),
+        }
+    }
+
+    #[test]
+    fn apply_column_widths_updates_delegate_column() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(id_name_page());
+        grid.apply_column_widths(&[px(140.), px(286.)]);
+        assert_eq!(grid.column_widths.get("name"), Some(&286.));
+    }
+
+    #[test]
+    fn column_widths_survive_reload_with_same_columns() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(id_name_page());
+        grid.apply_column_widths(&[px(140.), px(286.)]);
+        let page = QueryPage {
+            columns: id_name_page().columns,
+            rows: vec![vec![Value::Int(2), Value::Text("beta".into())]],
+            duration: Duration::from_millis(0),
+        };
+        grid.show_page(page);
+        assert_eq!(grid.column_widths.get("name"), Some(&286.));
+    }
+
+    #[test]
+    fn column_widths_drop_when_columns_change() {
+        let mut grid = GridDelegate::empty();
+        grid.show_page(id_name_page());
+        grid.apply_column_widths(&[px(140.), px(286.)]);
+        let other = QueryPage {
+            columns: vec![ColumnMeta {
+                name: "note".into(),
+                type_name: "TEXT".into(),
+            }],
+            rows: vec![vec![Value::Text("only".into())]],
+            duration: Duration::from_millis(0),
+        };
+        grid.show_page(other);
+        assert!(!grid.column_widths.contains_key("name"));
+        assert!(!grid.column_widths.contains_key("id"));
     }
 }
