@@ -18,14 +18,23 @@ use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelecti
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, App, IntoElement, MouseButton, SharedString, Window};
+use gpui_kit::{div, Font, TextRun, px, App, IntoElement, MouseButton, Pixels, SharedString, Window};
 
 use std::collections::BTreeMap;
 
 use sela_core::{
-    value_to_copy_cell, CellPos, CellView, CopyCell, QueryPage, ResultWindow, RowState,
-    SelectionRect, SortDirection, SortSpec, Value,
+    truncate_one_line, value_to_copy_cell, CellPos, CellView, CopyCell, QueryPage, ResultWindow,
+    RowState, SelectionRect, SortDirection, SortSpec, Value, CELL_DISPLAY_MAX_CHARS,
 };
+
+/// Lower bound for default and auto-fit column widths (01-main-window.md).
+pub(crate) const COLUMN_MIN_WIDTH: f32 = 140.0;
+/// Cap auto-fit so huge text/JSON cannot blow the layout (#118).
+pub(crate) const COLUMN_AUTO_FIT_MAX_WIDTH: f32 = 360.0;
+/// Heuristic char width for [`Self::default_column_width`].
+const COLUMN_CHAR_WIDTH_ESTIMATE: f32 = 7.5;
+/// Gutter glyph + gap reserved in column 0 body cells.
+const COLUMN_ZERO_GUTTER_INSET: f32 = 20.0;
 
 use super::theme::SelaPalette;
 use super::workspace::edit_session::{visual_row_map, EditRowId, RowMarker, VisualRowRef};
@@ -313,7 +322,98 @@ impl GridDelegate {
     }
 
     fn default_column_width(header: &str) -> f32 {
-        (header.chars().count() as f32 * 7.5).clamp(140.0, 360.0)
+        (header.chars().count() as f32 * COLUMN_CHAR_WIDTH_ESTIMATE)
+            .clamp(COLUMN_MIN_WIDTH, COLUMN_AUTO_FIT_MAX_WIDTH)
+    }
+
+    fn table_body_font_size(window: &Window) -> Pixels {
+        px(f32::from(window.rem_size()) * 0.875)
+    }
+
+    fn measure_text_width(
+        text: &str,
+        font_family: &SharedString,
+        font_size: Pixels,
+        window: &mut Window,
+        cx: &App,
+    ) -> Pixels {
+        if text.is_empty() {
+            return px(0.);
+        }
+        let font = Font {
+            family: font_family.clone(),
+            ..Default::default()
+        };
+        window
+            .text_system()
+            .shape_line(
+                text.into(),
+                font_size,
+                &[TextRun {
+                    len: text.len(),
+                    font,
+                    color: cx.theme().foreground,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+    }
+
+    /// Display string painted in a cell — truncated like [`Self::render_td`].
+    fn cell_display_for_fit(&mut self, visual_row: usize, col_ix: usize) -> Option<String> {
+        let visual = self.visual_rows();
+        let resolved = *visual.get(visual_row)?;
+        match resolved {
+            VisualRowRef::Overlay { overlay_ix } => {
+                let col_name = self.result.columns().get(col_ix)?.name.as_str();
+                let overlay = self.edit_paint.overlays.get(overlay_ix)?;
+                if overlay.generated.iter().any(|c| c == col_name) {
+                    return Some("Filled on commit.".into());
+                }
+                if overlay.required_unset.iter().any(|c| c == col_name)
+                    && !overlay.raw.contains_key(col_name)
+                {
+                    return Some("Required".into());
+                }
+                Some(
+                    overlay
+                        .raw
+                        .get(col_name)
+                        .map(|v| truncate_one_line(&v.display(), CELL_DISPLAY_MAX_CHARS).into_owned())
+                        .unwrap_or_default(),
+                )
+            }
+            VisualRowRef::Server { row_ix: server_row } => {
+                let col_name = self.result.columns().get(col_ix)?.name.clone();
+                if let Some(display) = self
+                    .edit_paint
+                    .server
+                    .get(&server_row)
+                    .and_then(|r| r.dirty_display.get(&col_name))
+                {
+                    return Some(display.clone());
+                }
+                let value = self.result.cell_value(server_row, col_ix)?;
+                if value.is_null() {
+                    return Some("NULL".into());
+                }
+                if value.is_decode_error() || value.is_unsupported_placeholder() {
+                    return Some(format!("!{}", value.display()));
+                }
+                match self.result.cell(server_row, col_ix) {
+                    CellView::Ready { display, .. } => Some(display.to_string()),
+                    CellView::Loading => None,
+                }
+            }
+        }
+    }
+
+    fn header_sort_icon_width(window: &Window) -> Pixels {
+        // 0.75rem sort icon + 2px padding on each side (gpui-component table header).
+        window.rem_size() * 0.75 + px(4.)
     }
 
     fn prune_column_widths(&mut self) {
@@ -601,6 +701,8 @@ impl TableDelegate for GridDelegate {
             .unwrap_or_else(|| Self::default_column_width(&header));
         let mut col = Column::new(format!("{col_ix}:{}", meta.name), header)
             .width(px(width))
+            .min_width(px(COLUMN_MIN_WIDTH))
+            .max_width(px(COLUMN_AUTO_FIT_MAX_WIDTH))
             .resizable(true)
             .movable(false);
         if self.sortable {
@@ -624,6 +726,38 @@ impl TableDelegate for GridDelegate {
         let shift = window.modifiers().shift;
         self.pending_sort = Some((col_ix, shift));
         cx.notify();
+    }
+
+    fn fit_column(
+        &mut self,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut gpui_kit::Context<TableState<Self>>,
+    ) -> Option<Pixels> {
+        let col = self.column(col_ix, cx);
+        let font_size = Self::table_body_font_size(window);
+        let sans = cx.theme().font_family.clone();
+        let mono = cx.theme().mono_font_family.clone();
+
+        let header = col.name.to_string();
+        let mut content = Self::measure_text_width(&header, &sans, font_size, window, cx);
+        if self.sortable && col.sort.is_some() {
+            content = content.max(Self::header_sort_icon_width(window));
+        }
+
+        let row_count = self.visual_rows().len();
+        for visual_row in 0..row_count {
+            let Some(text) = self.cell_display_for_fit(visual_row, col_ix) else {
+                continue;
+            };
+            let mut cell_w = Self::measure_text_width(&text, &mono, font_size, window, cx);
+            if col_ix == 0 {
+                cell_w += px(COLUMN_ZERO_GUTTER_INSET);
+            }
+            content = content.max(cell_w);
+        }
+
+        Some(content)
     }
 
     fn render_td(
