@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local-first verification policy in `AGENTS.md` / contributing (#143).
 - Fedora GNOME Wayland as primary QA gate (not exempted) (#144).
 
+### Changed
+
+- Remove the in-window File menu from the Linux/Windows CSD title bar and the SSD menu row; Quit remains via Ctrl+Q and the close control (#147).
+
 ### Fixed
 
 - Data grid keeps user-resized column widths across sort, header/cell selection, pagination, and refresh within the same result columns (#137).

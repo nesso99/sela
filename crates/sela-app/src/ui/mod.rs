@@ -486,10 +486,8 @@ fn install_menus(cx: &mut gpui_kit::App) {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // File ▸ Quit is drawn with a DropdownMenu anchored to the File label
-        // (Workspace::file_menu_button). Keep the GPUI menu registration so the
-        // Quit action and Ctrl+Q hint stay wired; do not feed AppMenuBar — its
-        // deferred popup painted at the window origin (#101).
+        // File ▸ Quit is not drawn in-window (#147); keep the GPUI menu
+        // registration so the Quit action and Ctrl+Q hint stay wired.
         cx.set_menus([
             Menu::new("File").items([MenuItem::separator(), MenuItem::action("Quit", Quit)])
         ]);
