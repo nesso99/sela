@@ -35,7 +35,7 @@ pub struct SelaPalette {
     pub conn_teal: Hsla,
     /// Opaque command-palette / quick-open selected row (`#DBEAFE` / `#1E3A8A`).
     pub palette_list_selected_bg: Hsla,
-    /// Fuzzy match foreground on palette rows (`#2563EB` / `#93C5FD`).
+    /// Fuzzy match foreground on palette rows (`#1D4ED8` / `#93C5FD`).
     pub palette_list_match_highlight: Hsla,
 }
 

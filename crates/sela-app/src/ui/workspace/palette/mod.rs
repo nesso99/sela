@@ -950,10 +950,14 @@ impl Workspace {
                                         .py_1()
                                         .mx_1()
                                         .rounded(px(4.))
+                                        .border_l(px(2.))
+                                        .border_color(if selected_row {
+                                            list_colors.selection_indicator
+                                        } else {
+                                            list_colors.selection_indicator.opacity(0.)
+                                        })
                                         .when(selected_row, |row| {
                                             row.bg(list_colors.selected_row_background)
-                                                .border_l(px(2.))
-                                                .border_color(list_colors.selection_indicator)
                                         })
                                         .when(muted, |row| {
                                             row.text_color(cx.theme().muted_foreground)

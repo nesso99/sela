@@ -73,6 +73,7 @@ pub struct ImportDialog {
     preview: Option<PreviewState>,
     total_rows: Option<u64>,
     error: Option<String>,
+    error_from_file_picker: bool,
     mapping_blocked: Option<String>,
     /// Cancel the in-flight background preview / pre-scan.
     preview_cancel: Option<CancellationToken>,
@@ -92,6 +93,7 @@ impl ImportDialog {
             preview: None,
             total_rows: None,
             error: None,
+            error_from_file_picker: false,
             mapping_blocked: None,
             preview_cancel: None,
             preview_generation: 0,
@@ -141,7 +143,12 @@ impl ImportDialog {
     }
 
     fn apply_browse_outcome(&mut self, outcome: FilePickerOutcome) {
-        wire_import_browse(&mut self.error, &mut self.pending_browse_path, outcome);
+        wire_import_browse(
+            &mut self.error,
+            &mut self.error_from_file_picker,
+            &mut self.pending_browse_path,
+            outcome,
+        );
     }
 
     #[cfg(test)]
@@ -177,12 +184,14 @@ impl ImportDialog {
     fn reload_preview(&mut self, cx: &mut Context<Self>) {
         self.cancel_preview_task();
         self.error = None;
+        self.error_from_file_picker = false;
         self.mapping_blocked = None;
         self.preview = None;
         self.total_rows = None;
         self.preview_loading = false;
         if self.ctx.read_only {
             self.error = Some(IMPORT_REFUSED_READ_ONLY_STATUS.into());
+            self.error_from_file_picker = false;
             cx.notify();
             return;
         }
@@ -234,10 +243,12 @@ impl ImportDialog {
                             } else {
                                 let (banner, _) = format_import_failure(&err);
                                 this.error = Some(banner);
+                                this.error_from_file_picker = false;
                             }
                         } else {
                             let (banner, _) = format_import_failure(&err);
                             this.error = Some(banner);
+                            this.error_from_file_picker = false;
                         }
                     }
                 }
@@ -307,12 +318,14 @@ impl ImportDialog {
     fn confirm_import(&mut self, cx: &mut Context<Self>) {
         if self.ctx.read_only {
             self.error = Some(IMPORT_REFUSED_READ_ONLY_STATUS.into());
+            self.error_from_file_picker = false;
             cx.notify();
             return;
         }
         if !self.import_enabled() {
             if self.mapping_blocked.is_none() && self.error.is_none() {
                 self.error = Some("Load a CSV file first.".into());
+                self.error_from_file_picker = false;
             }
             cx.notify();
             return;
@@ -695,10 +708,11 @@ fn load_preview_and_count_streaming(
 
 fn wire_import_browse(
     error: &mut Option<String>,
+    error_from_file_picker: &mut bool,
     pending_browse_path: &mut Option<String>,
     outcome: FilePickerOutcome,
 ) {
-    apply_browse_outcome_to_error(error, outcome, |path| {
+    apply_browse_outcome_to_error(error, error_from_file_picker, outcome, |path| {
         *pending_browse_path = Some(path.to_string_lossy().to_string());
     });
 }
@@ -708,37 +722,50 @@ mod browse_wiring_tests {
     use std::path::PathBuf;
 
     use super::wire_import_browse;
-    use crate::ui::file_picker::{is_picker_error, FilePickerOutcome};
+    use crate::ui::file_picker::FilePickerOutcome;
 
     #[test]
-    fn import_browse_failed_sets_picker_error() {
+    fn import_browse_failed_sets_clean_display_error() {
         let mut err = None;
+        let mut from_picker = false;
         let mut pending = None;
         wire_import_browse(
             &mut err,
+            &mut from_picker,
             &mut pending,
-            FilePickerOutcome::Failed("portal".into()),
+            FilePickerOutcome::Failed("Couldn't open file picker".into()),
         );
-        assert!(err.as_ref().is_some_and(|e| is_picker_error(e)));
+        assert!(from_picker);
+        assert_eq!(err.as_deref(), Some("Couldn't open file picker"));
+        assert!(!err.as_ref().unwrap().contains("FILE_PICKER"));
     }
 
     #[test]
     fn import_browse_cancel_keeps_validation_error() {
         let mut err = Some("Missing file".into());
+        let mut from_picker = false;
         let mut pending = None;
-        wire_import_browse(&mut err, &mut pending, FilePickerOutcome::Cancelled);
+        wire_import_browse(
+            &mut err,
+            &mut from_picker,
+            &mut pending,
+            FilePickerOutcome::Cancelled,
+        );
         assert_eq!(err.as_deref(), Some("Missing file"));
     }
 
     #[test]
-    fn import_browse_picked_sets_pending_path() {
-        let mut err = None;
+    fn import_browse_picked_clears_picker_error_only() {
+        let mut err = Some("Couldn't open file picker".into());
+        let mut from_picker = true;
         let mut pending = None;
         wire_import_browse(
             &mut err,
+            &mut from_picker,
             &mut pending,
             FilePickerOutcome::Picked(PathBuf::from("/tmp/a.csv")),
         );
+        assert!(err.is_none());
         assert_eq!(pending.as_deref(), Some("/tmp/a.csv"));
     }
 }
