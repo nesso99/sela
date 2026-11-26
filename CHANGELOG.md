@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.3.2] - 2026-11-27
+
+### Changed
+
+- Remove the in-window File menu from the Linux/Windows CSD title bar and the SSD menu row; Quit remains via Ctrl+Q and the close control (#147).
+
 ## [0.3.1] - 2026-11-26
 
 ### Added
@@ -19,10 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fedora QA launch/stop scripts (`scripts/qa-launch-fedora.sh`, `scripts/qa-stop-fedora.sh`) and AT-SPI enablement for Orca computer-use (#145, #146).
 - Local-first verification policy in `AGENTS.md` / contributing (#143).
 - Fedora GNOME Wayland as primary QA gate (not exempted) (#144).
-
-### Changed
-
-- Remove the in-window File menu from the Linux/Windows CSD title bar and the SSD menu row; Quit remains via Ctrl+Q and the close control (#147).
 
 ### Fixed
 
