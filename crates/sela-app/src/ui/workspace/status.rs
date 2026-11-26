@@ -82,6 +82,7 @@ impl Workspace {
             .unwrap_or_else(|| "No table open".into());
         let connected = self.session.is_some();
         let busy = view.map(|v| v.busy).unwrap_or(false);
+        let transfer_active = self.transfer_job.is_some();
         let truncated = view.map(|v| v.truncated).unwrap_or(false);
         let can_load_more = view.map(|v| v.can_load_more).unwrap_or(false);
         let is_sql = view.is_some_and(|v| matches!(v.source, super::GridSource::Sql(_)));
@@ -143,6 +144,22 @@ impl Workspace {
                                 .on_click(move |_, _, cx| {
                                     this.update(cx, |workspace, cx| {
                                         workspace.request_exact_count(cx)
+                                    });
+                                })
+                        })
+                    })
+                    .when(transfer_active, |row| {
+                        // Status-bar Cancel for export / import (EX-06 / IM-04).
+                        let this = this.clone();
+                        row.child({
+                            Button::new("status-transfer-cancel")
+                                .xsmall()
+                                .ghost()
+                                .label("Cancel")
+                                .tooltip("Cancel export or import (Ctrl/⌘+.)")
+                                .on_click(move |_, _, cx| {
+                                    this.update(cx, |workspace, cx| {
+                                        workspace.stop_query(cx);
                                     });
                                 })
                         })

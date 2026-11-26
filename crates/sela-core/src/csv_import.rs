@@ -759,6 +759,15 @@ impl<R: Read> CsvImporter<R> {
         &self.mapping
     }
 
+    /// Replace the column mapping (dialog remaps, including when there is no header).
+    ///
+    /// Call after [`Self::open_with_columns`]. Does not re-read the file; the next
+    /// [`Self::next_row`] uses `mapping` for field → column binding.
+    pub fn with_mapping(mut self, mapping: ColumnMapping) -> Self {
+        self.mapping = mapping;
+        self
+    }
+
     /// Next mapped row, or `None` at end of stream. Row errors include line numbers.
     /// Encoding failures ([`ImportError::InvalidUtf8`]) are returned as-is (IM-08).
     pub fn next_row(&mut self) -> Option<Result<ImportRow, ImportError>> {
@@ -970,6 +979,52 @@ mod tests {
         };
         let err = ColumnMapping::from_headers(&["title".into()], &cols, &opts).unwrap_err();
         assert!(matches!(err, ImportError::Mapping(m) if m.contains("Map every required column")));
+    }
+
+    /// When `First row is header` is off, dialog remaps must still bind fields
+    /// (positional defaults are wrong for swapped columns).
+    #[test]
+    fn im03_with_mapping_without_header() {
+        let schema = books_schema();
+        let cols = schema.columns("public", "books").unwrap();
+        let opts = CsvImportOptions {
+            has_header: false,
+            required_columns: vec!["id".into()],
+            ..CsvImportOptions::default()
+        };
+        // CSV order is title, id — opposite of table column order.
+        let mut importer =
+            CsvImporter::open_with_columns(cursor_from_str("Alpha,1\nBeta,2\n"), &cols, opts)
+                .unwrap();
+        importer = importer.with_mapping(ColumnMapping {
+            targets: vec![Some("title".into()), Some("id".into())],
+        });
+        let row = importer.next_row().unwrap().unwrap();
+        assert_eq!(row.values.get("title"), Some(&Value::text("Alpha")));
+        assert_eq!(row.values.get("id"), Some(&Value::Int(1)));
+    }
+
+    /// Mapping override must go through the CSV reader (quoted newlines stay intact).
+    #[test]
+    fn im03_with_mapping_preserves_quoted_newlines() {
+        let schema = books_schema();
+        let cols = schema.columns("public", "books").unwrap();
+        let opts = CsvImportOptions {
+            has_header: true,
+            required_columns: vec!["id".into()],
+            ..CsvImportOptions::default()
+        };
+        let mut importer = CsvImporter::open_with_columns(
+            cursor_from_str("ID,Title,note\n1,\"line1\nline2\",\n"),
+            &cols,
+            opts,
+        )
+        .unwrap();
+        importer = importer.with_mapping(ColumnMapping {
+            targets: vec![Some("id".into()), Some("title".into()), Some("note".into())],
+        });
+        let row = importer.next_row().unwrap().unwrap();
+        assert_eq!(row.values.get("title"), Some(&Value::text("line1\nline2")));
     }
 
     #[test]

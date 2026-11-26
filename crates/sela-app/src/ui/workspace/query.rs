@@ -77,6 +77,32 @@ impl Workspace {
     }
 
     pub(super) fn stop_query(&mut self, cx: &mut Context<Self>) {
+        // Stop / secondary-. cancels a transfer only when the active tab has no
+        // running query (and no commit in flight). See `logic::should_cancel_transfer_on_stop`.
+        let active_id = self.tabs.active().map(|t| t.id);
+        let transfer_active = self.transfer_job.is_some();
+        let transfer_on_active = self
+            .transfer_job
+            .as_ref()
+            .zip(active_id)
+            .is_some_and(|(job, id)| job.tab_id == id);
+        let active_view = active_id.and_then(|id| self.views.get(&id));
+        let active_busy = active_view.is_some_and(|v| v.busy);
+        let committing = active_view
+            .and_then(|v| v.edit.as_ref())
+            .is_some_and(|e| e.committing);
+        let query_or_commit =
+            crate::ui::workspace::export_import::logic::active_tab_has_running_query(
+                active_busy,
+                transfer_on_active,
+            ) || committing;
+        if crate::ui::workspace::export_import::logic::should_cancel_transfer_on_stop(
+            transfer_active,
+            query_or_commit,
+        ) {
+            self.cancel_transfer_if_active(cx);
+            return;
+        }
         let Some(tab) = self.tabs.active_mut() else {
             return;
         };
