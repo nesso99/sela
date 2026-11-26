@@ -13,7 +13,7 @@ Maps to QA [v0.3-test-plan.md](../../qa/v0.3-test-plan.md) **EX-01…EX-11**, **
 | Grid / table context menu | `Export…`, and on table Data also `Import CSV…` |
 | Command palette | `Export…`, `Import CSV…` ([12-command-palette.md](./12-command-palette.md)) |
 
-No dedicated global shortcut. Native file dialogs are manual-at-RC (**M-EX-01**); headless tests inject paths.
+No dedicated global shortcut. **Browse** uses the platform save dialog on export and the platform open dialog on import (**M-EX-01** still scores the live X11 picker at RC). Headless tests inject typed paths.
 
 ## Export dialog
 
@@ -46,9 +46,9 @@ Background job. UI stays interactive.
 | --- | --- |
 | Status bar | `Exporting · {done} rows written · {elapsed} s` (add `/ {total}` when known). |
 | Cancel | Status-bar Cancel on the progress item, or `secondary-.` / Stop when export is the active background job and no query is running. |
-| On cancel | Delete the partial file. Status `Export cancelled.` |
-| Success | `Exported {N} rows · {path} · {ms} ms` |
-| Failure | Banner + `Export failed.` Prefer temp+rename; if a partial was visible, delete it when possible. |
+| On cancel | Delete only the same-directory temp file. An existing destination is left untouched. Status `Export cancelled.` |
+| Success | `Exported {N} rows · {path} · {ms} ms` (temp renamed onto the destination). |
+| Failure | Banner + `Export failed.` Same temp-only discard as cancel — never delete the user’s existing destination. |
 | Concurrent | One export per window. Second start → `An export is already running.` |
 
 ## CSV import (existing table only)
@@ -60,9 +60,9 @@ Opens only from a table Data tab (target = that tab’s table). Create-new-table
 1. Pick file (`.csv` / All files). UTF-8 only (**IM-08**); invalid UTF-8 fails with a clear error, no fallback encoding.
 2. Sheet or 560px dialog: preview **first 100 data rows**, header mapping.
 3. Options: `First row is header` (default on). `Empty field = NULL` (default on). When off, empty field is `''`.
-4. Mapping: CSV column → table column select, including `Skip`. Auto-match by **case-insensitive** name. Unmatched CSV columns → **Skip**. Required table columns left unmapped (NOT NULL, no default, not generated): block Import with `Map every required column or cancel.`
-5. Before enabling Import (and before the Confirm-writes dialog), **pre-scan** the file once to count every data row that would be imported: all rows after the header when `First row is header` is on, otherwise every row. That count is `{N}` / `{total}`. Memory stays a counter, not a full materialization. If the pre-scan fails (I/O or encoding), refuse with the parse/encoding error and do not open Confirm.
-6. Import (primary) runs inserts in **one transaction**.
+4. Mapping: CSV column → table column select, including `Skip`. Auto-match by **case-insensitive** name. Unmatched CSV columns → **Skip**. Required table columns left unmapped (NOT NULL, no default, not generated): block Import with `Map every required column or cancel.` When **First row is header** is off, the same mapping still applies (not position-only).
+5. Before enabling Import (and before the Confirm-writes dialog), **pre-scan** the file once (background, cancellable when the dialog closes) to count every data row that would be imported: all rows after the header when `First row is header` is on, otherwise every row. That count is `{N}` / `{total}`. Preview and count stream via the CSV reader (no whole-file byte buffer on the UI thread). If the pre-scan fails (I/O or encoding), refuse with the parse/encoding error and do not open Confirm.
+6. Import (primary) builds an in-memory `ChangePlan` then runs inserts in **one transaction**. A streaming insert sink without a full plan is backlog (**IM-07** partial).
 
 Confirm title `Import {N} rows into {schema.table}?` uses that pre-scan `{N}` (not the 100-row preview length). Progress: `Importing · {done} / {total} rows · {elapsed} s` with the same `{total}`. Cancel → roll back; status `Import cancelled.`; table unchanged (**IM-04**, **IM-07**).
 
@@ -87,7 +87,7 @@ Export CSV (default NULL = empty field) + import (empty field = NULL) restores N
 ## Acceptance criteria (→ QA IDs)
 
 1. **EX-01…04** — CSV/JSON/INSERT export for current result and whole table; not page-limited; INSERT contracts as copy.
-2. **EX-05…06** — Background progress; cancel deletes partial file; UI not hung.
+2. **EX-05…06** — Background progress; cancel deletes the temp file only; UI not hung.
 3. **EX-07…09** — Quoting goldens; NULL ≠ `''`; UTF-8 ± optional BOM; no other encodings.
 4. **EX-10…11** — Streaming bounded; INSERT refuses decode/non-finite with status.
 5. **IM-01…02** — Import into existing table; CSV round-trip.
@@ -99,7 +99,7 @@ Export CSV (default NULL = empty field) + import (empty field = NULL) restores N
 
 1. Entry: context menu + palette (no dedicated shortcut).
 2. Export dialog: format, scope, path; CSV delimiter / header / NULL encoding / optional BOM.
-3. Cancel export deletes the partial file.
+3. Cancel/failure export deletes only the temp sibling; never the existing destination.
 4. Import: existing table only; preview 100 rows; empty field = NULL option; single transaction; abort+rollback on first row error.
 5. Read-only copy: `Import is disabled in Read-only mode.` Confirm: `Import {N} rows into {schema.table}?` where `{N}` is the pre-scanned data-row count for the whole file.
 6. **SQL INSERT export batching:** emit at most **100 rows** or about **1 MiB** of statement text per `INSERT`, whichever comes first, so multi-value statements stay under MySQL’s default `max_allowed_packet`. Start a new statement when either limit would be exceeded.

@@ -5,6 +5,7 @@ mod copy_selection;
 mod edit_actions;
 pub(crate) mod edit_session;
 pub(crate) mod edit_ui;
+pub(crate) mod export_import;
 mod filter_bar;
 mod history;
 pub(crate) mod palette;
@@ -26,6 +27,8 @@ mod tree;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+#[cfg(test)]
+use std::time::Instant;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
@@ -55,15 +58,16 @@ use super::{
     AcceptCellEditor, ActivateTab, CancelCellEditor, CancelQuery, CloseTab, CommitChanges,
     CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, DecreaseFontSize, DeleteEditRow,
     DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory, EscapePalette,
-    ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
+    ExportData, ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
     ExtendGridSelectionUp, FindInSql, FindNext, FindPrevious, FocusHistorySearch, HistoryCopy,
     HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun, HistorySelectDown, HistorySelectUp,
-    IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab, PaletteConfirm,
-    PaletteSelectDown, PaletteSelectUp, PreviewChanges, Quit, RemoveFilterRow, ResetFontSize,
-    ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, SelectAllGrid, SetCellNull,
-    ShowTableData, ShowTableStructure, ToggleCommandPalette, ToggleEditor, ToggleFilterBar,
-    ToggleHistory, ToggleQuickOpen,
+    ImportCsv, IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab,
+    PaletteConfirm, PaletteSelectDown, PaletteSelectUp, PreviewChanges, Quit, RemoveFilterRow,
+    ResetFontSize, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, SelectAllGrid,
+    SetCellNull, ShowTableData, ShowTableStructure, ToggleCommandPalette, ToggleEditor,
+    ToggleFilterBar, ToggleHistory, ToggleQuickOpen,
 };
+use export_import::{ExportDialog, ImportDialog, TransferJob};
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
 use tab_view::TabView;
 
@@ -211,6 +215,18 @@ pub struct Workspace {
     close_tabs_confirm_open: bool,
     /// Action to run after the user confirms closing tabs with typed SQL / busy work.
     pending_close_tabs: Option<PendingCloseTabs>,
+    /// True while an import Confirm / discard-pending dialog is open.
+    import_confirm_open: bool,
+    /// Active export / import background job (one per window; EX-13).
+    transfer_job: Option<TransferJob>,
+    transfer_generation: u64,
+    /// Test-only: when set, the next `run_export` parks until cancel (EX-06 Stop).
+    #[cfg(test)]
+    test_export_hold: Option<std::sync::Arc<export_import::jobs::ExportHold>>,
+    /// Open export dialog entity (tests may inject a path).
+    export_dialog: Option<Entity<ExportDialog>>,
+    /// Open import dialog entity (tests may inject a path).
+    import_dialog: Option<Entity<ImportDialog>>,
     /// SSH-18 first-seen host key waiting for a Window to open the confirm.
     pending_unknown_host_key: Option<PendingUnknownHostKey>,
     /// SSH-07 changed host key body waiting for a Window to open the alert.
@@ -399,6 +415,13 @@ impl Workspace {
             close_tab_confirm_open: false,
             close_tabs_confirm_open: false,
             pending_close_tabs: None,
+            import_confirm_open: false,
+            transfer_job: None,
+            transfer_generation: 0,
+            #[cfg(test)]
+            test_export_hold: None,
+            export_dialog: None,
+            import_dialog: None,
             pending_unknown_host_key: None,
             pending_host_key_mismatch: None,
             connection_form: None,
@@ -724,6 +747,128 @@ impl Workspace {
             .map(|c| c.safe_mode)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_open_table(
+        &mut self,
+        schema: &str,
+        table: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_table_tab(schema.to_string(), table.to_string(), window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_has_transfer_job(&self) -> bool {
+        self.transfer_job.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_transfer_generation(&self) -> u64 {
+        self.transfer_generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_transfer_job_generation(&self) -> Option<u64> {
+        self.transfer_job.as_ref().map(|j| j.generation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_status(&self) -> Option<String> {
+        self.active_view().map(|v| v.status.clone())
+    }
+
+    /// Arm the test-only export hold so `run_export` parks until cancel.
+    #[cfg(test)]
+    pub(crate) fn test_arm_export_hold(&mut self) {
+        self.test_export_hold = Some(std::sync::Arc::new(
+            export_import::jobs::ExportHold::default(),
+        ));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_clear_export_hold(&mut self) {
+        self.test_export_hold = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_export_hold_reached(&self) -> bool {
+        self.test_export_hold.as_ref().is_some_and(|h| h.reached())
+    }
+
+    /// Start a real export job (exercises `transfer_generation` bump + cancel token).
+    #[cfg(test)]
+    pub(crate) fn test_start_export(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        use export_import::export_dialog::{ExportRequest, ExportScope};
+        use sela_core::{CsvExportOptions, ExportFormat};
+        self.start_export(
+            ExportRequest {
+                format: ExportFormat::Csv(CsvExportOptions::default()),
+                scope: ExportScope::WholeTable,
+                path,
+            },
+            cx,
+        );
+    }
+
+    /// Start a real import job against `path` (exercises the import generation bump).
+    #[cfg(test)]
+    pub(crate) fn test_start_import(
+        &mut self,
+        path: std::path::PathBuf,
+        schema: &str,
+        table: &str,
+        cx: &mut Context<Self>,
+    ) {
+        use export_import::import_dialog::ImportRequest;
+        use sela_core::CsvImportOptions;
+        self.start_import(
+            ImportRequest {
+                path,
+                options: CsvImportOptions {
+                    has_header: true,
+                    ..CsvImportOptions::default()
+                },
+                total_rows: 1,
+                schema: schema.into(),
+                table: table.into(),
+            },
+            None,
+            cx,
+        );
+    }
+
+    /// Advance the job slot's generation so a later `finish_*` with the old
+    /// generation is treated as stale (covers the completion gate).
+    #[cfg(test)]
+    pub(crate) fn test_supersede_transfer_generation(&mut self) {
+        if let Some(job) = self.transfer_job.as_mut() {
+            job.generation = job.generation.wrapping_add(1);
+            self.transfer_generation = job.generation;
+        } else {
+            self.transfer_generation = self.transfer_generation.wrapping_add(1);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_finish_export(
+        &mut self,
+        generation: u64,
+        dest: std::path::PathBuf,
+        result: Result<u64, sela_core::ExportError>,
+        cx: &mut Context<Self>,
+    ) {
+        use export_import::logic::export_temp_path;
+        let tab_id = self
+            .transfer_job
+            .as_ref()
+            .map(|j| j.tab_id)
+            .or_else(|| self.tabs.active().map(|t| t.id))
+            .expect("active tab for finish_export");
+        let tmp = export_temp_path(&dest);
+        self.finish_export(tab_id, generation, dest, tmp, Instant::now(), result, cx);
+    }
+
     /// Connection the sidebar Edit / Delete buttons should target: the tree
     /// selection when it names a connection (or a child under one), else the
     /// active session connection.
@@ -961,6 +1106,22 @@ impl Render for Workspace {
                 let this = this.clone();
                 move |_: &CancelQuery, _, cx| {
                     this.update(cx, |workspace, cx| workspace.stop_query(cx));
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ExportData, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.open_export_dialog(window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ImportCsv, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.open_import_dialog(window, cx);
+                    });
                 }
             })
             .on_action({

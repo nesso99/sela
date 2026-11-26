@@ -1,10 +1,10 @@
 # Export and CSV import
 
-Core streaming export and CSV import for US-12 (M3-3). UI (dialogs, progress chrome, palette) follows [docs/design/ux/11-export-import.md](../design/ux/11-export-import.md). This page describes the `sela-core` behaviour the UI calls.
+Export and CSV import for US-12 (M3-3). The GPUI UI (dialogs, status-bar progress, cancel, safe-mode gates) follows [docs/design/ux/11-export-import.md](../design/ux/11-export-import.md). Open **Export…** or **Import CSV…** from the grid / table context menu (command palette wiring lands with M3-4). **Browse** opens a native save dialog on export (`prompt_for_new_path`) and a native open dialog on import (`prompt_for_paths`); you can still type a path. Headless tests inject paths. This page also describes the `sela-core` behaviour the UI calls.
 
 ## Export
 
-Writers take any `std::io::Write` (tests inject a `Vec<u8>` or `Cursor`; the app opens a file and passes the handle). Rows are formatted one at a time — the whole result is never buffered. A `CancellationToken` is checked between rows; progress is the number of data rows written so far. On cancel, callers should delete any visible partial file via `discard_export_partial` (status `Export cancelled.`).
+Writers take any `std::io::Write` (tests inject a `Vec<u8>` or `Cursor`; the app writes a same-directory temp file, then renames onto the destination only on success). Rows are formatted one at a time — the whole result is never buffered. A `CancellationToken` is checked between rows; progress is the number of data rows written so far. On cancel or failure the app deletes only the temp file — an existing destination is left untouched (status `Export cancelled.` / `Export failed.`).
 
 | Format | Notes |
 | --- | --- |
@@ -18,11 +18,13 @@ Clipboard copy of a selection (US-14) stays in [copying.md](./copying.md) and st
 
 Readers take any `std::io::Read`. Column metadata comes from an injectable `TableSchemaSource` (tests use `StaticTableSchema`). Mapped rows feed `ImportRowSink` (`ChangeSet::insert_row` or a transactional test sink).
 
-- First row is headers by default. Headers match table columns **case-insensitively**; unmatched CSV columns are **Skip**. Required columns left unmapped block with `Map every required column or cancel.`
+- First row is headers by default. Headers match table columns **case-insensitively**; unmatched CSV columns are **Skip**. Required columns left unmapped block with `Map every required column or cancel.` When **First row is header** is off, the dialog mapping still applies (fields bind by the chosen targets, not only by position).
 - **Empty field = NULL** is on by default (unquoted empty → NULL; quoted `""` → `''`).
 - Per-row type/parse failures include a 1-based line number; stop and let the caller roll back.
 - Safe mode gates import as a write (`decide_import_gate` / `ensure_import_allowed`).
 - Input must be valid UTF-8. A leading UTF-8 BOM is stripped when present.
+- Preview (first 100 rows) and the whole-file data-row count run in a background task and cancel when the dialog closes.
+- **In-memory import limit (IM-07 partial):** the UI builds a full in-memory `ChangePlan` (one planned statement per imported row) then runs `apply_changes` in a single transaction. Very large CSVs therefore hold the plan in memory until commit finishes. A streaming insert sink that does not materialize the whole plan is backlog for v0.3.
 
 ## Tests
 
