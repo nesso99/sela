@@ -22,6 +22,7 @@ mod schema_source;
 mod selection;
 mod session;
 mod sql;
+mod sql_complete;
 mod structure;
 mod tabs;
 mod types;
@@ -90,6 +91,12 @@ pub use sql::{
     line_col_to_byte_range, normalize_sql, parse_postgres_error_position, qualify, quote_ident,
     select_all, split_statements, statement_index_at, strip_comments, wrap_count, wrap_page,
     SqlError, SqlStatement, StatementKind,
+};
+pub use sql_complete::{
+    analyze_context, complete, dialect_keywords, is_catalog_refresh_statement,
+    quote_ident_if_needed, should_auto_trigger, snapshot_from_catalog, CatalogStatus,
+    CompletionContext, CompletionKind, CompletionSuggestion, SchemaEntry, SchemaSnapshot,
+    TableEntry,
 };
 pub use structure::{ColumnStructure, ForeignKeyInfo, IndexInfo, TableStructure};
 pub use tabs::{

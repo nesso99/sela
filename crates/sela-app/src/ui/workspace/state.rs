@@ -50,6 +50,10 @@ impl Workspace {
             return;
         };
         apply_selection_to_edit_target(&mut self.selected_connection_id, &id);
+        // M3-2: selecting a schema or table updates unqualified completion scope.
+        if let Some(schema) = schema_name_from_tree_id(&id) {
+            self.schema_cache.set_active_schema(Some(schema));
+        }
         match parse_node(&id) {
             Some(NodeId::Connection(connection_id)) => {
                 self.connect_id(connection_id, Some(window), cx)
@@ -246,6 +250,8 @@ impl Workspace {
         self.expanded.insert(conn_key(saved_id));
         if let Some(schema) = self.catalog.first() {
             self.expanded.insert(schema_key(saved_id, &schema.name));
+            self.schema_cache
+                .set_active_schema(Some(schema.name.clone()));
         }
         let count: usize = self.catalog.iter().map(|schema| schema.tables.len()).sum();
         let mut status = format!("Connected to {saved_name} · {count} tables");
@@ -266,6 +272,8 @@ impl Workspace {
             view.status = status;
         }
         self.rebuild_tree(cx);
+        // M3-2: seed autocomplete from tables, then load columns in the background.
+        self.reload_schema_cache(cx);
         self.on_tab_activated(None, cx);
     }
 
@@ -1162,6 +1170,7 @@ impl Workspace {
         self.session = None;
         self.session_via_ssh = false;
         self.catalog.clear();
+        self.schema_cache.set_empty(sela_core::Dialect::Sqlite);
         self.active_id = None;
         self.clear_all_structure_caches();
         // Drop a stale connection-error banner so Disconnect does not leave it
@@ -1221,6 +1230,7 @@ impl Workspace {
                         view.status = "Tables refreshed".into();
                     }
                     this.rebuild_tree(cx);
+                    this.reload_schema_cache(cx);
                 }
                 Err(err) => {
                     if let Some(view) = this.active_view_mut() {
@@ -1481,7 +1491,46 @@ mod tests {
         assert!(is_tunnel_drop(&connection, true));
         assert!(is_tunnel_drop(&ssh, true));
     }
+}
 
+/// Schema name from a sidebar tree id (`s…` or `t…`), if any (M3-2 scope).
+fn schema_name_from_tree_id(id: &str) -> Option<String> {
+    let mut parts = id.split(super::tree::SEP);
+    match parts.next()? {
+        "s" | "t" => {
+            let _connection = parts.next()?;
+            let schema = parts.next()?.to_string();
+            if schema.is_empty() {
+                None
+            } else {
+                Some(schema)
+            }
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod schema_tree_tests {
+    use super::super::tree::{schema_key, table_key};
+    use super::schema_name_from_tree_id;
+
+    #[test]
+    fn schema_from_tree_ids() {
+        assert_eq!(
+            schema_name_from_tree_id(&schema_key("c1", "public")).as_deref(),
+            Some("public")
+        );
+        assert_eq!(
+            schema_name_from_tree_id(&table_key("c1", "public", "books")).as_deref(),
+            Some("public")
+        );
+        assert_eq!(schema_name_from_tree_id("c\u{1f}c1"), None);
+    }
+}
+
+#[cfg(test)]
+mod host_key_route_tests {
     #[test]
     fn route_unknown_host_key_covers_test_connect_accept_reject() {
         use super::super::{route_unknown_host_key, HostKeyDecision, HostKeyRoute};

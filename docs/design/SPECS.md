@@ -272,9 +272,9 @@ Rule: tests assert **observable behavior**; every bugfix gets a regression test.
 
 ## SQL editor
 
-- Today: GPUI `Editor`, statement-at-caret / selection / run-all, multi-result strip; autocomplete is M3-2.
+- Today: GPUI `Editor`, statement-at-caret / selection / run-all, multi-result strip; M3-2 autocomplete from schema cache + dialect keywords is in progress (Control+Space; auto after `.` / two identifier chars).
 - M1-4: code editor with highlight, statement-at-cursor, multi-statement (via `split_statements`). Format (`sqlformat`) is backlog, not M1-4. UX: [ux/03-sql-editor.md](./ux/03-sql-editor.md).
-- M3-2: autocomplete from `SchemaCache` + dialect keywords.
+- M3-2: in progress — autocomplete from schema cache + dialect keywords (optional tree-sitter deferred).
 
 ---
 

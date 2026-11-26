@@ -14,6 +14,7 @@ mod quit;
 mod result_strip;
 mod safe_mode;
 mod sidebar;
+pub(crate) mod sql_autocomplete;
 mod sql_editor;
 mod sql_find;
 mod sql_gutter;
@@ -55,17 +56,18 @@ use sela_core::{
 };
 
 use super::{
-    AcceptCellEditor, ActivateTab, CancelCellEditor, CancelQuery, CloseTab, CommitChanges,
-    CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection, DecreaseFontSize, DeleteEditRow,
-    DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar, EscapeHistory, EscapePalette,
-    ExportData, ExtendGridSelectionDown, ExtendGridSelectionLeft, ExtendGridSelectionRight,
-    ExtendGridSelectionUp, FindInSql, FindNext, FindPrevious, FocusHistorySearch, HistoryCopy,
-    HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun, HistorySelectDown, HistorySelectUp,
-    ImportCsv, IncreaseFontSize, InsertEditRow, InsertFilterRow, InspectCell, NewQueryTab,
-    PaletteConfirm, PaletteSelectDown, PaletteSelectUp, PreviewChanges, Quit, RemoveFilterRow,
-    ResetFontSize, ResultStripNext, ResultStripPrev, RunAllSql, RunQuery, SelectAllGrid,
-    SetCellNull, ShowTableData, ShowTableStructure, ToggleCommandPalette, ToggleEditor,
-    ToggleFilterBar, ToggleHistory, ToggleQuickOpen,
+    AcceptCellEditor, AcceptCompletionOrIndent, ActivateTab, CancelCellEditor, CancelQuery,
+    CloseTab, CommitChanges, CopyAsCsv, CopyAsInsert, CopyAsJson, CopyAsTsv, CopySelection,
+    DecreaseFontSize, DeleteEditRow, DiscardChanges, DuplicateEditRow, EditCell, EscapeFilterBar,
+    EscapeHistory, EscapePalette, ExportData, ExtendGridSelectionDown, ExtendGridSelectionLeft,
+    ExtendGridSelectionRight, ExtendGridSelectionUp, FindInSql, FindNext, FindPrevious,
+    FocusHistorySearch, HistoryCopy, HistoryDelete, HistoryInsert, HistoryOpen, HistoryRerun,
+    HistorySelectDown, HistorySelectUp, ImportCsv, IncreaseFontSize, InsertEditRow,
+    InsertFilterRow, InspectCell, NewQueryTab, PaletteConfirm, PaletteSelectDown, PaletteSelectUp,
+    PreviewChanges, Quit, RemoveFilterRow, ResetFontSize, ResultStripNext, ResultStripPrev,
+    RunAllSql, RunQuery, SelectAllGrid, SetCellNull, ShowSqlCompletions, ShowTableData,
+    ShowTableStructure, ToggleCommandPalette, ToggleEditor, ToggleFilterBar, ToggleHistory,
+    ToggleQuickOpen,
 };
 use export_import::{ExportDialog, ImportDialog, TransferJob};
 use history::{HistoryFocusRestore, HistoryScope, DEFAULT_HISTORY_HEIGHT};
@@ -176,6 +178,9 @@ pub struct Workspace {
     /// True when the live session was opened through an SSH tunnel (SSH-11 banner).
     session_via_ssh: bool,
     catalog: Vec<LoadedSchema>,
+    /// Schema + column cache for SQL autocomplete (M3-2). Same refresh events
+    /// as the sidebar catalog; never logs query text.
+    schema_cache: sql_autocomplete::SchemaCacheHandle,
     expanded: HashSet<String>,
     tree: Entity<TreeState>,
     tabs: TabList,
@@ -387,6 +392,7 @@ impl Workspace {
             session: None,
             session_via_ssh: false,
             catalog: Vec::new(),
+            schema_cache: sql_autocomplete::SchemaCacheHandle::new(),
             expanded: HashSet::new(),
             tree,
             tabs: TabList::new(),
@@ -728,6 +734,187 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) fn test_connect(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.connect_id(id, Some(window), cx);
+    }
+
+    /// Sidebar / palette Refresh schema — also reloads the autocomplete cache (AU-16).
+    #[cfg(test)]
+    pub(crate) fn test_refresh_catalog(&mut self, cx: &mut Context<Self>) {
+        self.refresh_catalog(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_schema_cache_generation(&self) -> u64 {
+        self.schema_cache.generation()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_schema_cache_ready_table_count(&self) -> usize {
+        match self.schema_cache.status() {
+            sela_core::CatalogStatus::Ready(snap) => {
+                snap.schemas.iter().map(|s| s.tables.len()).sum()
+            }
+            _ => 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_schema_cache_is_ready(&self) -> bool {
+        matches!(
+            self.schema_cache.status(),
+            sela_core::CatalogStatus::Ready(_)
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_schema_cache_is_loading(&self) -> bool {
+        matches!(
+            self.schema_cache.status(),
+            sela_core::CatalogStatus::Loading
+        )
+    }
+
+    /// Production `reload_schema_cache` (connect / Refresh / DDL path).
+    #[cfg(test)]
+    pub(crate) fn test_reload_schema_cache(&mut self, cx: &mut Context<Self>) {
+        self.reload_schema_cache(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_sql(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.active_view() else {
+            return;
+        };
+        let len = text.len();
+        view.sql.update(cx, |state, cx| {
+            state.set_value(text, window, cx);
+            state.set_selected_range(len..len, cx);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_sql_buffer(&self, cx: &App) -> String {
+        self.active_view()
+            .map(|v| v.sql.read(cx).value().to_string())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_completion_popup_open(&self, cx: &App) -> bool {
+        self.active_view()
+            .is_some_and(|v| v.sql.read(cx).completion_menu_state().open)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_completion_labels(&self, cx: &App) -> Vec<String> {
+        self.active_view()
+            .map(|v| {
+                v.sql
+                    .read(cx)
+                    .completion_menu_state()
+                    .items
+                    .iter()
+                    .map(|i| i.label.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Inject a ready catalog snapshot (AU-09 / AU-10 / AU-12 geometry fixtures).
+    #[cfg(test)]
+    pub(crate) fn test_set_schema_cache(
+        &self,
+        dialect: sela_core::Dialect,
+        snapshot: sela_core::SchemaSnapshot,
+        active_schema: Option<String>,
+    ) {
+        self.schema_cache
+            .set_snapshot(dialect, snapshot, active_schema);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_schema_cache_loading(&self, dialect: sela_core::Dialect) {
+        self.schema_cache.set_loading(dialect);
+    }
+
+    /// Start a schema-cache reload and return the generation (for race tests).
+    #[cfg(test)]
+    pub(crate) fn test_begin_schema_reload(&self) -> u64 {
+        let dialect = self
+            .session
+            .as_ref()
+            .map(|s| s.dialect())
+            .unwrap_or(sela_core::Dialect::Sqlite);
+        self.schema_cache.begin_reload(dialect)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_active_schema(&self, schema: Option<String>) {
+        self.schema_cache.set_active_schema(schema);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_schema(&self) -> Option<String> {
+        self.schema_cache.active_schema()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_apply_schema_snapshot(
+        &self,
+        generation: u64,
+        snapshot: sela_core::SchemaSnapshot,
+    ) -> bool {
+        let dialect = self
+            .session
+            .as_ref()
+            .map(|s| s.dialect())
+            .unwrap_or(sela_core::Dialect::Sqlite);
+        let connection_id = self.schema_cache.connection_id();
+        self.schema_cache.apply_snapshot_if_current(
+            generation,
+            connection_id.as_deref(),
+            dialect,
+            snapshot,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_schema_cache_has_table(&self, name: &str) -> bool {
+        match self.schema_cache.status() {
+            sela_core::CatalogStatus::Ready(snap) => snap
+                .schemas
+                .iter()
+                .any(|s| s.tables.iter().any(|t| t.name.eq_ignore_ascii_case(name))),
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_run_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_editor(window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_show_sql_completions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_sql_completions(window, cx);
+    }
+
+    /// Caret top Y in window coordinates (for AU-12 placement asserts).
+    #[cfg(test)]
+    pub(crate) fn test_sql_caret_top(&self, cx: &App) -> gpui_kit::Pixels {
+        use gpui_kit::px;
+        let Some(view) = self.active_view() else {
+            return px(0.);
+        };
+        view.sql
+            .read(cx)
+            .cursor_layout()
+            .map_or(px(0.), |(caret, _)| {
+                caret.origin.y + view.sql.read(cx).scroll_offset().y
+            })
     }
 
     #[cfg(test)]
@@ -1116,6 +1303,24 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| {
                         if workspace.editor_field_focused(window, cx) {
                             workspace.run_all_editor(window, cx);
+                        }
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &ShowSqlCompletions, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.show_sql_completions(window, cx);
+                    });
+                }
+            })
+            .on_action({
+                let this = this.clone();
+                move |_: &AcceptCompletionOrIndent, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        if workspace.editor_field_focused(window, cx) {
+                            workspace.accept_completion_or_indent(window, cx);
                         }
                     });
                 }
