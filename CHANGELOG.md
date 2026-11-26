@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-26
+
 ### Added
 
 - M3-2 SQL autocomplete (US-08): context-aware suggestions from the connection schema cache (dialect keywords, schemas, tables, columns, statement aliases). Auto-opens after `.` or two identifier characters; manual **Control+Space** in the SQL editor (`secondary-space` stays free). Up/Down navigate; Enter and Tab accept (Tab indents when the popup is closed); Escape dismisses. Identifiers that need quoting insert with dialect quotes. Catalog refreshes on connect, Refresh schema, successful DDL, and schema/database switch; loading/empty status rows are not inserted. Pure engine in `sela-core` plus headless UI tests (`AU-*`). Optional tree-sitter highlight deferred. See [keyboard shortcuts](docs/user/keyboard-shortcuts.md) and [03-sql-editor](docs/design/ux/03-sql-editor.md#autocomplete).
