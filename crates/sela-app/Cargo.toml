@@ -33,6 +33,7 @@ chrono = { workspace = true }
 # production builds do not enable it.
 gpui-kit = { workspace = true, features = ["test-support"] }
 rust_decimal = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

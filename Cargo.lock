@@ -7284,6 +7284,7 @@ dependencies = [
  "futures-util",
  "gpui-kit",
  "lsp-types",
+ "rusqlite",
  "rust_decimal",
  "sela-config",
  "sela-core",
