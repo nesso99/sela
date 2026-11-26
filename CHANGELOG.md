@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Double-click a column header’s right edge to auto-fit width to the widest visible cell (header included), with min/max clamps; data and SQL result grids (#118).
 
+### Changed
+
+- Remove the in-window File menu from the Linux/Windows CSD title bar and the SSD menu row; Quit remains via Ctrl+Q and the close control (#147).
+
 ### Fixed
 
 - Data grid keeps user-resized column widths across sort, header/cell selection, pagination, and refresh within the same result columns (#137).

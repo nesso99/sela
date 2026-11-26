@@ -31,17 +31,11 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::time::Instant;
 
-#[cfg(not(target_os = "macos"))]
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
-#[cfg(not(target_os = "macos"))]
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tree::{TreeEvent, TreeState};
-#[cfg(not(target_os = "macos"))]
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, TitleBar};
 use gpui_kit::prelude::*;
-#[cfg(any(test, not(target_os = "macos")))]
+#[cfg(test)]
 use gpui_kit::App;
 #[cfg(test)]
 use gpui_kit::Focusable as _;
@@ -1174,45 +1168,9 @@ impl Workspace {
         )
     }
 
-    /// Linux/Windows in-window File menu under server-side decorations.
-    /// Height is fixed so the row does not swallow the column. Uses `h_flex` so
-    /// the File trigger sizes to its label (left-aligned); a block row made the
-    /// ghost Button stretch full-width and `Anchor::TopLeft` put the menu at
-    /// x=0 (#101). When client-side decorations are active, the menu lives
-    /// inside [`Self::client_title_bar`] instead.
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) fn menu_bar_row(cx: &App) -> impl IntoElement {
-        h_flex()
-            .id("sela-menu-bar")
-            .w_full()
-            .h(px(32.))
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(cx.theme().title_bar_border)
-            .bg(cx.theme().title_bar)
-            .px_1()
-            .child(Self::file_menu_button())
-    }
-
-    /// File ▸ Quit, anchored to the File label via DropdownMenu/Popover (#101).
-    /// `AppMenuBar`'s deferred `anchored()` popup was painted at the window
-    /// origin, so Quit overlapped the sidebar title and missed hit-tests.
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) fn file_menu_button() -> impl IntoElement {
-        Button::new("file-menu")
-            .small()
-            .ghost()
-            .label("File")
-            .dropdown_menu(|menu, _, _| {
-                menu.separator()
-                    .item(PopupMenuItem::new("Quit").action(Box::new(Quit)))
-            })
-    }
-
     /// Client-side title bar (GNOME Wayland and other CSD sessions): app title,
     /// window controls, drag-to-move, and double-click maximize/restore via
-    /// gpui-component `TitleBar`. Menu items sit in the bar so they keep working
-    /// without starting a drag (`TitleBar` honors `prevent_default` on controls).
+    /// gpui-component `TitleBar`.
     ///
     /// A capture-phase right mouse down stops the kit's Linux CSD overlay that
     /// would call `show_window_menu` (product: no title-bar right-click menu).
@@ -1238,20 +1196,9 @@ impl Workspace {
                         h_flex()
                             .id("sela-csd-title")
                             .items_center()
-                            .gap_2()
                             .h_full()
                             .flex_1()
                             .min_w(px(0.))
-                            .map(|row| {
-                                #[cfg(not(target_os = "macos"))]
-                                {
-                                    row.child(Self::file_menu_button())
-                                }
-                                #[cfg(target_os = "macos")]
-                                {
-                                    row
-                                }
-                            })
                             .child(div().id("sela-csd-app-title").child("Sela")),
                     ),
             )
@@ -1775,19 +1722,8 @@ impl Render for Workspace {
                     this.update(cx, |workspace, cx| workspace.palette_confirm(window, cx));
                 }
             })
-            .map(|root| {
-                if client_title_bar {
-                    root.child(self.client_title_bar(cx))
-                } else {
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        root.child(Self::menu_bar_row(cx))
-                    }
-                    #[cfg(target_os = "macos")]
-                    {
-                        root
-                    }
-                }
+            .when(client_title_bar, |root| {
+                root.child(self.client_title_bar(cx))
             })
             .child(
                 div()
