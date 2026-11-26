@@ -7276,7 +7276,7 @@ dependencies = [
 
 [[package]]
 name = "sela-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -7299,7 +7299,7 @@ dependencies = [
 
 [[package]]
 name = "sela-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "keyring",
@@ -7314,7 +7314,7 @@ dependencies = [
 
 [[package]]
 name = "sela-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -7334,7 +7334,7 @@ dependencies = [
 
 [[package]]
 name = "sela-drivers"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -7356,7 +7356,7 @@ dependencies = [
 
 [[package]]
 name = "sela-ssh"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "russh",
  "sela-core",
