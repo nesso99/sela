@@ -126,6 +126,7 @@ impl Workspace {
     }
 
     pub(super) fn run_all_editor(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        self.dismiss_sql_completion_overlays(cx);
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };
@@ -139,6 +140,7 @@ impl Workspace {
     }
 
     pub(super) fn run_editor(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        self.dismiss_sql_completion_overlays(cx);
         let Some(tab_id) = self.tabs.active().map(|tab| tab.id) else {
             return;
         };

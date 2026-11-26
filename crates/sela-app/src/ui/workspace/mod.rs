@@ -31,17 +31,21 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::time::Instant;
 
+#[cfg(not(target_os = "macos"))]
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
+#[cfg(not(target_os = "macos"))]
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tree::{TreeEvent, TreeState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _, TitleBar};
+#[cfg(not(target_os = "macos"))]
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, TitleBar};
 use gpui_kit::prelude::*;
+#[cfg(any(test, not(target_os = "macos")))]
+use gpui_kit::App;
 #[cfg(test)]
 use gpui_kit::Focusable as _;
-use gpui_kit::{
-    div, px, App, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window,
-};
+use gpui_kit::{div, px, Context, Entity, FocusHandle, IntoElement, Render, Subscription, Window};
 
 use super::decorations::{should_show_client_title_bar, should_suppress_title_bar_window_menu};
 

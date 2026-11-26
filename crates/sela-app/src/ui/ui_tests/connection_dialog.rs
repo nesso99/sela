@@ -302,6 +302,31 @@ async fn save_with_focus_in_name_submits_draft(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+async fn save_with_empty_name_keeps_button_row_visible(cx: &mut TestAppContext) {
+    let (handle, host) = open_host(cx).await;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        super::harness::click_in_dialog(window, "save-only", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            host.read(cx).events().is_empty(),
+            "invalid form must not submit"
+        );
+        for id in ["cancel", "test-connection", "save-only", "save-connection"] {
+            assert!(
+                window.within("dialog").try_find(id).is_some(),
+                "{id} must stay visible after a validation error"
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn cancel_with_focus_in_field_closes_without_submit(cx: &mut TestAppContext) {
     let (handle, host) = open_host(cx).await;
     cx.update_window(handle, |_, window, cx| {
