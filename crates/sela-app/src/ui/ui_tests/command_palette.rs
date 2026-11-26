@@ -337,7 +337,17 @@ async fn pal06_dimmed_connect_noop(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// PAL-08: secondary-q → Quit; nothing binds secondary-space.
+/// PAL-08: secondary-q → Quit; secondary-space stays Spotlight-free (ux/12).
+///
+/// From [ux/12-command-palette.md](docs/design/ux/12-command-palette.md):
+/// "`secondary-space` stays Spotlight-free. `secondary-q` still quits
+/// (PAL-08). `ctrl-space` is the autocomplete manual trigger in the editor;
+/// the palette does not bind it."
+///
+/// On macOS `secondary` is ⌘, so secondary-space must be completely unbound.
+/// On Linux/Windows `secondary` is Ctrl, so secondary-space is the same chord
+/// as ctrl-space — the only allowed binding is `ShowSqlCompletions` scoped to
+/// `SqlEditor` (not a global / palette steal).
 #[gpui_kit::test]
 async fn pal08_reserved_chords(cx: &mut TestAppContext) {
     let fix = open_fixture(cx).await;
@@ -377,16 +387,58 @@ async fn pal08_reserved_chords(cx: &mut TestAppContext) {
                 })
                 .collect::<Vec<_>>()
         );
+
         let space = Keystroke::parse_with_os("secondary-space", os).expect("parse secondary-space");
-        let matches = cx.all_bindings_for_input(&[space]);
+        let space_matches = cx.all_bindings_for_input(&[space]);
+        match os {
+            gpui_kit::OperatingSystem::Mac => {
+                assert!(
+                    space_matches.is_empty(),
+                    "secondary-space stays Spotlight-free on macOS; found {:?}",
+                    space_matches
+                        .iter()
+                        .map(|b| b.action().name())
+                        .collect::<Vec<_>>()
+                );
+            }
+            _ => {
+                // secondary == Control: only SqlEditor-scoped autocomplete may bind.
+                for b in &space_matches {
+                    let name = b.action().name();
+                    assert!(
+                        name.ends_with("ShowSqlCompletions"),
+                        "outside SqlEditor, secondary-space must stay free; got {name}"
+                    );
+                    let pred = b.predicate().map(|p| p.to_string()).unwrap_or_default();
+                    assert_eq!(
+                        pred, "SqlEditor",
+                        "ShowSqlCompletions must be exactly SqlEditor-scoped; predicate={pred:?}"
+                    );
+                }
+            }
+        }
+
+        // ctrl-space remains editor autocomplete; palette does not bind it.
+        // On every OS (including macOS), every ctrl-space binding is ShowSqlCompletions.
+        let ctrl_space = Keystroke::parse_with_os("ctrl-space", os).expect("parse ctrl-space");
+        let ctrl_matches = cx.all_bindings_for_input(&[ctrl_space]);
         assert!(
-            matches.is_empty(),
-            "secondary-space must stay unbound; found {:?}",
-            matches
-                .iter()
-                .map(|b| b.action().name())
-                .collect::<Vec<_>>()
+            !ctrl_matches.is_empty(),
+            "ctrl-space must bind ShowSqlCompletions"
         );
+        for b in &ctrl_matches {
+            assert!(
+                b.action().name().ends_with("ShowSqlCompletions"),
+                "every ctrl-space binding must be ShowSqlCompletions; got {}",
+                b.action().name()
+            );
+            let pred = b.predicate().map(|p| p.to_string()).unwrap_or_default();
+            assert_eq!(
+                pred, "SqlEditor",
+                "ctrl-space autocomplete must be exactly SqlEditor-scoped; predicate={pred:?}"
+            );
+        }
+
         let _ = ToggleQuickOpen;
         let _ = ToggleCommandPalette;
     })

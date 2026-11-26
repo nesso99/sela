@@ -7278,10 +7278,12 @@ dependencies = [
 name = "sela-app"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "async-channel",
  "chrono",
  "futures-util",
  "gpui-kit",
+ "lsp-types",
  "rust_decimal",
  "sela-config",
  "sela-core",

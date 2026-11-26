@@ -1177,6 +1177,10 @@ impl Workspace {
                 self.fetch_pending_pages_for(tab_id, cx);
             }
             Ok(Some(StatementOutcome::Executed(executed))) => {
+                let sql_for_refresh = self.views.get(&tab_id).and_then(|view| match &view.source {
+                    GridSource::Sql(sql) => Some(sql.clone()),
+                    _ => None,
+                });
                 if let Some(view) = self.view_mut(tab_id) {
                     view.post_commit_reload = false;
                     view.cell_inspect = None;
@@ -1196,6 +1200,10 @@ impl Workspace {
                         state.delegate_mut().show_message(message);
                         state.refresh(cx);
                     });
+                }
+                // M3-2 AU-16: refresh catalog after successful DDL / USE / search_path.
+                if let Some(sql) = sql_for_refresh {
+                    self.maybe_refresh_schema_after_sql(&sql, cx);
                 }
             }
             Ok(None) => {

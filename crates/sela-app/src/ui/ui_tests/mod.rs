@@ -11,5 +11,6 @@ mod file_menu;
 mod grid_editing;
 mod harness;
 mod reconnect;
+mod sql_autocomplete;
 mod ssh_dialog;
 mod workspace_transfer;

@@ -92,7 +92,11 @@ actions!(
         Quit,
         IncreaseFontSize,
         DecreaseFontSize,
-        ResetFontSize
+        ResetFontSize,
+        /// Manual SQL autocomplete (ctrl-space in the editor; AU-05).
+        ShowSqlCompletions,
+        /// Tab: accept completion when open, else indent (AU-13).
+        AcceptCompletionOrIndent
     ]
 );
 
@@ -223,6 +227,20 @@ pub(crate) fn install_sela_keybindings(cx: &mut gpui_kit::App) {
         Box::new(ToggleEditor),
         Some("SqlEditor"),
     );
+    // M3-2 autocomplete: Control+Space (not secondary) in the SQL editor (AU-05).
+    // secondary-space stays free for Spotlight / OS.
+    cx.bind_keys([KeyBinding::new(
+        "ctrl-space",
+        ShowSqlCompletions,
+        Some("SqlEditor"),
+    )]);
+    // Tab accepts when the completion popup is open; otherwise indents (AU-13).
+    // Bound on the editor input context so it wins over kit IndentInline.
+    cx.bind_keys([KeyBinding::new(
+        "tab",
+        AcceptCompletionOrIndent,
+        Some("Input && mode == editor"),
+    )]);
     // Filter-bar-only chords (UX §10). `FilterBar > Input` overrides the
     // Input widget's cmd/ctrl-backspace so the row is removed instead.
     bind_secondary(
