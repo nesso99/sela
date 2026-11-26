@@ -18,4 +18,4 @@ Mark each item done or **N/A**:
 - [ ] **UI test** — if this PR touches `crates/sela-app/src/ui/**`, a headless test in `ui_tests` is added or extended, or the PR body says why that isn't possible.
 - [ ] **Docs / backlog** — design docs / README / CHANGELOG updated when behavior or plans change.
 - [ ] **Behavior change?** — CHANGELOG + relevant docs updated in this PR.
-- [ ] **fmt / clippy / CI** — `cargo fmt`, `clippy -D warnings`, tests, and CI green (including `cargo deny` when dependencies or license config change).
+- [ ] **fmt / clippy / local tests** — `cargo fmt`, `clippy -D warnings`, and tests run locally (including `cargo deny` when dependencies or license config change). CI verifies after push; do not wait on it in the authoring loop.
