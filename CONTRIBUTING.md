@@ -12,9 +12,10 @@ All project text — docs, source comments, UI strings, commit messages, and pul
 
 1. Fork the repository and create a topic branch from `main`.
 2. Make a focused change with tests for any observable behavior you touch.
-3. Open a pull request against `main`. Fill in the PR template checklist (tick each item or mark **N/A**).
-4. Maintainers review the PR. It is **squash-merged** only after approval **and** green CI, and never while `main` is red.
-5. PRs touching `crates/sela-app/src/ui/**` add or extend a headless UI test (see below) or explain why not.
+3. Run the [local checks](#local-checks) below until they pass. Do **not** wait on GitHub Actions during the authoring loop (no `gh pr checks` / `gh run watch` / poll).
+4. Open a pull request against `main`. Fill in the PR template checklist (tick each item or mark **N/A**). CI runs after push as multi-platform verify; merge still requires green required checks, but you do not block on them while iterating.
+5. Maintainers review the PR. It is **squash-merged** only after approval **and** green CI, and never while `main` is red.
+6. PRs touching `crates/sela-app/src/ui/**` add or extend a headless UI test (see below) or explain why not.
 
 Prefer small, independent PRs that match the milestone order in [roadmap.md](./docs/design/roadmap.md).
 
@@ -72,4 +73,4 @@ Use the same items as [`.github/pull_request_template.md`](./.github/pull_reques
 - [ ] **UI test** — if this PR touches `crates/sela-app/src/ui/**`, a headless test in `ui_tests` is added or extended, or the PR body says why that isn't possible.
 - [ ] **Docs / backlog** — design docs / README / CHANGELOG updated when behavior or plans change.
 - [ ] **Behavior change?** — CHANGELOG + relevant docs updated in this PR.
-- [ ] **fmt / clippy / CI** — `cargo fmt`, `clippy -D warnings`, tests, and CI green (including `cargo deny` when dependencies or license config change).
+- [ ] **fmt / clippy / local tests** — `cargo fmt`, `clippy -D warnings`, and tests run locally (including `cargo deny` when dependencies or license config change). CI verifies after push; do not wait on it in the authoring loop.
