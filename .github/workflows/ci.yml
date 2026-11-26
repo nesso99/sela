@@ -64,7 +64,7 @@ jobs:
 
           match_ssh() {
             case "$1" in
-              crates/sela-ssh/*|crates/sela-app/*|crates/sela-drivers/tests/ssh_tunnel*|scripts/run-ssh-bastion.sh|Cargo.toml|Cargo.lock|.github/workflows/*|.github/actions/*)
+              crates/sela-ssh/*|crates/sela-app/*|crates/sela-drivers/*|crates/sela-core/*|crates/sela-config/*|crates/sela-drivers/tests/ssh_tunnel*|scripts/run-ssh-bastion.sh|Cargo.toml|Cargo.lock|.github/workflows/*|.github/actions/*)
                 return 0
                 ;;
               *)
@@ -75,7 +75,7 @@ jobs:
 
           match_cross_os() {
             case "$1" in
-              Cargo.toml|Cargo.lock|rust-toolchain*|.github/workflows/*|.github/actions/*|scripts/package-*|crates/sela-config/*|crates/sela-app/build.rs|crates/sela-app/src/main.rs|crates/sela-app/src/ui/file_picker*)
+              Cargo.toml|Cargo.lock|rust-toolchain*|.github/workflows/*|.github/actions/*|scripts/package-*|crates/sela-config/*|crates/sela-ssh/*|crates/sela-app/src/*|crates/sela-app/build.rs|crates/sela-app/src/main.rs|crates/sela-app/src/ui/file_picker*)
                 return 0
                 ;;
               *)
@@ -413,6 +413,14 @@ jobs:
           import json, os, sys
 
           needs = json.loads(os.environ["NEEDS_JSON"])
+
+          changes_result = needs["changes"].get("result")
+          if changes_result != "success":
+              print(
+                  f"ci-gate failed: changes.result={changes_result!r} (expected 'success')"
+              )
+              sys.exit(1)
+
           outputs = needs["changes"]["outputs"]
           code = outputs.get("code", "")
           ssh = outputs.get("ssh", "")
@@ -421,6 +429,14 @@ jobs:
           print(f"changes.outputs.code={code}")
           print(f"changes.outputs.ssh={ssh}")
           print(f"changes.outputs.cross_os={cross_os}")
+
+          for name, value in (("code", code), ("ssh", ssh), ("cross_os", cross_os)):
+              if value not in ("true", "false"):
+                  print(
+                      "ci-gate failed: "
+                      f"changes.outputs.{name}={value!r} (expected 'true' or 'false')"
+                  )
+                  sys.exit(1)
 
           # Fail if any needed job failed or was cancelled.
           bad = []
