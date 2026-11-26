@@ -420,6 +420,14 @@ impl GridDelegate {
         window.rem_size() * 0.75 + px(4.)
     }
 
+    /// Horizontal inset from `render_td` / `render_overlay_td` `.px_2()` (0.5rem each side).
+    ///
+    /// `TableState::fit_col` only adds the table's own cell padding on top of
+    /// [`TableDelegate::fit_column`]; this inner inset must be counted here.
+    fn cell_body_horizontal_inset(window: &Window) -> Pixels {
+        window.rem_size() * 1.0
+    }
+
     fn prune_column_widths(&mut self) {
         let names: std::collections::HashSet<&str> = self
             .result
@@ -746,15 +754,18 @@ impl TableDelegate for GridDelegate {
         let header = col.name.to_string();
         let mut content = Self::measure_text_width(&header, &sans, font_size, window, cx);
         if self.sortable && col.sort.is_some() {
-            content = content.max(Self::header_sort_icon_width(window));
+            // Sort icon is drawn beside the label (including ColumnSort::Default).
+            content += Self::header_sort_icon_width(window);
         }
 
+        let cell_inset = Self::cell_body_horizontal_inset(window);
         let row_count = self.visual_rows().len();
         for visual_row in 0..row_count {
             let Some(text) = self.cell_display_for_fit(visual_row, col_ix) else {
                 continue;
             };
-            let mut cell_w = Self::measure_text_width(&text, &mono, font_size, window, cx);
+            let mut cell_w =
+                Self::measure_text_width(&text, &mono, font_size, window, cx) + cell_inset;
             if col_ix == 0 {
                 cell_w += px(COLUMN_ZERO_GUTTER_INSET);
             }
