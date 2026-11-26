@@ -15,6 +15,10 @@ use sela_core::{
     SqlInsertExportOptions,
 };
 
+use crate::ui::file_picker::{
+    apply_browse_outcome_to_error, classify_new_path_result, FilePickerOutcome,
+};
+
 use super::messages::WHOLE_TABLE_DISABLED_REASON;
 
 /// Export format choice in the dialog (UX: CSV / JSON / SQL INSERT).
@@ -106,6 +110,7 @@ pub struct ExportDialog {
     null_empty_field: bool,
     utf8_bom: bool,
     error: Option<String>,
+    error_from_file_picker: bool,
     /// Browse result applied on the next render (async task has no Window).
     pending_browse_path: Option<String>,
 }
@@ -122,6 +127,7 @@ impl ExportDialog {
             null_empty_field: true,
             utf8_bom: false,
             error: None,
+            error_from_file_picker: false,
             pending_browse_path: None,
         }
     }
@@ -146,18 +152,12 @@ impl ExportDialog {
         let (dir, suggested) = export_browse_defaults(&typed);
         let receiver = cx.prompt_for_new_path(&dir, suggested.as_deref());
         cx.spawn(async move |this, async_cx| {
-            let picked = match receiver.await {
-                Ok(Ok(Some(path))) => Some(path),
-                _ => None,
-            };
-            if let Some(path) = picked {
-                let display = path.to_string_lossy().to_string();
-                this.update(async_cx, |dialog, cx| {
-                    dialog.pending_browse_path = Some(display);
-                    cx.notify();
-                })
-                .ok();
-            }
+            let outcome = classify_new_path_result(receiver.await);
+            this.update(async_cx, |dialog, cx| {
+                dialog.apply_browse_outcome(outcome);
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }
@@ -183,6 +183,15 @@ impl ExportDialog {
     #[cfg(test)]
     pub fn test_scope(&self) -> ExportScope {
         self.scope
+    }
+
+    fn apply_browse_outcome(&mut self, outcome: FilePickerOutcome) {
+        wire_export_browse(
+            &mut self.error,
+            &mut self.error_from_file_picker,
+            &mut self.pending_browse_path,
+            outcome,
+        );
     }
 
     pub fn whole_table_enabled(&self) -> bool {
@@ -234,15 +243,18 @@ impl ExportDialog {
         let path = self.path.read(cx).value().trim().to_string();
         if path.is_empty() {
             self.error = Some("Choose a file path.".into());
+            self.error_from_file_picker = false;
             cx.notify();
             return;
         }
         if self.scope == ExportScope::WholeTable && !self.ctx.table_data {
             self.error = Some(WHOLE_TABLE_DISABLED_REASON.into());
+            self.error_from_file_picker = false;
             cx.notify();
             return;
         }
         self.error = None;
+        self.error_from_file_picker = false;
         cx.emit(ExportDialogEvent::Export(ExportRequest {
             format: self.build_format(),
             scope: self.scope,
@@ -513,4 +525,70 @@ fn export_browse_defaults(typed: &str) -> (PathBuf, Option<String>) {
         .and_then(|s| s.to_str())
         .map(str::to_string);
     (dir, suggested)
+}
+
+fn wire_export_browse(
+    error: &mut Option<String>,
+    error_from_file_picker: &mut bool,
+    pending_browse_path: &mut Option<String>,
+    outcome: FilePickerOutcome,
+) {
+    apply_browse_outcome_to_error(error, error_from_file_picker, outcome, |path| {
+        *pending_browse_path = Some(path.to_string_lossy().to_string());
+    });
+}
+
+#[cfg(test)]
+mod browse_wiring_tests {
+    use std::path::PathBuf;
+
+    use super::wire_export_browse;
+    use crate::ui::file_picker::FilePickerOutcome;
+
+    #[test]
+    fn export_browse_failed_sets_clean_display_error() {
+        let mut err = None;
+        let mut from_picker = false;
+        let mut pending = None;
+        wire_export_browse(
+            &mut err,
+            &mut from_picker,
+            &mut pending,
+            FilePickerOutcome::Failed("Couldn't open file picker".into()),
+        );
+        assert!(from_picker);
+        assert_eq!(err.as_deref(), Some("Couldn't open file picker"));
+        assert!(!err.as_ref().unwrap().contains("FILE_PICKER"));
+    }
+
+    #[test]
+    fn export_browse_cancel_keeps_validation_error() {
+        let mut err = Some("Choose a file path.".into());
+        let mut from_picker = false;
+        let mut pending = None;
+        wire_export_browse(
+            &mut err,
+            &mut from_picker,
+            &mut pending,
+            FilePickerOutcome::Cancelled,
+        );
+        assert_eq!(err.as_deref(), Some("Choose a file path."));
+        assert!(!from_picker);
+    }
+
+    #[test]
+    fn export_browse_picked_clears_picker_error_only() {
+        let mut err = Some("Couldn't open file picker".into());
+        let mut from_picker = true;
+        let mut pending = None;
+        wire_export_browse(
+            &mut err,
+            &mut from_picker,
+            &mut pending,
+            FilePickerOutcome::Picked(PathBuf::from("/tmp/x.csv")),
+        );
+        assert!(err.is_none());
+        assert!(!from_picker);
+        assert_eq!(pending.as_deref(), Some("/tmp/x.csv"));
+    }
 }

@@ -97,6 +97,7 @@ pub struct ConnectionForm {
     /// True when the OS keychain probe failed; changes the password helper copy.
     keychain_unavailable: bool,
     error: Option<String>,
+    error_from_file_picker: bool,
     import_note: Option<String>,
     import_url: Entity<InputState>,
     name: Entity<InputState>,
@@ -197,6 +198,7 @@ impl ConnectionForm {
             warning,
             keychain_unavailable,
             error: None,
+            error_from_file_picker: false,
             import_note: None,
             import_url: cx.new(|cx| {
                 InputState::new(window, cx).placeholder("postgres://user:pass@host:5432/db")
@@ -485,12 +487,18 @@ impl ConnectionForm {
                         note.push_str(&extra);
                     }
                 }
-                apply_import_status_lines(&mut self.import_note, &mut self.error, Ok(note));
+                apply_import_status_lines(
+                    &mut self.import_note,
+                    &mut self.error,
+                    &mut self.error_from_file_picker,
+                    Ok(note),
+                );
             }
             Err(err) => {
                 apply_import_status_lines(
                     &mut self.import_note,
                     &mut self.error,
+                    &mut self.error_from_file_picker,
                     Err(err.message().into()),
                 );
             }
@@ -527,6 +535,7 @@ impl ConnectionForm {
             match port_text.parse::<u16>() {
                 Ok(0) | Err(_) => {
                     self.error = Some("Port must be a number from 1 to 65535.".into());
+                    self.error_from_file_picker = false;
                     cx.notify();
                     return None;
                 }
@@ -545,6 +554,7 @@ impl ConnectionForm {
                 match ssh_port_text.parse::<u16>() {
                     Ok(0) | Err(_) => {
                         self.error = Some("SSH port must be a number from 1 to 65535.".into());
+                        self.error_from_file_picker = false;
                         cx.notify();
                         return None;
                     }
@@ -568,10 +578,12 @@ impl ConnectionForm {
         }
         if let Err(message) = connection.validate() {
             self.error = Some(message);
+            self.error_from_file_picker = false;
             cx.notify();
             return None;
         }
         self.error = None;
+        self.error_from_file_picker = false;
         Some(ConnectionDraft {
             connection,
             password: Self::value(&self.password, cx),
@@ -1150,16 +1162,19 @@ fn safe_mode_button(
 fn apply_import_status_lines(
     import_note: &mut Option<String>,
     error: &mut Option<String>,
+    error_from_file_picker: &mut bool,
     outcome: Result<String, String>,
 ) {
     match outcome {
         Ok(note) => {
             *error = None;
+            *error_from_file_picker = false;
             *import_note = Some(note);
         }
         Err(message) => {
             *import_note = None;
             *error = Some(message);
+            *error_from_file_picker = false;
         }
     }
 }
@@ -1173,9 +1188,11 @@ mod tests {
         let mut note =
             Some("Filled from the URL. The password is only in the password field.".into());
         let mut error = None;
+        let mut from_picker = false;
         apply_import_status_lines(
             &mut note,
             &mut error,
+            &mut from_picker,
             Err("Use a postgres://, mysql://, or sqlite: URL.".into()),
         );
         assert!(note.is_none());
@@ -1189,9 +1206,11 @@ mod tests {
     fn import_success_clears_previous_error() {
         let mut note = None;
         let mut error = Some("Use a postgres://, mysql://, or sqlite: URL.".into());
+        let mut from_picker = false;
         apply_import_status_lines(
             &mut note,
             &mut error,
+            &mut from_picker,
             Ok("Filled from the URL. The password is only in the password field.".into()),
         );
         assert!(error.is_none());

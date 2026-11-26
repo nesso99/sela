@@ -14,6 +14,10 @@ use gpui_kit::{
 use sela_core::SshAuthMethod;
 use sela_ssh::{import_host_alias, list_host_aliases, SshPaths};
 
+use crate::ui::file_picker::{
+    apply_browse_outcome_to_error, classify_paths_result, FilePickerOutcome,
+};
+
 use super::{label, ConnectionForm};
 
 /// Result line for Test connection (SSH-16 / UX 05).
@@ -183,6 +187,7 @@ impl ConnectionForm {
             Ok(p) => p,
             Err(err) => {
                 self.error = Some(err);
+                self.error_from_file_picker = false;
                 self.import_note = None;
                 cx.notify();
                 return;
@@ -212,14 +217,29 @@ impl ConnectionForm {
                 });
                 self.clear_test_result();
                 self.error = None;
+                self.error_from_file_picker = false;
                 self.import_note = Some(format!("Filled SSH from Host {alias}."));
             }
             Err(err) => {
                 self.import_note = None;
                 self.error = Some(err.to_string());
+                self.error_from_file_picker = false;
             }
         }
         cx.notify();
+    }
+
+    fn apply_browse_private_key_outcome(&mut self, outcome: FilePickerOutcome) {
+        let picked = matches!(&outcome, FilePickerOutcome::Picked(_));
+        wire_ssh_browse(
+            &mut self.error,
+            &mut self.error_from_file_picker,
+            &mut self.pending_private_key_path,
+            outcome,
+        );
+        if picked {
+            self.clear_test_result();
+        }
     }
 
     pub(super) fn browse_private_key(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -230,19 +250,12 @@ impl ConnectionForm {
             prompt: Some("Choose private key".into()),
         });
         cx.spawn(async move |this, async_cx| {
-            let picked = match receiver.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                _ => None,
-            };
-            if let Some(path) = picked {
-                let display = path.to_string_lossy().to_string();
-                this.update(async_cx, |form, cx| {
-                    form.pending_private_key_path = Some(display);
-                    form.clear_test_result();
-                    cx.notify();
-                })
-                .ok();
-            }
+            let outcome = classify_paths_result(receiver.await);
+            this.update(async_cx, |form, cx| {
+                form.apply_browse_private_key_outcome(outcome);
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }
@@ -383,9 +396,68 @@ fn ssh_auth_button(
         })
 }
 
+fn wire_ssh_browse(
+    error: &mut Option<String>,
+    error_from_file_picker: &mut bool,
+    pending_private_key_path: &mut Option<String>,
+    outcome: FilePickerOutcome,
+) {
+    apply_browse_outcome_to_error(error, error_from_file_picker, outcome, |path| {
+        *pending_private_key_path = Some(path.to_string_lossy().to_string());
+    });
+}
+
 #[cfg(test)]
 mod tests {
-    use super::TestResult;
+    use std::path::PathBuf;
+
+    use super::{wire_ssh_browse, TestResult};
+    use crate::ui::file_picker::FilePickerOutcome;
+
+    #[test]
+    fn ssh_browse_failed_sets_clean_display_error() {
+        let mut err = None;
+        let mut from_picker = false;
+        let mut pending = None;
+        wire_ssh_browse(
+            &mut err,
+            &mut from_picker,
+            &mut pending,
+            FilePickerOutcome::Failed("Couldn't open file picker".into()),
+        );
+        assert!(from_picker);
+        assert_eq!(err.as_deref(), Some("Couldn't open file picker"));
+        assert!(!err.as_ref().unwrap().contains("FILE_PICKER"));
+    }
+
+    #[test]
+    fn ssh_browse_cancel_keeps_validation_error() {
+        let mut err = Some("Invalid host".into());
+        let mut from_picker = false;
+        let mut pending = None;
+        wire_ssh_browse(
+            &mut err,
+            &mut from_picker,
+            &mut pending,
+            FilePickerOutcome::Cancelled,
+        );
+        assert_eq!(err.as_deref(), Some("Invalid host"));
+    }
+
+    #[test]
+    fn ssh_browse_picked_clears_picker_error_only() {
+        let mut err = Some("Couldn't open file picker".into());
+        let mut from_picker = true;
+        let mut pending = None;
+        wire_ssh_browse(
+            &mut err,
+            &mut from_picker,
+            &mut pending,
+            FilePickerOutcome::Picked(PathBuf::from("/home/.ssh/id_ed25519")),
+        );
+        assert!(err.is_none());
+        assert_eq!(pending.as_deref(), Some("/home/.ssh/id_ed25519"));
+    }
 
     #[test]
     fn test_success_line_marks_ssh() {

@@ -33,6 +33,10 @@ pub struct SelaPalette {
     pub conn_red: Hsla,
     pub conn_purple: Hsla,
     pub conn_teal: Hsla,
+    /// Opaque command-palette / quick-open selected row (`#DBEAFE` / `#1E3A8A`).
+    pub palette_list_selected_bg: Hsla,
+    /// Fuzzy match foreground on palette rows (`#1D4ED8` / `#93C5FD`).
+    pub palette_list_match_highlight: Hsla,
 }
 
 impl SelaPalette {
@@ -75,6 +79,8 @@ impl SelaPalette {
             conn_red: color("#B91C1C"),
             conn_purple: color("#7E22CE"),
             conn_teal: color("#0F766E"),
+            palette_list_selected_bg: color("#DBEAFE"),
+            palette_list_match_highlight: color("#1D4ED8"),
         }
     }
 
@@ -96,6 +102,8 @@ impl SelaPalette {
             conn_red: color("#F87171"),
             conn_purple: color("#C084FC"),
             conn_teal: color("#2DD4BF"),
+            palette_list_selected_bg: color("#1E3A8A"),
+            palette_list_match_highlight: color("#93C5FD"),
         }
     }
 }
@@ -147,7 +155,7 @@ pub fn system_is_dark(window: &Window) -> bool {
     }
 }
 
-fn sela_theme_config(mode: ThemeMode, font_size: u8) -> ThemeConfig {
+pub(crate) fn sela_theme_config(mode: ThemeMode, font_size: u8) -> ThemeConfig {
     let (name, overrides) = match mode {
         ThemeMode::Light => ("Sela Light", light_overrides()),
         ThemeMode::Dark => ("Sela Dark", dark_overrides()),

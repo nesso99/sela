@@ -18,6 +18,8 @@ use gpui_kit::{
 use sela_config::{ThemePreference, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use sela_core::{LoadedSchema, SafeMode};
 
+use crate::ui::palette_list::palette_list_colors;
+
 use super::Workspace;
 
 pub(crate) const PALETTE_KEY_CONTEXT: &str = "CommandPalette";
@@ -594,14 +596,19 @@ impl Workspace {
             self._subscriptions.push(sub);
             self.palette = Some(state);
         }
-        let Some(palette) = self.palette.as_mut() else {
-            return;
-        };
-        if palette.open && palette.mode == mode {
+        if self
+            .palette
+            .as_ref()
+            .is_some_and(|p| p.open && p.mode == mode)
+        {
             // Second chord of the same mode toggles closed (PAL-07).
             self.close_palette(window, cx);
             return;
         }
+        self.dismiss_sql_completion_overlays(cx);
+        let Some(palette) = self.palette.as_mut() else {
+            return;
+        };
         if palette.open && palette.mode != mode {
             palette.mode = mode;
             palette.action_entry = if mode == PaletteMode::Actions {
@@ -835,6 +842,7 @@ impl Workspace {
             PaletteMode::Actions => "Actions",
         };
         let query = palette.query.clone();
+        let list_colors = palette_list_colors(cx.theme());
 
         div()
             .id("command-palette-root")
@@ -942,7 +950,15 @@ impl Workspace {
                                         .py_1()
                                         .mx_1()
                                         .rounded(px(4.))
-                                        .when(selected_row, |row| row.bg(cx.theme().tokens.tab_bar))
+                                        .border_l(px(2.))
+                                        .border_color(if selected_row {
+                                            list_colors.selection_indicator
+                                        } else {
+                                            list_colors.selection_indicator.opacity(0.)
+                                        })
+                                        .when(selected_row, |row| {
+                                            row.bg(list_colors.selected_row_background)
+                                        })
                                         .when(muted, |row| {
                                             row.text_color(cx.theme().muted_foreground)
                                         })
@@ -963,7 +979,12 @@ impl Workspace {
                                                 .items_center()
                                                 .justify_between()
                                                 .gap_2()
-                                                .child(highlight_label(&label, &indices, muted, cx))
+                                                .child(highlight_label(
+                                                    &label,
+                                                    &indices,
+                                                    muted,
+                                                    list_colors.match_highlight,
+                                                ))
                                                 .when_some(right, |row, text| {
                                                     row.child(
                                                         div()
@@ -985,7 +1006,7 @@ fn highlight_label(
     label: &str,
     indices: &[usize],
     muted: bool,
-    cx: &Context<Workspace>,
+    match_highlight: gpui_kit::Hsla,
 ) -> impl IntoElement {
     if indices.is_empty() {
         return div().child(label.to_string()).into_any_element();
@@ -994,11 +1015,7 @@ fn highlight_label(
     let mut parts: Vec<AnyElement> = Vec::new();
     let mut buf = String::new();
     let mut buf_matched = false;
-    let flush = |buf: &mut String,
-                 buf_matched: bool,
-                 parts: &mut Vec<AnyElement>,
-                 muted: bool,
-                 cx: &Context<Workspace>| {
+    let flush = |buf: &mut String, buf_matched: bool, parts: &mut Vec<AnyElement>, muted: bool| {
         if buf.is_empty() {
             return;
         }
@@ -1006,7 +1023,7 @@ fn highlight_label(
         let el = if buf_matched && !muted {
             div()
                 .font_weight(gpui_kit::FontWeight::BOLD)
-                .text_color(cx.theme().accent)
+                .text_color(match_highlight)
                 .child(text)
                 .into_any_element()
         } else {
@@ -1017,14 +1034,14 @@ fn highlight_label(
     for (byte_ix, ch) in label.char_indices() {
         let is_m = matched.contains(&byte_ix);
         if !buf.is_empty() && is_m != buf_matched {
-            flush(&mut buf, buf_matched, &mut parts, muted, cx);
+            flush(&mut buf, buf_matched, &mut parts, muted);
             buf_matched = is_m;
         } else if buf.is_empty() {
             buf_matched = is_m;
         }
         buf.push(ch);
     }
-    flush(&mut buf, buf_matched, &mut parts, muted, cx);
+    flush(&mut buf, buf_matched, &mut parts, muted);
     h_flex().children(parts).into_any_element()
 }
 
@@ -1073,8 +1090,8 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.disambiguator.is_some()));
         let labels: Vec<_> = rows.iter().map(|r| r.display_label()).collect();
-        assert!(labels.contains(&"public.books".to_string()));
-        assert!(labels.contains(&"other.books".to_string()));
+        assert!(labels.iter().any(|label| label == "public.books"));
+        assert!(labels.iter().any(|label| label == "other.books"));
     }
 
     #[test]
@@ -1111,5 +1128,46 @@ mod tests {
         assert!(PaletteAction::all().len() >= 19);
         assert!(PaletteAction::all().contains(&PaletteAction::PreviewSql));
         assert!(PaletteAction::all().contains(&PaletteAction::ToggleSafeMode));
+    }
+
+    /// #132: palette list paints opaque selection + match colors with WCAG contrast.
+    #[test]
+    fn pal32_palette_list_contrast_tokens() {
+        use std::rc::Rc;
+
+        use gpui_kit::component::{Theme, ThemeColor, ThemeMode};
+        use sela_config::DEFAULT_FONT_SIZE;
+
+        use crate::ui::palette_list::contrast::{
+            assert_palette_list_contrast, composite_luminance, contrast_ratio, relative_luminance,
+        };
+        use crate::ui::palette_list::palette_list_colors;
+        use crate::ui::theme::sela_theme_config;
+
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let mut theme = Theme::from(ThemeColor::light().as_ref());
+            theme.apply_config(&Rc::new(sela_theme_config(mode, DEFAULT_FONT_SIZE)));
+            let colors = palette_list_colors(&theme);
+            assert_palette_list_contrast(colors, mode);
+
+            // Regression: old tab_bar / table_active washes must fail.
+            let panel = colors.panel_background;
+            let tab_bar_l = composite_luminance(theme.tab_bar, panel);
+            let table_active_l = composite_luminance(theme.table_active, panel);
+            let selected_l = relative_luminance(colors.selected_row_background);
+            assert!(
+                (selected_l - tab_bar_l).abs() > 0.02,
+                "{mode:?} selection must not match tab_bar wash"
+            );
+            assert!(
+                (selected_l - table_active_l).abs() > 0.02,
+                "{mode:?} selection must not match table_active wash"
+            );
+            let bad_highlight = theme.accent;
+            assert!(
+                contrast_ratio(bad_highlight, panel) < 4.5,
+                "{mode:?} accent must fail match contrast"
+            );
+        }
     }
 }

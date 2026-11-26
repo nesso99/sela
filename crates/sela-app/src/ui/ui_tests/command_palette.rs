@@ -145,6 +145,69 @@ async fn pal01_open_escape_focus_restore(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+fn settle_palette_ui(handle: gpui_kit::AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.run_until_parked();
+    let _ = cx.update_window(handle, |_, window, cx| window.render_frame(cx));
+    cx.run_until_parked();
+}
+
+/// #133: opening palette or quick open dismisses the SQL completion popup.
+#[gpui_kit::test]
+async fn pal33_open_palette_dismisses_sql_completion(cx: &mut TestAppContext) {
+    let fix = open_fixture(cx).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_sql("autho", window, cx);
+            ws.test_focus_sql_editor(window, cx);
+            ws.test_show_sql_completions(window, cx);
+        });
+    })
+    .unwrap();
+    settle_palette_ui(fix.handle, cx);
+    cx.update_window(fix.handle, |_, window, cx| {
+        assert!(
+            fix.workspace.read(cx).test_completion_popup_open(cx),
+            "completion should be open before palette"
+        );
+        press_secondary(window, "secondary-shift-p", cx);
+        window.render_frame(cx);
+        assert!(
+            fix.workspace.read(cx).palette_is_open(),
+            "command palette should open"
+        );
+        assert!(
+            !fix.workspace.read(cx).test_completion_popup_open(cx),
+            "command palette must dismiss SQL completion overlay"
+        );
+    })
+    .unwrap();
+    cx.update_window(fix.handle, |_, window, cx| {
+        window.press("escape", cx);
+    })
+    .unwrap();
+    settle_palette_ui(fix.handle, cx);
+    cx.update_window(fix.handle, |_, window, cx| {
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_set_sql("autho", window, cx);
+            ws.test_focus_sql_editor(window, cx);
+            ws.test_show_sql_completions(window, cx);
+        });
+    })
+    .unwrap();
+    settle_palette_ui(fix.handle, cx);
+    cx.update_window(fix.handle, |_, window, cx| {
+        assert!(fix.workspace.read(cx).test_completion_popup_open(cx));
+        press_secondary(window, "secondary-p", cx);
+        window.render_frame(cx);
+        assert!(fix.workspace.read(cx).palette_is_open());
+        assert!(
+            !fix.workspace.read(cx).test_completion_popup_open(cx),
+            "quick open must dismiss SQL completion overlay"
+        );
+    })
+    .unwrap();
+}
+
 /// PAL-07: click outside closes (+ focus restore); click on search keeps open; toggle.
 #[gpui_kit::test]
 async fn pal07_click_outside_and_toggle(cx: &mut TestAppContext) {
