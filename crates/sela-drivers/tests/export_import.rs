@@ -16,8 +16,9 @@ use sela_core::{
     SortSpec, SqlInsertExportOptions,
 };
 use support::{
-    all_engine_fixtures, create_exim_table, csv_data_row_count, driver_import_csv, drop_table,
-    export_to_vec, row_count, seed_exim_many, seed_exim_sample, unique_table_name,
+    all_engine_fixtures, create_exim_table, csv_data_row_count, driver_import_cancel_during_apply,
+    driver_import_csv, drop_table, duplicate_pk_import_csv, export_to_vec, large_import_csv,
+    row_count, seed_exim_many, seed_exim_sample, unique_table_name,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -186,10 +187,13 @@ async fn ex06_cancel_mid_export_discards_partial_all_engines() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("partial.csv");
         let tmp = dest.with_extension("sela-export-tmp");
+        const DEST_SENTINEL: &[u8] = b"PREEXISTING_DEST_SENTINEL_BYTES_V1";
+        fs::write(&dest, DEST_SENTINEL).unwrap();
+
         let cancel = CancellationToken::new();
         let cancel_rows = cancel.clone();
-        let progressed = Arc::new(AtomicUsize::new(0));
-        let progressed_cb = progressed.clone();
+        let rows_written = Arc::new(AtomicUsize::new(0));
+        let rows_written_cb = rows_written.clone();
 
         let file = std::fs::File::create(&tmp).unwrap();
         let mut writer = std::io::BufWriter::new(file);
@@ -201,7 +205,7 @@ async fn ex06_cancel_mid_export_discards_partial_all_engines() {
             &ExportFormat::Csv(CsvExportOptions::default()),
             cancel,
             |n| {
-                progressed_cb.fetch_add(1, Ordering::Relaxed);
+                rows_written_cb.store(n as usize, Ordering::Relaxed);
                 if n >= 5 {
                     cancel_rows.cancel();
                 }
@@ -210,11 +214,24 @@ async fn ex06_cancel_mid_export_discards_partial_all_engines() {
         .await
         .expect_err("cancel expected");
         assert!(matches!(err, ExportError::Cancelled));
-        assert!(progressed.load(Ordering::Relaxed) >= 1);
+        let written = rows_written.load(Ordering::Relaxed);
+        assert!(
+            (1..80).contains(&written),
+            "partial export on {}",
+            fx.label
+        );
         drop(writer);
-        let _ = std::fs::remove_file(&tmp);
-        let _ = discard_export_partial(&dest);
-        assert!(!dest.exists(), "partial should not remain {}", fx.label);
+        assert!(tmp.exists(), "tmp partial must exist on {}", fx.label);
+        let partial = fs::read(&tmp).unwrap();
+        assert!(!partial.is_empty());
+        discard_export_partial(&tmp).unwrap();
+        assert!(!tmp.exists(), "tmp discarded on {}", fx.label);
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            DEST_SENTINEL,
+            "dest must stay byte-identical on {}",
+            fx.label
+        );
 
         drop_table(fx.session(), &fx.schema, &table).await;
     }
@@ -302,40 +319,29 @@ async fn im02_export_import_round_trip_all_engines() {
     }
 }
 
-/// IM-04: cancel mid-import rolls back; table stays empty.
+/// IM-04: cancel during `apply_changes` rolls back; table stays empty.
 #[tokio::test]
 async fn im04_cancel_import_single_transaction_all_engines() {
     for fx in all_engine_fixtures().await {
         let table = unique_table_name();
         create_exim_table(fx.session(), &fx.schema, &table).await;
-        let mut body = String::from("id,title,note\n");
-        for i in 0..200 {
-            body.push_str(&format!("{i},r{i},\n"));
-        }
+        let csv = large_import_csv(2500);
 
-        let cancel = CancellationToken::new();
-        let cancel_late = cancel.clone();
-        let err = driver_import_csv(
+        let err = driver_import_cancel_during_apply(
             fx.session(),
             fx.dialect,
             &fx.schema,
             &table,
-            body.as_bytes(),
+            &csv,
             CsvImportOptions::default(),
-            cancel,
-            |done| {
-                if done >= 3 {
-                    cancel_late.cancel();
-                }
-            },
         )
         .await
-        .expect_err("cancel import");
-        assert!(matches!(err, ImportError::Cancelled));
+        .expect_err("cancel import during apply");
+        assert!(matches!(err, ImportError::Cancelled), "{}", fx.label);
         assert_eq!(
             row_count(fx.session(), &fx.schema, &table).await,
             0,
-            " {}",
+            "{}",
             fx.label
         );
 
@@ -343,7 +349,7 @@ async fn im04_cancel_import_single_transaction_all_engines() {
     }
 }
 
-/// IM-06: type error reports CSV line number; nothing applied.
+/// IM-06: CSV parse type error reports line number; nothing applied.
 #[tokio::test]
 async fn im06_type_mismatch_reports_line_no_rows_written_all_engines() {
     for fx in all_engine_fixtures().await {
@@ -367,6 +373,41 @@ async fn im06_type_mismatch_reports_line_no_rows_written_all_engines() {
             other => panic!("expected Row error on {}, got {other:?}", fx.label),
         }
         assert_eq!(row_count(fx.session(), &fx.schema, &table).await, 0);
+
+        drop_table(fx.session(), &fx.schema, &table).await;
+    }
+}
+
+/// IM-06: duplicate PK fails inside `apply_changes`; full transaction rolled back.
+#[tokio::test]
+async fn im06_duplicate_pk_apply_rolls_back_all_engines() {
+    for fx in all_engine_fixtures().await {
+        let table = unique_table_name();
+        create_exim_table(fx.session(), &fx.schema, &table).await;
+        let csv = duplicate_pk_import_csv();
+        let err = driver_import_csv(
+            fx.session(),
+            fx.dialect,
+            &fx.schema,
+            &table,
+            &csv,
+            CsvImportOptions::default(),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .expect_err("duplicate pk");
+        assert!(
+            matches!(err, ImportError::Sink(_)),
+            "expected Sink/db error on {}, got {err:?}",
+            fx.label
+        );
+        assert_eq!(
+            row_count(fx.session(), &fx.schema, &table).await,
+            0,
+            "{}",
+            fx.label
+        );
 
         drop_table(fx.session(), &fx.schema, &table).await;
     }
@@ -405,14 +446,4 @@ async fn im07_prescan_count_matches_single_transaction_all_engines() {
 
         drop_table(fx.session(), &fx.schema, &table).await;
     }
-}
-
-/// EX-06 (partial file): optional filesystem guard used by the app path.
-#[tokio::test]
-async fn ex06_discard_export_partial_deletes_visible_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("gone.csv");
-    fs::write(&path, b"partial").unwrap();
-    discard_export_partial(&path).unwrap();
-    assert!(!path.exists());
 }
