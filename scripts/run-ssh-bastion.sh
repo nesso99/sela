@@ -132,17 +132,25 @@ done
 
 # linuxserver/openssh-server may leave AllowTcpForwarding unset/no; russh needs
 # direct-tcpip. Force-enable on the live config and reload sshd.
+# Raise MaxStartups / MaxSessions so parallel cargo test handshakes are not
+# randomly dropped by the default MaxStartups 10:30:100 (ssh-integration flake).
 docker exec sela-ssh-bastion bash -c '
   set -euo pipefail
+  set_sshd_opt() {
+    local cfg="$1" key="$2" value="$3"
+    if grep -qE "^[#]?${key}([[:space:]]|$)" "$cfg"; then
+      sed -i "s/^#\?${key}.*/${key} ${value}/" "$cfg"
+    else
+      printf "\n${key} ${value}\n" >> "$cfg"
+    fi
+    echo "${key} in $cfg:" >&2
+    grep -E "^${key}" "$cfg" >&2 || true
+  }
   for cfg in /config/sshd/sshd_config /etc/ssh/sshd_config; do
     [ -f "$cfg" ] || continue
-    if grep -qE "^[#]?AllowTcpForwarding" "$cfg"; then
-      sed -i "s/^#\?AllowTcpForwarding.*/AllowTcpForwarding yes/" "$cfg"
-    else
-      printf "\nAllowTcpForwarding yes\n" >> "$cfg"
-    fi
-    echo "AllowTcpForwarding in $cfg:" >&2
-    grep -E "^AllowTcpForwarding" "$cfg" >&2 || true
+    set_sshd_opt "$cfg" AllowTcpForwarding yes
+    set_sshd_opt "$cfg" MaxStartups "64:30:128"
+    set_sshd_opt "$cfg" MaxSessions 64
   done
   # Reload sshd (s6 service name varies by image version).
   if [ -d /run/service/svc-openssh-server ]; then
