@@ -31,6 +31,23 @@ process stays alive for ~1 s and prints `PID` / `APP_SELECTOR` (no `WINDOW_TITLE
 Set `VK_ICD_FILENAMES` before running only if the GPU driver needs it (the
 owner's machine does not).
 
+## Teardown
+
+**After testing, QA must always run the stop script**, even if a test failed:
+
+```sh
+scripts/qa-stop-fedora.sh
+```
+
+The launcher records the PID in `$XDG_RUNTIME_DIR/sela-qa.pid` (fallback
+`/tmp/sela-qa-<uid>/sela-qa.pid`) and as a `qa-launch: PID=<pid>` line in the
+log. The stop script signals only those PIDs (and only while they still run a
+`sela` binary), sends TERM, waits up to `STOP_WAIT_SECS` (default 5), then KILL,
+and removes the PID file. It never uses `pkill`, so other Sela instances (for
+example the owner's own) are left alone. It is idempotent: exit 0 and "no Sela
+running" if nothing is left. Launching again overwrites the PID file, so stop
+before relaunching.
+
 ## 2. Drive with `orca computer`
 
 ```sh
