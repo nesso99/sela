@@ -14,6 +14,8 @@ use gpui_kit::{
 use sela_core::SshAuthMethod;
 use sela_ssh::{import_host_alias, list_host_aliases, SshPaths};
 
+use crate::ui::file_picker::{apply_file_picker_outcome, classify_paths_result};
+
 use super::{label, ConnectionForm};
 
 /// Result line for Test connection (SSH-16 / UX 05).
@@ -230,19 +232,15 @@ impl ConnectionForm {
             prompt: Some("Choose private key".into()),
         });
         cx.spawn(async move |this, async_cx| {
-            let picked = match receiver.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                _ => None,
-            };
-            if let Some(path) = picked {
-                let display = path.to_string_lossy().to_string();
-                this.update(async_cx, |form, cx| {
-                    form.pending_private_key_path = Some(display);
+            let outcome = classify_paths_result(receiver.await);
+            this.update(async_cx, |form, cx| {
+                form.error = apply_file_picker_outcome(outcome, |path| {
+                    form.pending_private_key_path = Some(path.to_string_lossy().to_string());
                     form.clear_test_result();
-                    cx.notify();
-                })
-                .ok();
-            }
+                });
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }

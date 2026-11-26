@@ -1,6 +1,7 @@
 //! The GPUI window. Database work is started here and finished on the tokio runtime.
 
 mod decorations;
+mod file_picker;
 mod form;
 pub(crate) mod grid;
 mod theme;

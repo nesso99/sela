@@ -594,14 +594,19 @@ impl Workspace {
             self._subscriptions.push(sub);
             self.palette = Some(state);
         }
-        let Some(palette) = self.palette.as_mut() else {
-            return;
-        };
-        if palette.open && palette.mode == mode {
+        if self
+            .palette
+            .as_ref()
+            .is_some_and(|p| p.open && p.mode == mode)
+        {
             // Second chord of the same mode toggles closed (PAL-07).
             self.close_palette(window, cx);
             return;
         }
+        self.dismiss_sql_completion_overlays(cx);
+        let Some(palette) = self.palette.as_mut() else {
+            return;
+        };
         if palette.open && palette.mode != mode {
             palette.mode = mode;
             palette.action_entry = if mode == PaletteMode::Actions {
@@ -942,7 +947,9 @@ impl Workspace {
                                         .py_1()
                                         .mx_1()
                                         .rounded(px(4.))
-                                        .when(selected_row, |row| row.bg(cx.theme().tokens.tab_bar))
+                                        .when(selected_row, |row| {
+                                            row.bg(cx.theme().tokens.table_active)
+                                        })
                                         .when(muted, |row| {
                                             row.text_color(cx.theme().muted_foreground)
                                         })
@@ -1006,7 +1013,7 @@ fn highlight_label(
         let el = if buf_matched && !muted {
             div()
                 .font_weight(gpui_kit::FontWeight::BOLD)
-                .text_color(cx.theme().accent)
+                .text_color(cx.theme().ring)
                 .child(text)
                 .into_any_element()
         } else {
@@ -1073,8 +1080,8 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.disambiguator.is_some()));
         let labels: Vec<_> = rows.iter().map(|r| r.display_label()).collect();
-        assert!(labels.contains(&"public.books".to_string()));
-        assert!(labels.contains(&"other.books".to_string()));
+        assert!(labels.iter().any(|label| label == "public.books"));
+        assert!(labels.iter().any(|label| label == "other.books"));
     }
 
     #[test]
@@ -1111,5 +1118,92 @@ mod tests {
         assert!(PaletteAction::all().len() >= 19);
         assert!(PaletteAction::all().contains(&PaletteAction::PreviewSql));
         assert!(PaletteAction::all().contains(&PaletteAction::ToggleSafeMode));
+    }
+
+    /// #132: match highlight and selected row use high-contrast tokens in both themes.
+    #[test]
+    fn pal32_palette_list_contrast_tokens() {
+        use std::rc::Rc;
+
+        use gpui_kit::component::{Theme, ThemeColor, ThemeMode};
+        use gpui_kit::Hsla;
+        use sela_config::DEFAULT_FONT_SIZE;
+
+        use crate::ui::theme::sela_theme_config;
+
+        fn ratio(a: Hsla, b: Hsla) -> f32 {
+            let l1 = relative_luminance(a);
+            let l2 = relative_luminance(b);
+            let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+            (hi + 0.05) / (lo + 0.05)
+        }
+
+        fn relative_luminance(c: Hsla) -> f32 {
+            let rgba = c.to_rgb();
+            let channel = |v: f32| {
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let r = channel(rgba.r);
+            let g = channel(rgba.g);
+            let b = channel(rgba.b);
+            0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+
+        fn over_luminance(fg: Hsla, bg: Hsla) -> f32 {
+            let fa = fg.a.clamp(0., 1.);
+            let f = fg.to_rgb();
+            let b = bg.to_rgb();
+            let inv = 1.0 - fa;
+            let mix = |x: f32, y: f32| x * fa + y * inv;
+            let channel = |v: f32| {
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let r = channel(mix(f.r, b.r));
+            let g = channel(mix(f.g, b.g));
+            let bl = channel(mix(f.b, b.b));
+            0.2126 * r + 0.7152 * g + 0.0722 * bl
+        }
+
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let mut theme = Theme::from(ThemeColor::light().as_ref());
+            theme.apply_config(&Rc::new(sela_theme_config(mode, DEFAULT_FONT_SIZE)));
+            let canvas = theme.background;
+            let highlight = theme.ring;
+            let selected = theme.table_active;
+            let tab_bar = theme.tab_bar;
+            let accent = theme.accent;
+
+            assert_ne!(highlight, accent, "{mode:?} highlight must not use accent");
+            assert_ne!(
+                highlight, tab_bar,
+                "{mode:?} highlight must not use tab_bar"
+            );
+            assert_ne!(
+                highlight, canvas,
+                "{mode:?} highlight must not match canvas"
+            );
+            assert_ne!(selected, tab_bar, "{mode:?} selection must not use tab_bar");
+            assert_ne!(selected, canvas, "{mode:?} selection must not match canvas");
+
+            assert!(
+                ratio(highlight, canvas) >= 4.5,
+                "{mode:?} match highlight on canvas: {}",
+                ratio(highlight, canvas)
+            );
+            let tab_bar_on_canvas = over_luminance(tab_bar, canvas);
+            let row_on_canvas = over_luminance(selected, canvas);
+            assert!(
+                (row_on_canvas - tab_bar_on_canvas).abs() > 0.002,
+                "{mode:?} selection wash must not match tab_bar on canvas"
+            );
+        }
     }
 }

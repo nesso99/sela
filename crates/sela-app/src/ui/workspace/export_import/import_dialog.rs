@@ -22,6 +22,8 @@ use sela_core::{
     IMPORT_REFUSED_READ_ONLY_STATUS,
 };
 
+use crate::ui::file_picker::{apply_file_picker_outcome, classify_paths_result};
+
 use super::messages::format_import_failure;
 
 const PREVIEW_MAX_ROWS: usize = 100;
@@ -251,18 +253,14 @@ impl ImportDialog {
             prompt: Some("Choose CSV to import".into()),
         });
         cx.spawn(async move |this, async_cx| {
-            let picked = match receiver.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                _ => None,
-            };
-            if let Some(path) = picked {
-                let display = path.to_string_lossy().to_string();
-                this.update(async_cx, |dialog, cx| {
-                    dialog.pending_browse_path = Some(display);
-                    cx.notify();
-                })
-                .ok();
-            }
+            let outcome = classify_paths_result(receiver.await);
+            this.update(async_cx, |dialog, cx| {
+                dialog.error = apply_file_picker_outcome(outcome, |path| {
+                    dialog.pending_browse_path = Some(path.to_string_lossy().to_string());
+                });
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }

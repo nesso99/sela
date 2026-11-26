@@ -15,6 +15,8 @@ use sela_core::{
     SqlInsertExportOptions,
 };
 
+use crate::ui::file_picker::{apply_file_picker_outcome, classify_new_path_result};
+
 use super::messages::WHOLE_TABLE_DISABLED_REASON;
 
 /// Export format choice in the dialog (UX: CSV / JSON / SQL INSERT).
@@ -146,18 +148,14 @@ impl ExportDialog {
         let (dir, suggested) = export_browse_defaults(&typed);
         let receiver = cx.prompt_for_new_path(&dir, suggested.as_deref());
         cx.spawn(async move |this, async_cx| {
-            let picked = match receiver.await {
-                Ok(Ok(Some(path))) => Some(path),
-                _ => None,
-            };
-            if let Some(path) = picked {
-                let display = path.to_string_lossy().to_string();
-                this.update(async_cx, |dialog, cx| {
-                    dialog.pending_browse_path = Some(display);
-                    cx.notify();
-                })
-                .ok();
-            }
+            let outcome = classify_new_path_result(receiver.await);
+            this.update(async_cx, |dialog, cx| {
+                dialog.error = apply_file_picker_outcome(outcome, |path| {
+                    dialog.pending_browse_path = Some(path.to_string_lossy().to_string());
+                });
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }

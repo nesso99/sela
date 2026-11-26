@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Command palette / quick open: fuzzy-match highlights use the theme `ring` color instead of `accent` (near-zero contrast on light/dark); the selected row uses `table.active` instead of `tab_bar` (#132).
+- Opening the command palette or quick open dismisses an open SQL autocomplete popup on query tabs so the menu no longer lingers behind the palette (#133).
+- Export, import, and SSH private-key **Browse** surfaces file-picker failures in the dialog error line instead of failing silently; user cancel stays silent (#134).
 - Connection dialog **Cancel** stays enabled while Test is running, and closing the dialog cancels the in-flight Test so a late result cannot overwrite the Idle line (SSH-16 / #128).
 - After a cancelled commit, the pending bar shows `Commit cancelled. No changes were saved.` instead of `Commit failed. Changes kept.` (CAN-03 / #112 follow-up).
 - Preview (`secondary-shift-v`) does not run while a text input has focus, so paste still works (#112 follow-up).

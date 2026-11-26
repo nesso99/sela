@@ -147,7 +147,7 @@ pub fn system_is_dark(window: &Window) -> bool {
     }
 }
 
-fn sela_theme_config(mode: ThemeMode, font_size: u8) -> ThemeConfig {
+pub(crate) fn sela_theme_config(mode: ThemeMode, font_size: u8) -> ThemeConfig {
     let (name, overrides) = match mode {
         ThemeMode::Light => ("Sela Light", light_overrides()),
         ThemeMode::Dark => ("Sela Dark", dark_overrides()),

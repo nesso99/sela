@@ -379,6 +379,15 @@ impl Workspace {
             state.show_completions(window, cx);
         });
     }
+
+    /// Close any open SQL completion menu so palette focus does not leave it visible (#133).
+    pub(super) fn dismiss_sql_completion_overlays(&mut self, cx: &mut Context<Self>) {
+        for view in self.views.values() {
+            view.sql.update(cx, |state, cx| {
+                state.dismiss_completion_overlay(cx);
+            });
+        }
+    }
 }
 
 /// Load schemas, tables, and columns for autocomplete (no query text logged).
