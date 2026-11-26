@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Data grid keeps user-resized column widths across sort, header/cell selection, pagination, and refresh within the same result columns (#137).
+
 ## [0.3.0] - 2026-11-26
 
 ### Added
