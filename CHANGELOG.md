@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Data grid keeps user-resized column widths across sort, header/cell selection, pagination, and refresh within the same result columns (#137).
+- New-connection form scrolls so Cancel, Test, Save, and Save & connect stay visible when a validation error is shown; Run / Run all close the SQL autocomplete popup (#140).
+- Running SQL from a table tab opens a new Query tab and runs there; the table tab stays a table (#141).
 
 ## [0.3.0] - 2026-11-26
 
