@@ -215,11 +215,7 @@ async fn ex06_cancel_mid_export_discards_partial_all_engines() {
         .expect_err("cancel expected");
         assert!(matches!(err, ExportError::Cancelled));
         let written = rows_written.load(Ordering::Relaxed);
-        assert!(
-            (1..80).contains(&written),
-            "partial export on {}",
-            fx.label
-        );
+        assert!((1..80).contains(&written), "partial export on {}", fx.label);
         drop(writer);
         assert!(tmp.exists(), "tmp partial must exist on {}", fx.label);
         let partial = fs::read(&tmp).unwrap();
