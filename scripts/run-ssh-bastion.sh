@@ -134,6 +134,8 @@ done
 # direct-tcpip. Force-enable on the live config and reload sshd.
 # Raise MaxStartups / MaxSessions so parallel cargo test handshakes are not
 # randomly dropped by the default MaxStartups 10:30:100 (ssh-integration flake).
+# OpenSSH 9.8+ PerSourcePenalties (on by default) bans the runner IP after a
+# few intentional auth/host-key failures in the suite — disable when supported.
 docker exec sela-ssh-bastion bash -c '
   set -euo pipefail
   set_sshd_opt() {
@@ -146,11 +148,19 @@ docker exec sela-ssh-bastion bash -c '
     echo "${key} in $cfg:" >&2
     grep -E "^${key}" "$cfg" >&2 || true
   }
+  # Only write PerSourcePenalties when this sshd understands it (OpenSSH 9.8+).
+  supports_persourcepenalties=false
+  if sshd -T 2>/dev/null | grep -qi "^persourcepenalties "; then
+    supports_persourcepenalties=true
+  fi
   for cfg in /config/sshd/sshd_config /etc/ssh/sshd_config; do
     [ -f "$cfg" ] || continue
     set_sshd_opt "$cfg" AllowTcpForwarding yes
     set_sshd_opt "$cfg" MaxStartups "64:30:128"
     set_sshd_opt "$cfg" MaxSessions 64
+    if $supports_persourcepenalties; then
+      set_sshd_opt "$cfg" PerSourcePenalties no
+    fi
   done
   # Reload sshd (s6 service name varies by image version).
   if [ -d /run/service/svc-openssh-server ]; then
@@ -160,6 +170,9 @@ docker exec sela-ssh-bastion bash -c '
   else
     pkill -HUP sshd || true
   fi
+  # Confirm effective settings for CI logs.
+  echo "sshd -T (forwarding / startups / sessions / penalties):" >&2
+  sshd -T 2>/dev/null | grep -iE "^(allowtcpforwarding|maxstartups|maxsessions|persourcepenalties) " >&2 || true
 ' >&2
 
 # Prove actual SSH local port forwarding (direct-tcpip), same path russh uses.
