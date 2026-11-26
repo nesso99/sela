@@ -140,6 +140,16 @@ done
 # unreliable in this image and previously skipped the write entirely).
 docker exec sela-ssh-bastion bash -c '
   set -euo pipefail
+  # docker exec PATH often omits /usr/sbin where sshd lives in this image.
+  PATH="/usr/sbin:/sbin:${PATH:-}"
+  SSHD="$(command -v sshd || true)"
+  if [ -z "$SSHD" ] || [ ! -x "$SSHD" ]; then
+    SSHD="/usr/sbin/sshd"
+  fi
+  if [ ! -x "$SSHD" ]; then
+    echo "sshd not found (tried PATH and /usr/sbin/sshd)" >&2
+    exit 1
+  fi
   set_sshd_opt() {
     local cfg="$1" key="$2" value="$3"
     if grep -qE "^[#]?${key}([[:space:]]|$)" "$cfg"; then
@@ -150,8 +160,8 @@ docker exec sela-ssh-bastion bash -c '
     echo "${key} in $cfg:" >&2
     grep -E "^${key}" "$cfg" >&2 || true
   }
-  echo "sshd -V:" >&2
-  sshd -V 2>&1 | head -1 >&2 || true
+  echo "sshd ($SSHD) -V:" >&2
+  "$SSHD" -V 2>&1 | head -1 >&2 || true
   primary_cfg=""
   for cfg in /config/sshd/sshd_config /etc/ssh/sshd_config; do
     [ -f "$cfg" ] || continue
@@ -161,7 +171,7 @@ docker exec sela-ssh-bastion bash -c '
     set_sshd_opt "$cfg" MaxSessions 64
     # Try PerSourcePenalties no; remove if this sshd rejects the keyword.
     set_sshd_opt "$cfg" PerSourcePenalties no
-    if ! sshd -t -f "$cfg" >"/tmp/sshd-t.$$.out" 2>"/tmp/sshd-t.$$.err"; then
+    if ! "$SSHD" -t -f "$cfg" >"/tmp/sshd-t.$$.out" 2>"/tmp/sshd-t.$$.err"; then
       if grep -qiE "Bad configuration option.*[Pp]er[Ss]ource[Pp]enalties|Deprecated option.*[Pp]er[Ss]ource[Pp]enalties|Unsupported option.*[Pp]er[Ss]ource[Pp]enalties" "/tmp/sshd-t.$$.err"; then
         sed -i "/^PerSourcePenalties /d" "$cfg"
         echo "PerSourcePenalties not supported; removed from $cfg" >&2
@@ -184,7 +194,7 @@ docker exec sela-ssh-bastion bash -c '
   # Confirm effective settings for CI logs (use -f; bare sshd -T is empty here).
   if [ -n "$primary_cfg" ]; then
     echo "sshd -T -f $primary_cfg (forwarding / startups / sessions / penalties):" >&2
-    sshd -T -f "$primary_cfg" 2>/dev/null \
+    "$SSHD" -T -f "$primary_cfg" 2>/dev/null \
       | grep -iE "^(allowtcpforwarding|maxstartups|maxsessions|persourcepenalties) " >&2 \
       || echo "(sshd -T produced no matching lines)" >&2
   fi
