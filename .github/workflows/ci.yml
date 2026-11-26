@@ -25,12 +25,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      ssh: ${{ steps.filter.outputs.ssh }}
+      cross_os: ${{ steps.filter.outputs.cross_os }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Detect non-docs changes
+      - name: Detect path-filtered changes
         id: filter
         run: |
           set -euo pipefail
@@ -39,7 +41,9 @@ jobs:
             || [ "${{ github.event_name }}" = "workflow_dispatch" ] \
             || { [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; }; then
             echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "Treating all code as changed (event=${{ github.event_name }})"
+            echo "ssh=true" >> "$GITHUB_OUTPUT"
+            echo "cross_os=true" >> "$GITHUB_OUTPUT"
+            echo "Treating all filters as changed (event=${{ github.event_name }})"
             exit 0
           fi
 
@@ -55,20 +59,51 @@ jobs:
           mapfile -t files < <(git diff --name-only "$BASE"..."$HEAD" || true)
 
           code=false
+          ssh=false
+          cross_os=false
+
+          match_ssh() {
+            case "$1" in
+              crates/sela-ssh/*|crates/sela-app/*|crates/sela-drivers/*|crates/sela-core/*|crates/sela-config/*|crates/sela-drivers/tests/ssh_tunnel*|scripts/run-ssh-bastion.sh|Cargo.toml|Cargo.lock|.github/workflows/*|.github/actions/*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          match_cross_os() {
+            case "$1" in
+              Cargo.toml|Cargo.lock|rust-toolchain*|.github/workflows/*|.github/actions/*|scripts/package-*|crates/sela-config/*|crates/sela-ssh/*|crates/sela-app/src/*|crates/sela-app/build.rs|crates/sela-app/src/main.rs|crates/sela-app/src/ui/file_picker*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
           for file in "${files[@]+"${files[@]}"}"; do
             [ -z "$file" ] && continue
             case "$file" in
               *.md|docs|docs/*) ;;
               *)
                 code=true
-                echo "Non-docs change: $file"
-                break
                 ;;
             esac
+            if match_ssh "$file"; then
+              ssh=true
+            fi
+            if match_cross_os "$file"; then
+              cross_os=true
+            fi
           done
 
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "code=$code"
+          echo "ssh=$ssh" >> "$GITHUB_OUTPUT"
+          echo "cross_os=$cross_os" >> "$GITHUB_OUTPUT"
+          echo "code=$code ssh=$ssh cross_os=$cross_os"
 
   check:
     name: check
@@ -84,14 +119,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install Linux GPUI dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config libsqlite3-dev libssl-dev \
-            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
-            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
-            libasound2-dev fonts-dejavu-core
+        uses: ./.github/actions/install-linux-gpui-deps
 
       - uses: Swatinem/rust-cache@v2
 
@@ -103,8 +131,8 @@ jobs:
 
   deny:
     name: cargo-deny
-    needs: [changes, check]
-    if: needs.changes.outputs.code == 'true' && success()
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,8 +145,8 @@ jobs:
 
   docs:
     name: docs
-    needs: [changes, check]
-    if: needs.changes.outputs.code == 'true' && success()
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -139,15 +167,11 @@ jobs:
             .github/pull_request_template.md
           fail: true
 
-  test:
-    name: test (${{ matrix.os }})
-    needs: [changes, check]
-    if: needs.changes.outputs.code == 'true' && success()
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  test-linux:
+    name: test-linux
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -155,28 +179,37 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux GPUI dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config libsqlite3-dev libssl-dev \
-            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
-            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
-            libasound2-dev fonts-dejavu-core
+        uses: ./.github/actions/install-linux-gpui-deps
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: cargo build
-        run: cargo build --workspace
+      - name: cargo test
+        run: cargo test --workspace
+
+  test-cross-os:
+    name: test-cross-os (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.cross_os == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: cargo test
         run: cargo test --workspace
 
   db-integration:
     name: db-integration
-    needs: [changes, check]
-    if: needs.changes.outputs.code == 'true' && success()
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -215,15 +248,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux GPUI dependencies
+      - name: Install minimal build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config libsqlite3-dev libssl-dev \
-            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
-            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
-            libasound2-dev fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libsqlite3-dev libssl-dev mold
+          echo 'RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -233,8 +264,8 @@ jobs:
   # Postgres with SSL: throwaway certs generated in the job (never committed).
   db-tls-postgres:
     name: db-tls-postgres
-    needs: [changes, check]
-    if: needs.changes.outputs.code == 'true' && success()
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -242,15 +273,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux GPUI dependencies
+      - name: Install minimal build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config libsqlite3-dev libssl-dev \
-            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
-            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
-            libasound2-dev fonts-dejavu-core openssl
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libsqlite3-dev libssl-dev mold openssl
+          echo 'RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -292,8 +321,8 @@ jobs:
   # Throwaway keys/passwords generated at runtime by scripts/run-ssh-bastion.sh.
   ssh-integration:
     name: ssh-integration
-    needs: [changes, check]
-    if: needs.changes.outputs.code == 'true' && success()
+    needs: changes
+    if: needs.changes.outputs.ssh == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -303,15 +332,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux GPUI dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config libsqlite3-dev libssl-dev \
-            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
-            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
-            libasound2-dev fonts-dejavu-core \
-            openssh-client sshpass xvfb
+        uses: ./.github/actions/install-linux-gpui-deps
+        with:
+          extra-packages: openssh-client sshpass xvfb
 
       - uses: Swatinem/rust-cache@v2
 
@@ -351,7 +374,7 @@ jobs:
       - name: cargo test (SSH tunnel workspace UI)
         run: |
           set -euo pipefail
-          # Headless GPUI: match test (ubuntu-latest) / scripts/ui-tests.sh.
+          # Headless GPUI: match test-linux / scripts/ui-tests.sh.
           if command -v xvfb-run >/dev/null 2>&1; then
             xvfb-run -a cargo test -p sela-app --bins ssh_tunnel_workspace -- --nocapture
           else
@@ -372,7 +395,8 @@ jobs:
       - check
       - deny
       - docs
-      - test
+      - test-linux
+      - test-cross-os
       - db-integration
       - db-tls-postgres
       - ssh-integration
@@ -385,13 +409,36 @@ jobs:
           set -euo pipefail
           echo "$NEEDS_JSON"
 
-          code="$(python3 -c 'import json,os; print(json.loads(os.environ["NEEDS_JSON"])["changes"]["outputs"].get("code",""))')"
-          echo "changes.outputs.code=$code"
-
-          # Fail if any needed job failed or was cancelled.
           python3 - <<'PY'
           import json, os, sys
+
           needs = json.loads(os.environ["NEEDS_JSON"])
+
+          changes_result = needs["changes"].get("result")
+          if changes_result != "success":
+              print(
+                  f"ci-gate failed: changes.result={changes_result!r} (expected 'success')"
+              )
+              sys.exit(1)
+
+          outputs = needs["changes"]["outputs"]
+          code = outputs.get("code", "")
+          ssh = outputs.get("ssh", "")
+          cross_os = outputs.get("cross_os", "")
+
+          print(f"changes.outputs.code={code}")
+          print(f"changes.outputs.ssh={ssh}")
+          print(f"changes.outputs.cross_os={cross_os}")
+
+          for name, value in (("code", code), ("ssh", ssh), ("cross_os", cross_os)):
+              if value not in ("true", "false"):
+                  print(
+                      "ci-gate failed: "
+                      f"changes.outputs.{name}={value!r} (expected 'true' or 'false')"
+                  )
+                  sys.exit(1)
+
+          # Fail if any needed job failed or was cancelled.
           bad = []
           for name, info in needs.items():
               result = info.get("result")
@@ -401,27 +448,43 @@ jobs:
               print("ci-gate failed: jobs in failure/cancelled:", ", ".join(bad))
               sys.exit(1)
 
-          code = needs["changes"]["outputs"].get("code", "")
-          heavy = [
-              "check",
-              "deny",
-              "docs",
-              "test",
-              "db-integration",
-              "db-tls-postgres",
-              "ssh-integration",
-          ]
-          if code == "true":
+          def require_success(names, label):
               not_ok = []
-              for name in heavy:
+              for name in names:
                   result = needs[name].get("result")
                   if result != "success":
                       not_ok.append(f"{name}={result}")
               if not_ok:
-                  print("ci-gate failed: code changed but heavy jobs not all success:", ", ".join(not_ok))
+                  print(
+                      f"ci-gate failed: {label} but required jobs not all success:",
+                      ", ".join(not_ok),
+                  )
                   sys.exit(1)
+
+          if code == "true":
+              require_success(
+                  [
+                      "check",
+                      "deny",
+                      "docs",
+                      "test-linux",
+                      "db-integration",
+                      "db-tls-postgres",
+                  ],
+                  "code=true",
+              )
           else:
-              print("docs-only (or no code changes): heavy jobs may be skipped")
+              print("code=false: code-gated heavy jobs may be skipped")
+
+          if ssh == "true":
+              require_success(["ssh-integration"], "ssh=true")
+          else:
+              print("ssh=false: ssh-integration may be skipped")
+
+          if cross_os == "true":
+              require_success(["test-cross-os"], "cross_os=true")
+          else:
+              print("cross_os=false: test-cross-os may be skipped")
 
           print("ci-gate passed")
           PY
