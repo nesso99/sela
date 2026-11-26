@@ -140,15 +140,20 @@ done
 # unreliable in this image and previously skipped the write entirely).
 docker exec sela-ssh-bastion bash -c '
   set -euo pipefail
-  # docker exec PATH often omits /usr/sbin where sshd lives in this image.
+  # docker exec PATH often omits /usr/sbin. linuxserver installs the PAM
+  # build as /usr/sbin/sshd.pam (not plain sshd).
   PATH="/usr/sbin:/sbin:${PATH:-}"
-  SSHD="$(command -v sshd || true)"
+  SSHD="$(command -v sshd.pam 2>/dev/null || command -v sshd 2>/dev/null || true)"
   if [ -z "$SSHD" ] || [ ! -x "$SSHD" ]; then
-    SSHD="/usr/sbin/sshd"
-  fi
-  if [ ! -x "$SSHD" ]; then
-    echo "sshd not found (tried PATH and /usr/sbin/sshd)" >&2
-    exit 1
+    if [ -x /usr/sbin/sshd.pam ]; then
+      SSHD=/usr/sbin/sshd.pam
+    elif [ -x /usr/sbin/sshd ]; then
+      SSHD=/usr/sbin/sshd
+    else
+      echo "sshd not found (tried sshd.pam / sshd under PATH and /usr/sbin)" >&2
+      ls -la /usr/sbin/sshd* >&2 || true
+      exit 1
+    fi
   fi
   set_sshd_opt() {
     local cfg="$1" key="$2" value="$3"
@@ -189,7 +194,7 @@ docker exec sela-ssh-bastion bash -c '
   elif [ -d /var/run/s6/services/svc-openssh-server ]; then
     s6-svc -h /var/run/s6/services/svc-openssh-server
   else
-    pkill -HUP sshd || true
+    pkill -HUP -x sshd.pam 2>/dev/null || pkill -HUP -x sshd || true
   fi
   # Confirm effective settings for CI logs (use -f; bare sshd -T is empty here).
   if [ -n "$primary_cfg" ]; then
