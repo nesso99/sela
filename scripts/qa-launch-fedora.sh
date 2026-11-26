@@ -78,6 +78,10 @@ if [[ $A11Y -eq 1 ]]; then
   fi
 fi
 
+# Stop any previous Sela recorded by this launcher (same safe check as qa-stop) before
+# the PID file and log are replaced, so a relaunch never leaves an orphan.
+SELA_PID_FILE="$SELA_PID_FILE" SELA_LOG="$SELA_LOG" "$(dirname "${BASH_SOURCE[0]}")/qa-stop-fedora.sh" >&2
+
 : > "$SELA_LOG"
 setsid "$SELA_BIN" >>"$SELA_LOG" 2>&1 < /dev/null &
 PID=$!
