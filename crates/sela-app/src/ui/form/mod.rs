@@ -783,7 +783,7 @@ impl Render for ConnectionForm {
             }
             TestResult::Failure(msg) => Some(("error", msg.clone())),
         };
-        v_flex()
+        let body = v_flex()
             .w_full()
             .gap_2()
             .p_1()
@@ -1008,57 +1008,67 @@ impl Render for ConnectionForm {
                         .text_color(color)
                         .child(text),
                 )
+            });
+        let buttons = h_flex()
+            .gap_2()
+            .justify_end()
+            .pt_2()
+            .child({
+                let this = this.clone();
+                // SSH-16 / UX 05: Cancel stays enabled while Testing so
+                // closing the dialog can cancel an in-flight Test.
+                Button::new("cancel")
+                    .label("Cancel")
+                    .ghost()
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |form, cx| {
+                            form.cancel_test(cx);
+                            cx.emit(FormEvent::Cancel);
+                        });
+                    })
             })
+            .child({
+                let this = this.clone();
+                Button::new("test-connection")
+                    .label(if testing { "Testing…" } else { "Test" })
+                    .disabled(testing)
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |form, cx| form.request_test(cx));
+                    })
+            })
+            .child({
+                let this = this.clone();
+                Button::new("save-only")
+                    .label("Save")
+                    .disabled(testing)
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |form, cx| form.save_only(cx));
+                    })
+            })
+            .child({
+                let this = this.clone();
+                // Keep id `save-connection` so existing UI tests keep working;
+                // label matches UX 05 (Save & connect).
+                Button::new("save-connection")
+                    .label("Save & connect")
+                    .primary()
+                    .disabled(testing)
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |form, cx| form.submit(cx));
+                    })
+            });
+        v_flex()
+            .w_full()
+            .max_h((window.viewport_size().height - px(160.)).max(px(240.)))
             .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .pt_2()
-                    .child({
-                        let this = this.clone();
-                        // SSH-16 / UX 05: Cancel stays enabled while Testing so
-                        // closing the dialog can cancel an in-flight Test.
-                        Button::new("cancel")
-                            .label("Cancel")
-                            .ghost()
-                            .on_click(move |_, _, cx| {
-                                this.update(cx, |form, cx| {
-                                    form.cancel_test(cx);
-                                    cx.emit(FormEvent::Cancel);
-                                });
-                            })
-                    })
-                    .child({
-                        let this = this.clone();
-                        Button::new("test-connection")
-                            .label(if testing { "Testing…" } else { "Test" })
-                            .disabled(testing)
-                            .on_click(move |_, _, cx| {
-                                this.update(cx, |form, cx| form.request_test(cx));
-                            })
-                    })
-                    .child({
-                        let this = this.clone();
-                        Button::new("save-only")
-                            .label("Save")
-                            .disabled(testing)
-                            .on_click(move |_, _, cx| {
-                                this.update(cx, |form, cx| form.save_only(cx));
-                            })
-                    })
-                    .child({
-                        let this = this.clone();
-                        // Keep id `save-connection` so existing UI tests keep working;
-                        // label matches UX 05 (Save & connect).
-                        Button::new("save-connection")
-                            .label("Save & connect")
-                            .primary()
-                            .disabled(testing)
-                            .on_click(move |_, _, cx| {
-                                this.update(cx, |form, cx| form.submit(cx));
-                            })
-                    }),
+                div()
+                    .id("connection-form-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(body),
             )
+            .child(buttons)
     }
 }
 
