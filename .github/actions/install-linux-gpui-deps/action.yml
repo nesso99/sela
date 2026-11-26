@@ -1,0 +1,30 @@
+name: Install Linux GPUI dependencies
+description: >-
+  Install Ubuntu packages needed to build GPUI (and optional extras), plus mold
+  for faster linking. GCC on Ubuntu 24.04 (ubuntu-latest) supports -fuse-ld=mold.
+
+inputs:
+  extra-packages:
+    description: Additional apt packages to install (space-separated)
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install apt packages and configure mold
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        # shellcheck disable=SC2086
+        sudo apt-get install -y --no-install-recommends \
+          build-essential pkg-config libsqlite3-dev libssl-dev \
+          libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+          libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
+          libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
+          libasound2-dev fonts-dejavu-core \
+          mold \
+          ${{ inputs.extra-packages }}
+        # Faster linking on Linux; GCC 12+ accepts -fuse-ld=mold (Ubuntu 24.04 has GCC 13).
+        echo 'RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
