@@ -503,6 +503,21 @@ impl Workspace {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_active_tab_index(&self) -> Option<usize> {
+        self.tabs.active_index()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_tab_titles(&self) -> Vec<String> {
+        self.tabs.tabs().iter().map(|t| t.kind.title()).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_source_label(&self) -> Option<String> {
+        self.active_view().map(|v| v.source_label())
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_active_table(&self) -> Option<(String, String)> {
         match &self.active_view()?.source {
             GridSource::Table { schema, table, .. } => Some((schema.clone(), table.clone())),

@@ -12,7 +12,7 @@ use sela_core::{
     build_table_page, classify, exact_table_rows, history_rows_label_affected,
     history_rows_label_for_rows, is_safe_to_rerun_for_load_more, preview_table, run_user_sql,
     DatabaseSession, DbError, FilterCondition, HistoryOutcome, RowCountKind, SortSpec, SqlError,
-    StatementKind, StatementOutcome, StreamBatch, StreamOutcome, TabId, TablePreview,
+    StatementKind, StatementOutcome, StreamBatch, StreamOutcome, TabId, TabKind, TablePreview,
     DEFAULT_SQL_ROW_CAP, PAGE_SIZE, STREAM_BATCH_SIZE,
 };
 use sela_drivers::drive;
@@ -135,7 +135,10 @@ impl Workspace {
             Err(SqlError::UnclosedQuote { offset }) => self.set_local_sql_error(tab_id, offset, cx),
             Err(_) => self.prompt_empty_sql(tab_id, cx),
             Ok(statements) if statements.is_empty() => self.prompt_empty_sql(tab_id, cx),
-            Ok(statements) => self.begin_sql_run_gated(tab_id, statements, window, cx),
+            Ok(statements) => {
+                let tab_id = self.query_tab_for_run(tab_id, window, cx);
+                self.begin_sql_run_gated(tab_id, statements, window, cx);
+            }
         }
     }
 
@@ -149,8 +152,36 @@ impl Workspace {
             Err(SqlError::UnclosedQuote { offset }) => self.set_local_sql_error(tab_id, offset, cx),
             Err(_) => self.prompt_empty_sql(tab_id, cx),
             Ok(statements) if statements.is_empty() => self.prompt_empty_sql(tab_id, cx),
-            Ok(statements) => self.begin_sql_run_gated(tab_id, statements, window, cx),
+            Ok(statements) => {
+                let tab_id = self.query_tab_for_run(tab_id, window, cx);
+                self.begin_sql_run_gated(tab_id, statements, window, cx);
+            }
         }
+    }
+
+    /// SQL never runs inside a table tab: its title would stay `schema.table`
+    /// while the grid shows a SQL result. Move the editor text to a new query tab.
+    fn query_tab_for_run(
+        &mut self,
+        tab_id: TabId,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) -> TabId {
+        let Some(tab) = self.tabs.get(tab_id) else {
+            return tab_id;
+        };
+        if !matches!(tab.kind, TabKind::Table { .. }) {
+            return tab_id;
+        }
+        let connection_id = tab.connection_id.clone();
+        let sql = self
+            .views
+            .get(&tab_id)
+            .map(|view| view.sql.read(cx).value().to_string())
+            .unwrap_or_default();
+        let id = self.tabs.open_query(connection_id, sql.clone());
+        self.attach_view(id, &sql, window, cx);
+        id
     }
 
     /// Apply safe-mode gating, then [`Self::begin_sql_run`] or a confirm/refusal.
