@@ -443,7 +443,9 @@ impl Workspace {
                 else {
                     return;
                 };
-                if self.connection_test_generation != generation {
+                if self.connection_test_generation != generation
+                    || form.read(cx).test_generation() != generation
+                {
                     return;
                 }
                 form.update(cx, |form, cx| {
@@ -487,7 +489,10 @@ impl Workspace {
                             .await;
                     let ms = started.elapsed().as_millis() as u64;
                     this.update(async_cx, |workspace, cx| {
-                        if workspace.connection_test_generation != generation {
+                        // SSH-16: ignore stale Accept completions after Cancel.
+                        if workspace.connection_test_generation != generation
+                            || form.read(cx).test_generation() != generation
+                        {
                             return;
                         }
                         match result {
@@ -846,7 +851,10 @@ impl Workspace {
                 }
                 FormEvent::Cancel => {
                     if let Some(form) = this.connection_form.take() {
+                        // SSH-16: bump form + workspace generations so a late
+                        // Test completion cannot apply after close.
                         form.update(cx, |form, cx| form.cancel_test(cx));
+                        this.connection_test_generation = form.read(cx).test_generation();
                     }
                     window.close_dialog(cx);
                 }
@@ -910,7 +918,11 @@ impl Workspace {
                 let Some(form) = form else {
                     return;
                 };
-                if workspace.connection_test_generation != generation {
+                // SSH-16: Cancel / cancel_test bumps the form generation; ignore
+                // late results so they do not overwrite Idle after close.
+                if workspace.connection_test_generation != generation
+                    || form.read(cx).test_generation() != generation
+                {
                     return;
                 }
                 match result {

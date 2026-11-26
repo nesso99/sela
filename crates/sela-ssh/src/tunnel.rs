@@ -161,7 +161,7 @@ pub async fn open_tunnel(request: TunnelRequest) -> Result<TunnelOpen, SshError>
         private_key_path: request.ssh.private_key_path.clone(),
     };
     let target = resolve_endpoint(&input, &request.paths)?;
-    let auth = auth_method_for(&request.ssh, &target)?;
+    let auth = auth_method_for(&request.ssh, &target, &request.paths)?;
     match try_open(request.clone(), target.clone(), auth.clone(), None).await? {
         OpenAttempt::Ready(tunnel) => Ok(TunnelOpen::Ready(tunnel)),
         OpenAttempt::Unknown {
@@ -212,7 +212,11 @@ enum OpenAttempt {
     },
 }
 
-fn auth_method_for(ssh: &SshSettings, target: &ResolvedSshTarget) -> Result<AuthMethod, SshError> {
+fn auth_method_for(
+    ssh: &SshSettings,
+    target: &ResolvedSshTarget,
+    paths: &SshPaths,
+) -> Result<AuthMethod, SshError> {
     match ssh.auth {
         SshAuthMethod::Password => Ok(AuthMethod::Password),
         SshAuthMethod::PrivateKey => {
@@ -222,7 +226,9 @@ fn auth_method_for(ssh: &SshSettings, target: &ResolvedSshTarget) -> Result<Auth
                 .ok_or_else(|| SshError::config("Private key path is required."))?;
             Ok(AuthMethod::PrivateKey { path })
         }
-        SshAuthMethod::Agent => Ok(AuthMethod::Agent),
+        SshAuthMethod::Agent => Ok(AuthMethod::Agent {
+            auth_sock: paths.auth_sock.clone(),
+        }),
     }
 }
 

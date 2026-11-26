@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Connection dialog **Cancel** stays enabled while Test is running, and closing the dialog cancels the in-flight Test so a late result cannot overwrite the Idle line (SSH-16 / #128).
 - After a cancelled commit, the pending bar shows `Commit cancelled. No changes were saved.` instead of `Commit failed. Changes kept.` (CAN-03 / #112 follow-up).
 - Preview (`secondary-shift-v`) does not run while a text input has focus, so paste still works (#112 follow-up).
 - After Save/reconnect, a table tab that last ran SQL reloads the table instead of keeping the stale SQL grid under the table title (#98). The same reload runs on every tab switch while the grid still holds a SQL result in a table tab, so that SQL result is dropped when leaving and returning to the tab.

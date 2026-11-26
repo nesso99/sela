@@ -302,14 +302,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux dependencies
+      - name: Install Linux GPUI dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential pkg-config libsqlite3-dev libssl-dev \
-            libdbus-1-dev openssh-client sshpass \
-            libvulkan-dev libwayland-dev libxkbcommon-dev \
-            libxcb1-dev libx11-dev libfontconfig1-dev
+            libvulkan-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype6-dev libdbus-1-dev \
+            libasound2-dev fonts-dejavu-core \
+            openssh-client sshpass xvfb
 
       - uses: Swatinem/rust-cache@v2
 
@@ -343,8 +345,18 @@ jobs:
             echo "SELA_SSH_REQUIRED=1"
           } >> "$GITHUB_ENV"
 
-      - name: cargo test (SSH tunnel)
+      - name: cargo test (SSH tunnel drivers)
         run: cargo test -p sela-drivers --test ssh_tunnel -- --nocapture
+
+      - name: cargo test (SSH tunnel workspace UI)
+        run: |
+          set -euo pipefail
+          # Headless GPUI: match test (ubuntu-latest) / scripts/ui-tests.sh.
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a cargo test -p sela-app --bins ssh_tunnel_workspace -- --nocapture
+          else
+            cargo test -p sela-app --bins ssh_tunnel_workspace -- --nocapture
+          fi
 
       - name: Tear down SSH bastion containers
         if: always()

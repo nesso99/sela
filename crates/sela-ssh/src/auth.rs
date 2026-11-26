@@ -1,7 +1,7 @@
 //! SSH authentication: password, private key (+ passphrase), ssh-agent.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use russh::client::Handle;
@@ -42,8 +42,13 @@ impl fmt::Debug for SshAuthSecrets {
 #[derive(Debug, Clone)]
 pub enum AuthMethod {
     Password,
-    PrivateKey { path: std::path::PathBuf },
-    Agent,
+    PrivateKey {
+        path: std::path::PathBuf,
+    },
+    /// ssh-agent. `auth_sock` overrides `SSH_AUTH_SOCK` when set (SSH-04 tests).
+    Agent {
+        auth_sock: Option<PathBuf>,
+    },
 }
 
 pub(crate) async fn authenticate(
@@ -67,7 +72,9 @@ pub(crate) async fn authenticate(
         AuthMethod::PrivateKey { path } => {
             authenticate_private_key(session, user, path, secrets.passphrase.as_deref()).await
         }
-        AuthMethod::Agent => authenticate_agent(session, user).await,
+        AuthMethod::Agent { auth_sock } => {
+            authenticate_agent(session, user, auth_sock.as_deref()).await
+        }
     }
 }
 
@@ -137,12 +144,11 @@ fn map_private_key_load_error(
 async fn authenticate_agent(
     session: &mut Handle<ClientHandler>,
     user: &str,
+    auth_sock: Option<&Path>,
 ) -> Result<(), SshError> {
     #[cfg(unix)]
     {
-        let mut agent = AgentClient::connect_env()
-            .await
-            .map_err(|_| SshError::auth("SSH: SSH agent is not available."))?;
+        let mut agent = connect_agent(auth_sock).await?;
         let identities: Vec<PublicKey> = agent
             .request_identities()
             .await
@@ -168,6 +174,7 @@ async fn authenticate_agent(
     }
     #[cfg(windows)]
     {
+        let _ = auth_sock;
         let mut agent = AgentClient::connect_pageant().await;
         let identities: Vec<PublicKey> = agent
             .request_identities()
@@ -194,10 +201,25 @@ async fn authenticate_agent(
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (session, user);
+        let _ = (session, user, auth_sock);
         Err(SshError::unsupported(
             "ssh-agent authentication is not supported on this platform",
         ))
+    }
+}
+
+/// Connect to ssh-agent via an injectable socket, or `SSH_AUTH_SOCK` when unset.
+#[cfg(unix)]
+async fn connect_agent(
+    auth_sock: Option<&Path>,
+) -> Result<AgentClient<tokio::net::UnixStream>, SshError> {
+    match auth_sock {
+        Some(path) => AgentClient::connect_uds(path)
+            .await
+            .map_err(|_| SshError::auth("SSH: SSH agent is not available.")),
+        None => AgentClient::connect_env()
+            .await
+            .map_err(|_| SshError::auth("SSH: SSH agent is not available.")),
     }
 }
 

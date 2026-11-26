@@ -9,6 +9,7 @@
 //! Test names include the QA plan ids from `docs/qa/v0.3-test-plan.md`.
 
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use sela_core::{
@@ -16,6 +17,22 @@ use sela_core::{
 };
 use sela_drivers::{connect_with_auth, ConnectAuth, ConnectOutcome, SshAuthSecrets, SshPaths};
 use sela_ssh::{open_tunnel, TunnelOpen, TunnelRequest};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+/// Cap concurrent handshakes against the bastion so a default OpenSSH
+/// `MaxStartups 10:30:100` does not randomly drop unauthenticated connects
+/// when `cargo test` runs the suite in parallel.
+fn bastion_slots() -> Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(4))).clone()
+}
+
+async fn acquire_bastion_slot() -> OwnedSemaphorePermit {
+    bastion_slots()
+        .acquire_owned()
+        .await
+        .expect("bastion concurrency semaphore closed")
+}
 
 struct SshEnv {
     host: String,
@@ -192,6 +209,7 @@ async fn ssh01_password_auth_then_postgres_query() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let conn = pg_connection(&env, password_ssh(&env));
     let outcome = connect_with_auth(&conn, auth_password(&env))
         .await
@@ -208,6 +226,7 @@ async fn ssh02_private_key_no_passphrase() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let conn = pg_connection(&env, key_ssh(&env, false));
     let outcome = connect_with_auth(&conn, auth_key(&env, None))
         .await
@@ -224,6 +243,7 @@ async fn ssh03_private_key_with_passphrase() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let conn = pg_connection(&env, key_ssh(&env, true));
     // Wrong passphrase → SSH auth, not DB auth.
     let bad = connect_with_auth(&conn, auth_key(&env, Some("wrong-passphrase".into()))).await;
@@ -257,6 +277,7 @@ async fn ssh04_ssh_agent() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     if std::env::var_os("SSH_AUTH_SOCK").is_none() {
         panic!(
             "SELA_SSH_HOST is set but SSH_AUTH_SOCK is missing — start ssh-agent and ssh-add the key (fail-not-skip)"
@@ -287,6 +308,7 @@ async fn ssh05_ssh_config_host_alias() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     // Explicit Import fills resolved fields into saved JSON (final SSH-05).
     let ssh_dir = env.home.join(".ssh");
     std::fs::create_dir_all(&ssh_dir).ok();
@@ -337,6 +359,7 @@ async fn ssh06_matching_known_hosts_allows() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     assert!(env.known_hosts.is_file());
     let conn = pg_connection(&env, password_ssh(&env));
     let outcome = connect_with_auth(&conn, auth_password(&env))
@@ -351,6 +374,7 @@ async fn ssh07_wrong_host_key_rejected() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let mut paths = paths(&env);
     paths.known_hosts = env.known_hosts_bad.clone();
     let conn = pg_connection(&env, password_ssh(&env));
@@ -385,6 +409,7 @@ async fn ssh08_ssh_errors_distinct_from_db_auth() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     // Bad SSH password → Ssh, not Auth.
     let conn = pg_connection(&env, password_ssh(&env));
     let mut bad_ssh = auth_password(&env);
@@ -417,6 +442,7 @@ async fn ssh09_driver_dials_loopback_ephemeral() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let request = TunnelRequest {
         ssh: password_ssh(&env),
         remote_db_host: env.db_host.clone(),
@@ -443,6 +469,7 @@ async fn ssh10_close_releases_local_port() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let conn = pg_connection(&env, password_ssh(&env));
     let outcome = connect_with_auth(&conn, auth_password(&env))
         .await
@@ -468,6 +495,7 @@ async fn ssh12_ephemeral_bind_does_not_use_foreign_port() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let request = TunnelRequest {
         ssh: password_ssh(&env),
         remote_db_host: env.db_host.clone(),
@@ -492,6 +520,7 @@ async fn ssh15_failed_attempt_leaves_no_listener() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     // Fail with bad known_hosts, then succeed.
     let mut bad_paths = paths(&env);
     bad_paths.known_hosts = env.known_hosts_bad.clone();
@@ -521,6 +550,7 @@ async fn ssh17_mysql_through_tunnel() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let Some(mysql_host) = env.mysql_host.clone() else {
         if ssh_required() {
             panic!(
@@ -561,6 +591,7 @@ async fn ssh18_unknown_host_key_challenge_then_accept() {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
+    let _bastion = acquire_bastion_slot().await;
     let empty_known = env.home.join(".ssh").join("known_hosts.empty");
     let _ = std::fs::remove_file(&empty_known);
     std::fs::File::create(&empty_known).unwrap();
@@ -633,36 +664,274 @@ async fn ssh18_unknown_host_key_challenge_then_accept() {
     let _ = Duration::from_secs(0);
 }
 
+/// SSH-11: drop the SSH forward while `pg_sleep` is in flight; query must error
+/// (no hang / panic). Holds the tunnel handle separately from the DB session.
 #[tokio::test]
-async fn ssh11_tunnel_drop_mid_query_surfaces_error() {
+async fn ssh11_tunnel_drop_while_pg_sleep_surfaces_error() {
     let Some(env) = ssh_env() else {
         eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
         return;
     };
-    let conn = pg_connection(&env, password_ssh(&env));
-    let outcome = connect_with_auth(&conn, auth_password(&env))
-        .await
-        .expect("connect");
+    let _bastion = acquire_bastion_slot().await;
+    let request = TunnelRequest {
+        ssh: password_ssh(&env),
+        remote_db_host: env.db_host.clone(),
+        remote_db_port: env.db_port,
+        secrets: SshAuthSecrets {
+            password: Some(env.password.clone()),
+            passphrase: None,
+        },
+        paths: paths(&env),
+    };
+    let TunnelOpen::Ready(tunnel) = open_tunnel(request).await.expect("open tunnel") else {
+        panic!("expected Ready");
+    };
+    let local = tunnel.local_addr();
+    // Dial the ephemeral listener with SSH off so we can close the tunnel
+    // independently while the query runs.
+    let mut dial = pg_connection(
+        &env,
+        SshSettings {
+            enabled: false,
+            ..SshSettings::default()
+        },
+    );
+    dial.host = "127.0.0.1".into();
+    dial.port = local.port();
+    let outcome = connect_with_auth(
+        &dial,
+        ConnectAuth {
+            db_password: env.db_password.clone(),
+            ssh: SshAuthSecrets::default(),
+            ssh_paths: None,
+        },
+    )
+    .await
+    .expect("dial through tunnel");
     let ConnectOutcome::Ready(session) = outcome else {
         panic!("expected Ready");
     };
-    // Drop the session (closes tunnel) while… we can't easily race pg_sleep
-    // without holding the tunnel handle separately. Open a tunnel, start a
-    // raw TCP query path via connect, then close the tunnel under the session
-    // by dropping — session.close cancels the pool; a subsequent query fails
-    // without panic.
-    session.close().await;
-    let err = session.query("SELECT 1").await.expect_err("after close");
+
+    let query = tokio::spawn(async move {
+        session
+            .query("SELECT pg_sleep(5)")
+            .await
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    });
+    // Let the sleep start on the server, then tear down the SSH forward.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    tunnel.close().await;
+
+    let result = tokio::time::timeout(Duration::from_secs(15), query)
+        .await
+        .expect("pg_sleep must not hang after tunnel drop")
+        .expect("query task join");
     assert!(
-        matches!(
-            err,
-            DbError::Connection { .. } | DbError::Internal { .. } | DbError::Query { .. }
-        ),
-        "got {err:?}"
+        result.is_err(),
+        "SSH-11: query during tunnel drop must return an error, got Ok"
     );
-    // Reconnect still works (SSH-11).
+
+    // A fresh tunneled connect still works (reconnect required after drop).
+    let again = connect_with_auth(
+        &pg_connection(&env, password_ssh(&env)),
+        auth_password(&env),
+    )
+    .await
+    .expect("reconnect after mid-query drop");
+    assert!(matches!(again, ConnectOutcome::Ready(_)));
+}
+
+/// SSH-11 (MySQL): same mid-query drop with `SLEEP(5)`.
+#[tokio::test]
+async fn ssh11_tunnel_drop_while_mysql_sleep_surfaces_error() {
+    let Some(env) = ssh_env() else {
+        eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
+        return;
+    };
+    let _bastion = acquire_bastion_slot().await;
+    let Some(mysql_host) = env.mysql_host.clone() else {
+        if ssh_required() {
+            panic!(
+                "SELA_SSH_REQUIRED=1 but SELA_SSH_MYSQL_HOST is unset — MySQL mid-query drop is required"
+            );
+        }
+        eprintln!("skip SSH-11 MySQL: set SELA_SSH_MYSQL_HOST");
+        return;
+    };
+    let mysql_port = env.mysql_port.unwrap_or(3306);
+    let request = TunnelRequest {
+        ssh: password_ssh(&env),
+        remote_db_host: mysql_host.clone(),
+        remote_db_port: mysql_port,
+        secrets: SshAuthSecrets {
+            password: Some(env.password.clone()),
+            passphrase: None,
+        },
+        paths: paths(&env),
+    };
+    let TunnelOpen::Ready(tunnel) = open_tunnel(request).await.expect("open MySQL tunnel") else {
+        panic!("expected Ready");
+    };
+    let local = tunnel.local_addr();
+    let mut dial = SavedConnection::new(Engine::Mysql);
+    dial.name = "ssh-mysql-drop".into();
+    dial.host = "127.0.0.1".into();
+    dial.port = local.port();
+    dial.username = env.db_user.clone();
+    dial.database = env.db_name.clone();
+    dial.tls.mode = TlsMode::Disable;
+    let outcome = connect_with_auth(
+        &dial,
+        ConnectAuth {
+            db_password: env.db_password.clone(),
+            ssh: SshAuthSecrets::default(),
+            ssh_paths: None,
+        },
+    )
+    .await
+    .expect("dial MySQL through tunnel");
+    let ConnectOutcome::Ready(session) = outcome else {
+        panic!("expected Ready");
+    };
+
+    let query = tokio::spawn(async move {
+        session
+            .query("SELECT SLEEP(5)")
+            .await
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    tunnel.close().await;
+
+    let result = tokio::time::timeout(Duration::from_secs(15), query)
+        .await
+        .expect("SLEEP must not hang after tunnel drop")
+        .expect("query task join");
+    assert!(
+        result.is_err(),
+        "SSH-11: MySQL query during tunnel drop must error, got Ok"
+    );
+}
+
+/// SSH-16: Test connection path — validate → tunnel → dial ephemeral → drop session.
+#[tokio::test]
+async fn ssh16_test_connection_through_tunnel_dials_ephemeral() {
+    let Some(env) = ssh_env() else {
+        eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
+        return;
+    };
+    let _bastion = acquire_bastion_slot().await;
+    // Same connect_with_auth path the connection-dialog Test button uses.
+    let conn = pg_connection(&env, password_ssh(&env));
+    let outcome = connect_with_auth(&conn, auth_password(&env))
+        .await
+        .expect("SSH-16 Test connect");
+    let ConnectOutcome::Ready(session) = outcome else {
+        panic!("expected Ready");
+    };
+    assert_select_one(session.as_ref()).await;
+    // Test drops the session immediately and must not leave the tunnel bound.
+    session.close().await;
     let again = connect_with_auth(&conn, auth_password(&env))
         .await
-        .expect("reconnect after drop");
+        .expect("second Test after drop");
     assert!(matches!(again, ConnectOutcome::Ready(_)));
+}
+
+/// SSH-04: missing agent socket → `SSH: SSH agent is not available.`
+#[tokio::test]
+#[cfg(unix)]
+async fn ssh04_agent_not_available() {
+    let Some(env) = ssh_env() else {
+        eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
+        return;
+    };
+    let _bastion = acquire_bastion_slot().await;
+    let mut ssh = password_ssh(&env);
+    ssh.auth = SshAuthMethod::Agent;
+    let conn = pg_connection(&env, ssh);
+    // Injectable missing socket — never reads the process SSH_AUTH_SOCK.
+    let missing = env.home.join(".ssh").join("no-such-agent.sock");
+    let paths = paths(&env).with_auth_sock(Some(missing));
+    let err = connect_with_auth(
+        &conn,
+        ConnectAuth {
+            db_password: env.db_password.clone(),
+            ssh: SshAuthSecrets::default(),
+            ssh_paths: Some(paths),
+        },
+    )
+    .await
+    .expect_err("missing agent must fail");
+    assert!(matches!(err, DbError::Ssh { .. }), "got {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "SSH: SSH agent is not available.",
+        "SSH-04 missing-agent copy"
+    );
+}
+
+/// SSH-04: empty agent (no keys) → `SSH: SSH agent has no identities.`
+#[tokio::test]
+#[cfg(unix)]
+async fn ssh04_agent_no_identities() {
+    let Some(env) = ssh_env() else {
+        eprintln!("skip SSH: set SELA_SSH_HOST (and related) to run");
+        return;
+    };
+    let _bastion = acquire_bastion_slot().await;
+    // Fresh agent with no keys — injectable sock, never the developer's agent.
+    let output = std::process::Command::new("ssh-agent")
+        .arg("-s")
+        .output()
+        .expect("start empty ssh-agent");
+    assert!(output.status.success(), "ssh-agent -s failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let sock = stdout
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("SSH_AUTH_SOCK=")
+                .and_then(|rest| rest.split(';').next())
+                .map(|s| s.to_string())
+        })
+        .expect("SSH_AUTH_SOCK from ssh-agent -s");
+    let agent_pid = stdout.lines().find_map(|line| {
+        line.strip_prefix("SSH_AGENT_PID=")
+            .and_then(|rest| rest.split(';').next())
+            .and_then(|s| s.parse::<u32>().ok())
+    });
+    struct KillAgent(Option<u32>);
+    impl Drop for KillAgent {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+    }
+    let _guard = KillAgent(agent_pid);
+
+    let mut ssh = password_ssh(&env);
+    ssh.auth = SshAuthMethod::Agent;
+    let conn = pg_connection(&env, ssh);
+    let paths = paths(&env).with_auth_sock(Some(PathBuf::from(&sock)));
+    let err = connect_with_auth(
+        &conn,
+        ConnectAuth {
+            db_password: env.db_password.clone(),
+            ssh: SshAuthSecrets::default(),
+            ssh_paths: Some(paths),
+        },
+    )
+    .await
+    .expect_err("empty agent must fail");
+    assert!(matches!(err, DbError::Ssh { .. }), "got {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "SSH: SSH agent has no identities.",
+        "SSH-04 empty-agent copy"
+    );
 }

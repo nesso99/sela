@@ -132,17 +132,61 @@ done
 
 # linuxserver/openssh-server may leave AllowTcpForwarding unset/no; russh needs
 # direct-tcpip. Force-enable on the live config and reload sshd.
+# Raise MaxStartups / MaxSessions so parallel cargo test handshakes are not
+# randomly dropped by the default MaxStartups 10:30:100 (ssh-integration flake).
+# OpenSSH 9.8+ PerSourcePenalties (on by default) bans the runner IP after a
+# few intentional auth/host-key failures in the suite — disable when supported.
+# Detect support by writing the option then `sshd -t -f` (bare `sshd -T` is
+# unreliable in this image and previously skipped the write entirely).
 docker exec sela-ssh-bastion bash -c '
   set -euo pipefail
+  # docker exec PATH often omits /usr/sbin. linuxserver installs the PAM
+  # build as /usr/sbin/sshd.pam (not plain sshd).
+  PATH="/usr/sbin:/sbin:${PATH:-}"
+  SSHD="$(command -v sshd.pam 2>/dev/null || command -v sshd 2>/dev/null || true)"
+  if [ -z "$SSHD" ] || [ ! -x "$SSHD" ]; then
+    if [ -x /usr/sbin/sshd.pam ]; then
+      SSHD=/usr/sbin/sshd.pam
+    elif [ -x /usr/sbin/sshd ]; then
+      SSHD=/usr/sbin/sshd
+    else
+      echo "sshd not found (tried sshd.pam / sshd under PATH and /usr/sbin)" >&2
+      ls -la /usr/sbin/sshd* >&2 || true
+      exit 1
+    fi
+  fi
+  set_sshd_opt() {
+    local cfg="$1" key="$2" value="$3"
+    if grep -qE "^[#]?${key}([[:space:]]|$)" "$cfg"; then
+      sed -i "s/^#\?${key}.*/${key} ${value}/" "$cfg"
+    else
+      printf "\n${key} ${value}\n" >> "$cfg"
+    fi
+    echo "${key} in $cfg:" >&2
+    grep -E "^${key}" "$cfg" >&2 || true
+  }
+  echo "sshd ($SSHD) -V:" >&2
+  "$SSHD" -V 2>&1 | head -1 >&2 || true
+  primary_cfg=""
   for cfg in /config/sshd/sshd_config /etc/ssh/sshd_config; do
     [ -f "$cfg" ] || continue
-    if grep -qE "^[#]?AllowTcpForwarding" "$cfg"; then
-      sed -i "s/^#\?AllowTcpForwarding.*/AllowTcpForwarding yes/" "$cfg"
-    else
-      printf "\nAllowTcpForwarding yes\n" >> "$cfg"
+    [ -n "$primary_cfg" ] || primary_cfg="$cfg"
+    set_sshd_opt "$cfg" AllowTcpForwarding yes
+    set_sshd_opt "$cfg" MaxStartups "64:30:128"
+    set_sshd_opt "$cfg" MaxSessions 64
+    # Try PerSourcePenalties no; remove if this sshd rejects the keyword.
+    set_sshd_opt "$cfg" PerSourcePenalties no
+    if ! "$SSHD" -t -f "$cfg" >"/tmp/sshd-t.$$.out" 2>"/tmp/sshd-t.$$.err"; then
+      if grep -qiE "Bad configuration option.*[Pp]er[Ss]ource[Pp]enalties|Deprecated option.*[Pp]er[Ss]ource[Pp]enalties|Unsupported option.*[Pp]er[Ss]ource[Pp]enalties" "/tmp/sshd-t.$$.err"; then
+        sed -i "/^PerSourcePenalties /d" "$cfg"
+        echo "PerSourcePenalties not supported; removed from $cfg" >&2
+        cat "/tmp/sshd-t.$$.err" >&2 || true
+      else
+        echo "sshd -t -f $cfg failed:" >&2
+        cat "/tmp/sshd-t.$$.err" >&2 || true
+        exit 1
+      fi
     fi
-    echo "AllowTcpForwarding in $cfg:" >&2
-    grep -E "^AllowTcpForwarding" "$cfg" >&2 || true
   done
   # Reload sshd (s6 service name varies by image version).
   if [ -d /run/service/svc-openssh-server ]; then
@@ -150,7 +194,14 @@ docker exec sela-ssh-bastion bash -c '
   elif [ -d /var/run/s6/services/svc-openssh-server ]; then
     s6-svc -h /var/run/s6/services/svc-openssh-server
   else
-    pkill -HUP sshd || true
+    pkill -HUP -x sshd.pam 2>/dev/null || pkill -HUP -x sshd || true
+  fi
+  # Confirm effective settings for CI logs (use -f; bare sshd -T is empty here).
+  if [ -n "$primary_cfg" ]; then
+    echo "sshd -T -f $primary_cfg (forwarding / startups / sessions / penalties):" >&2
+    "$SSHD" -T -f "$primary_cfg" 2>/dev/null \
+      | grep -iE "^(allowtcpforwarding|maxstartups|maxsessions|persourcepenalties) " >&2 \
+      || echo "(sshd -T produced no matching lines)" >&2
   fi
 ' >&2
 

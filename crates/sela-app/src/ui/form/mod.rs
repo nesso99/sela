@@ -720,6 +720,7 @@ impl ConnectionForm {
             "port" => &self.port,
             "username" => &self.username,
             "database" => &self.database,
+            "password" => &self.password,
             other => panic!("unknown form field: {other}"),
         };
         Self::set_value(input, value.to_string(), window, cx);
@@ -728,6 +729,12 @@ impl ConnectionForm {
     #[cfg(test)]
     pub(crate) fn test_build_draft(&mut self, cx: &mut Context<Self>) -> Option<ConnectionDraft> {
         self.build_draft(cx)
+    }
+
+    /// Emit FormEvent::Test the same way the Test button does (SSH-16).
+    #[cfg(test)]
+    pub(crate) fn test_request_test(&mut self, cx: &mut Context<Self>) {
+        self.request_test(cx);
     }
 
     /// Fill the minimum valid Postgres fields so Save can succeed in UI tests.
@@ -997,10 +1004,11 @@ impl Render for ConnectionForm {
                     .pt_2()
                     .child({
                         let this = this.clone();
+                        // SSH-16 / UX 05: Cancel stays enabled while Testing so
+                        // closing the dialog can cancel an in-flight Test.
                         Button::new("cancel")
                             .label("Cancel")
                             .ghost()
-                            .disabled(testing)
                             .on_click(move |_, _, cx| {
                                 this.update(cx, |form, cx| {
                                     form.cancel_test(cx);

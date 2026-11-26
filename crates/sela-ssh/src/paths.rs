@@ -16,6 +16,12 @@ pub struct SshPaths {
     pub config: Option<PathBuf>,
     /// known_hosts file checked (and optionally written) for host keys.
     pub known_hosts: PathBuf,
+    /// Injectable `SSH_AUTH_SOCK` for ssh-agent auth (SSH-04).
+    ///
+    /// `None` → read the process environment (production). Tests pass a
+    /// throwaway agent socket (or a missing path) so they never touch the
+    /// developer's real agent.
+    pub auth_sock: Option<PathBuf>,
 }
 
 impl SshPaths {
@@ -27,6 +33,7 @@ impl SshPaths {
             home,
             config: Some(ssh_dir.join("config")),
             known_hosts: ssh_dir.join("known_hosts"),
+            auth_sock: None,
         }
     }
 
@@ -50,6 +57,12 @@ impl SshPaths {
         self.config = None;
         self
     }
+
+    /// Inject an ssh-agent socket path (Unix). `None` keeps env/`SSH_AUTH_SOCK`.
+    pub fn with_auth_sock(mut self, path: impl Into<Option<PathBuf>>) -> Self {
+        self.auth_sock = path.into();
+        self
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +80,12 @@ mod tests {
         assert_eq!(
             paths.known_hosts,
             PathBuf::from("/tmp/sela-home/.ssh/known_hosts")
+        );
+        assert!(paths.auth_sock.is_none());
+        let with_sock = paths.with_auth_sock(Some(PathBuf::from("/tmp/agent.sock")));
+        assert_eq!(
+            with_sock.auth_sock.as_deref(),
+            Some(Path::new("/tmp/agent.sock"))
         );
     }
 }
