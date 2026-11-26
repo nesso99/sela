@@ -7,7 +7,8 @@
 #
 # Env:
 #   SELA_BIN      binary to run (default: <repo>/target/release/sela)
-#   SELA_LOG      log file (default: ${XDG_RUNTIME_DIR:-/tmp}/sela-qa.log)
+#   SELA_LOG      log file (default: ${XDG_RUNTIME_DIR:-/tmp/sela-qa-$UID}/sela-qa.log)
+#   SELA_PID_FILE PID file read by qa-stop-fedora.sh (default: same dir, sela-qa.pid)
 #   WAIT_SECS     max seconds to wait for the window (default: 30)
 #   ORCA_CLI      Orca IDE CLI used to confirm the window; or ORCA_CLI_COMMAND. REQUIRED unless
 #                 --no-a11y. No default: bare `orca` / /usr/bin/orca is the GNOME screen
@@ -19,7 +20,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELA_BIN="${SELA_BIN:-$ROOT/target/release/sela}"
-SELA_LOG="${SELA_LOG:-${XDG_RUNTIME_DIR:-/tmp}/sela-qa.log}"
+RUN_DIR="${XDG_RUNTIME_DIR:-/tmp/sela-qa-$(id -u)}"
+mkdir -p "$RUN_DIR"
+[[ -n "${XDG_RUNTIME_DIR:-}" ]] || chmod 700 "$RUN_DIR"
+SELA_LOG="${SELA_LOG:-$RUN_DIR/sela-qa.log}"
+SELA_PID_FILE="${SELA_PID_FILE:-$RUN_DIR/sela-qa.pid}"
 WAIT_SECS="${WAIT_SECS:-30}"
 ORCA_CLI="${ORCA_CLI:-${ORCA_CLI_COMMAND:-}}"
 BUILD=0
@@ -28,7 +33,7 @@ for a in "$@"; do
   case "$a" in
     --build) BUILD=1 ;;
     --no-a11y) A11Y=0 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown arg: $a" >&2; exit 2 ;;
   esac
 done
@@ -76,6 +81,8 @@ fi
 : > "$SELA_LOG"
 setsid "$SELA_BIN" >>"$SELA_LOG" 2>&1 < /dev/null &
 PID=$!
+echo "$PID" > "$SELA_PID_FILE"
+echo "qa-launch: PID=$PID" >> "$SELA_LOG"
 
 # --no-a11y: nothing to query; succeed as soon as the process is alive.
 if [[ $A11Y -eq 0 ]]; then
