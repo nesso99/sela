@@ -720,6 +720,7 @@ impl ConnectionForm {
             "port" => &self.port,
             "username" => &self.username,
             "database" => &self.database,
+            "password" => &self.password,
             other => panic!("unknown form field: {other}"),
         };
         Self::set_value(input, value.to_string(), window, cx);
