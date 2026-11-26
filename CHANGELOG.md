@@ -9,11 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Fixed
+
+## [0.3.1] - 2026-11-26
+
+### Added
+
 - Double-click a column header’s right edge to auto-fit width to the widest visible cell (header included), with min/max clamps; data and SQL result grids (#118).
+- Fedora QA launch/stop scripts (`scripts/qa-launch-fedora.sh`, `scripts/qa-stop-fedora.sh`) and AT-SPI enablement for Orca computer-use (#145, #146).
+- Local-first verification policy in `AGENTS.md` / contributing (#143).
+- Fedora GNOME Wayland as primary QA gate (not exempted) (#144).
 
 ### Fixed
 
 - Data grid keeps user-resized column widths across sort, header/cell selection, pagination, and refresh within the same result columns (#137).
+- New-connection form scrolls so Cancel, Test, Save, and Save & connect stay visible when a validation error is shown; Run / Run all close the SQL autocomplete popup (#140).
+- Running SQL from a table tab opens a new Query tab and runs there; the table tab stays a table (#141).
 
 ## [0.3.0] - 2026-11-26
 
