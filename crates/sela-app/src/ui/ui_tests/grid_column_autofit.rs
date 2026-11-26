@@ -27,7 +27,9 @@ fn seed_sample_db(path: &std::path::Path) {
     .expect("sample sqlite");
 }
 
-async fn open_workspace(cx: &mut TestAppContext) -> (TempDir, gpui_kit::AnyWindowHandle, Entity<Workspace>) {
+async fn open_workspace(
+    cx: &mut TestAppContext,
+) -> (TempDir, gpui_kit::AnyWindowHandle, Entity<Workspace>) {
     cx.executor().allow_parking();
     let dir = TempDir::new().expect("temp dir");
     let db_path = dir.path().join("sample.sqlite");
@@ -118,9 +120,7 @@ async fn double_click_autofit_data_grid_matches_widest_visible_cell(cx: &mut Tes
 #[gpui_kit::test]
 async fn double_click_autofit_caps_very_long_values(cx: &mut TestAppContext) {
     let long_body = "W".repeat(400);
-    let sql = format!(
-        "SELECT 'x' AS narrow, '{long_body}' AS huge"
-    );
+    let sql = format!("SELECT 'x' AS narrow, '{long_body}' AS huge");
     let (_dir, handle, workspace) = open_workspace(cx).await;
     cx.update_window(handle, |_, window, cx| {
         workspace.update(cx, |ws, cx| {
@@ -165,10 +165,7 @@ async fn double_click_autofit_caps_very_long_values(cx: &mut TestAppContext) {
         window.render_frame(cx);
         grid.update(cx, |state, cx| {
             state.refresh(cx);
-            assert!(
-                state.fit_col(huge_ix, window, cx),
-                "fit_col on huge column"
-            );
+            assert!(state.fit_col(huge_ix, window, cx), "fit_col on huge column");
             let huge_w = f32::from(state.col_width(huge_ix).expect("huge width"));
             assert!(
                 huge_w <= COLUMN_AUTO_FIT_MAX_WIDTH + 0.5,

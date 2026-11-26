@@ -18,7 +18,9 @@ use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelecti
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, Font, TextRun, px, App, IntoElement, MouseButton, Pixels, SharedString, Window};
+use gpui_kit::{
+    div, px, App, Font, IntoElement, MouseButton, Pixels, SharedString, TextRun, Window,
+};
 
 use std::collections::BTreeMap;
 
@@ -382,7 +384,9 @@ impl GridDelegate {
                     overlay
                         .raw
                         .get(col_name)
-                        .map(|v| truncate_one_line(&v.display(), CELL_DISPLAY_MAX_CHARS).into_owned())
+                        .map(|v| {
+                            truncate_one_line(&v.display(), CELL_DISPLAY_MAX_CHARS).into_owned()
+                        })
                         .unwrap_or_default(),
                 )
             }
