@@ -20,10 +20,16 @@ WINDOW_TITLE=Sela
 APP_SELECTOR=pid:464032
 ```
 
+`ORCA_CLI` (or `ORCA_CLI_COMMAND`) must point at the Orca IDE CLI, resolved as
+in the `orca-computer-use` skill. There is no default: bare `orca` / `/usr/bin/orca`
+on Fedora is the GNOME screen reader, and the script refuses it (and anything
+resolving to it).
+
+`--no-a11y` skips the AT-SPI step and the window check: it only confirms the
+process stays alive for ~1 s and prints `PID` / `APP_SELECTOR` (no `WINDOW_TITLE`).
+
 Set `VK_ICD_FILENAMES` before running only if the GPU driver needs it (the
-owner's machine does not). Resolve the Orca CLI as in the `orca-computer-use`
-skill (`$ORCA_CLI_COMMAND`); bare `orca` outside an Orca terminal is the GNOME
-screen reader.
+owner's machine does not).
 
 ## 2. Drive with `orca computer`
 
@@ -51,7 +57,7 @@ Rules that matter on this setup:
   Wayland windows ignore synthetic input".
 - `set-value` / `type-text --element-index` return `value_not_settable` for
   Sela's text entries (GPUI inputs expose no editable-text interface).
-  Typing therefore cannot be automated on Wayland; use the Xvfb path below.
+  Typing therefore cannot be automated on Wayland; use a real X11 session (section 4).
 
 ## 3. Root cause of "Sela is not on the AT-SPI bus"
 
@@ -86,6 +92,6 @@ No env vars (`GTK_A11Y`, `QT_ACCESSIBILITY`) are involved: GPUI is not GTK/Qt.
 ## 4. Optional: X11 path for typing and keys
 
 `scripts/screenshot-smoke.sh` runs a release binary under Xvfb + lavapipe and
-captures screenshots (used by CI). Use it, or an X11 session, when a test needs
-real keyboard input or pixel checks; X11 is an add-on, not a replacement for the
-Wayland pass.
+only captures screenshots (used by CI); it does not provide keyboard input. When
+a test needs real keyboard input, log into a real X11 session and drive Sela
+there. X11 is an add-on, not a replacement for the Wayland pass.
