@@ -711,19 +711,15 @@ impl Workspace {
         self.connection_form.clone()
     }
 
-    /// Snapshot of a secret account (for SSH-16 no-persist assertions). Never log it.
-    #[cfg(test)]
-    pub(crate) fn test_secret_present(&self, account: &str) -> bool {
-        self.secrets
-            .get_optional(account)
-            .ok()
-            .flatten()
-            .is_some_and(|v| !v.is_empty())
-    }
-
     #[cfg(test)]
     pub(crate) fn test_set_secret(&self, account: &str, secret: &str) {
         let _ = self.secrets.set(account, secret);
+    }
+
+    /// Full secret-store account→value map for SSH-16 equality checks. Never log it.
+    #[cfg(test)]
+    pub(crate) fn test_secret_snapshot(&self) -> std::collections::BTreeMap<String, String> {
+        self.secrets.snapshot_accounts()
     }
 
     #[cfg(test)]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use keyring::credential::CredentialPersistence;
@@ -15,6 +15,11 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<String>, SecretError>;
     fn set(&self, account: &str, secret: &str) -> Result<(), SecretError>;
     fn delete(&self, account: &str) -> Result<(), SecretError>;
+
+    /// Full account→secret map for tests. Default `None` (keyring cannot list).
+    fn snapshot_accounts(&self) -> Option<BTreeMap<String, String>> {
+        None
+    }
 }
 
 /// Keychain account for the database password (`connections.json` id).
@@ -70,6 +75,17 @@ impl SecretStore for MemorySecretStore {
         self.values.lock().expect("secret lock").remove(account);
         Ok(())
     }
+
+    fn snapshot_accounts(&self) -> Option<BTreeMap<String, String>> {
+        Some(
+            self.values
+                .lock()
+                .expect("secret lock")
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        )
+    }
 }
 
 impl SecretStore for Box<dyn SecretStore> {
@@ -83,6 +99,10 @@ impl SecretStore for Box<dyn SecretStore> {
 
     fn delete(&self, account: &str) -> Result<(), SecretError> {
         (**self).delete(account)
+    }
+
+    fn snapshot_accounts(&self) -> Option<BTreeMap<String, String>> {
+        (**self).snapshot_accounts()
     }
 }
 
@@ -273,6 +293,15 @@ impl<S: SecretStore> CachingSecrets<S> {
         self.delete(connection_id);
         self.delete(&ssh_password_account(connection_id));
         self.delete(&ssh_passphrase_account(connection_id));
+    }
+
+    /// Full account→secret map for tests (memory overlay + inner store when listable).
+    pub fn snapshot_accounts(&self) -> BTreeMap<String, String> {
+        let mut map = self.inner.snapshot_accounts().unwrap_or_default();
+        for (account, secret) in self.memory.lock().expect("secret lock").iter() {
+            map.insert(account.clone(), secret.clone());
+        }
+        map
     }
 }
 

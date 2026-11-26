@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gpui_kit::prelude::*;
 use gpui_kit::test::{TestAppContextExt, TestWindowExt};
-use gpui_kit::{px, size, Entity, TestAppContext};
+use gpui_kit::{point, px, size, App, ElementId, Entity, ScrollDelta, TestAppContext, Window};
 use sela_core::SshAuthMethod;
 use sela_drivers::create_sample_database;
 use sela_ssh::SshPaths;
@@ -75,9 +75,37 @@ fn ssh_env_present() -> bool {
         .is_some()
 }
 
+fn ssh_required() -> bool {
+    matches!(
+        std::env::var("SELA_SSH_REQUIRED").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
 fn require_ssh_var(name: &str) -> String {
     std::env::var(name)
         .unwrap_or_else(|_| panic!("SELA_SSH_HOST is set but {name} is missing (fail-not-skip)"))
+}
+
+/// Scroll Cancel into view inside the dialog (footer sits below the fold).
+fn ensure_dialog_control_visible(window: &mut Window, id: &str, cx: &mut App) {
+    let element_id: ElementId = id.to_string().into();
+    for _ in 0..24 {
+        window.render_frame(cx);
+        if window
+            .within("dialog")
+            .try_find(element_id.clone())
+            .is_some_and(|snap| snap.visible())
+        {
+            return;
+        }
+        window.within("dialog").scroll(
+            "surface",
+            ScrollDelta::Pixels(point(px(0.), px(-160.))),
+            cx,
+        );
+    }
+    panic!("ElementId {id:?} never became visible inside dialog after scrolling");
 }
 
 /// SSH-11: tunnel drop → banner, status, session gone; tabs + pending edits stay.
@@ -168,6 +196,22 @@ async fn ssh16_cancel_test_ignores_late_result(cx: &mut TestAppContext) {
             assert!(form.is_testing(), "Test should be in flight");
         });
         window.render_frame(cx);
+
+        // Direct enabled-state check: gpui-component Button still fires on_click
+        // when disabled, so click alone cannot prove Cancel stays interactive.
+        ensure_dialog_control_visible(window, "cancel", cx);
+        assert_ne!(
+            window.within("dialog").find("cancel").disabled(),
+            Some(true),
+            "SSH-16: Cancel must stay enabled while Testing"
+        );
+        // Save / Test must disable while Testing (contrast control).
+        assert_eq!(
+            window.within("dialog").find("test-connection").disabled(),
+            Some(true),
+            "Test button disables while Testing"
+        );
+
         // Production Cancel: cancel_test + FormEvent::Cancel (closes dialog).
         super::harness::click_in_dialog(window, "cancel", cx);
         window.render_frame(cx);
@@ -220,12 +264,17 @@ async fn ssh16_cancel_test_ignores_late_result(cx: &mut TestAppContext) {
 
 /// SSH-16: successful Test through the bastion does not persist or replace session.
 ///
-/// Skips unless `SELA_SSH_HOST` is set (same gate as `ssh_tunnel` driver tests).
-/// The regular CI `test` job has no bastion; run locally via
-/// `eval "$(./scripts/run-ssh-bastion.sh)"` or extend `ssh-integration` (CI follow-up).
+/// Requires bastion env (`SELA_SSH_HOST`, …). When `SELA_SSH_REQUIRED=1` (CI
+/// `ssh-integration`), missing env is a hard failure instead of a skip.
 #[gpui_kit::test]
 async fn ssh16_successful_test_does_not_persist_or_replace_session(cx: &mut TestAppContext) {
     if !ssh_env_present() {
+        if ssh_required() {
+            panic!(
+                "SELA_SSH_REQUIRED=1 but SELA_SSH_HOST is unset; \
+                 bastion env must be exported before running ssh_tunnel_workspace"
+            );
+        }
         eprintln!("skip SSH-16 success: set SELA_SSH_HOST (and related) to run");
         return;
     }
@@ -246,13 +295,18 @@ async fn ssh16_successful_test_does_not_persist_or_replace_session(cx: &mut Test
     let active_before = cx.update(|cx| fix.workspace.read(cx).test_active_id().map(str::to_string));
     let connections_path = cx.update(|cx| fix.workspace.read(cx).test_connections_path());
     let json_before = std::fs::read_to_string(&connections_path).unwrap_or_default();
-    // Seed a sentinel secret so we can assert Test does not clear the store.
+    // Seed a sentinel and snapshot the full secret store (exact equality after Test).
     let sentinel_account = "ssh16-sentinel";
-    cx.update(|cx| {
+    let secrets_before = cx.update(|cx| {
         fix.workspace
             .read(cx)
             .test_set_secret(sentinel_account, "sentinel-value");
-        assert!(fix.workspace.read(cx).test_secret_present(sentinel_account));
+        let snap = fix.workspace.read(cx).test_secret_snapshot();
+        assert!(
+            snap.get(sentinel_account).map(String::as_str) == Some("sentinel-value"),
+            "sentinel must be present before Test"
+        );
+        snap
     });
 
     cx.update_window(fix.handle, |_, window, cx| {
@@ -318,9 +372,10 @@ async fn ssh16_successful_test_does_not_persist_or_replace_session(cx: &mut Test
             "SSH-16: successful Test must not replace the workspace session"
         );
         assert!(ws.test_is_connected());
-        assert!(
-            ws.test_secret_present(sentinel_account),
-            "SSH-16: Test must not clear existing secrets"
+        assert_eq!(
+            ws.test_secret_snapshot(),
+            secrets_before,
+            "SSH-16: successful Test must not add, remove, or change secret-store accounts"
         );
     });
 
