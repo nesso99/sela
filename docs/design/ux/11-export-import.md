@@ -13,7 +13,7 @@ Maps to QA [v0.3-test-plan.md](../../qa/v0.3-test-plan.md) **EX-01…EX-11**, **
 | Grid / table context menu | `Export…`, and on table Data also `Import CSV…` |
 | Command palette | `Export…`, `Import CSV…` ([12-command-palette.md](./12-command-palette.md)) |
 
-No dedicated global shortcut. **Browse** uses the platform save dialog on export and the platform open dialog on import (**M-EX-01** still scores the live X11 picker at RC). Headless tests inject typed paths.
+No dedicated global shortcut. **Browse** uses the platform save dialog on export and the platform open dialog on import (**M-EX-01** scores the live Fedora Wayland picker at RC; X11 optional add-on). Headless tests inject typed paths.
 
 ## Export dialog
 

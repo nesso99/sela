@@ -8,7 +8,7 @@ How work gets done on Sela. Applies to every contributor and automated coding ag
 | --- | --- | --- |
 | Engineering | Implementation | Local verification green + PR open with full checklist and tests (headless UI test for UI changes). Do **not** wait on CI. |
 | Project management | Scope, review | PR reviewed and signed off; release scope confirmed. |
-| QA | Test specs, RC check | At spec time: acceptance criteria turned into automated test specs. At RC: manual pass **only** for rendering, window manager and OS behavior. |
+| QA | Test specs, RC check | At spec time: acceptance criteria turned into automated test specs. At RC: manual pass **only** for rendering, window manager and OS behavior on the owner's Fedora GNOME Wayland machine (primary, via orca-computer-use); X11 is an optional add-on, not a replacement. |
 | DevOps | CI, RCs, tags | RC built from a fully green `main`; tag cut after sign-off. |
 | UX | Specs | UI spec with acceptance criteria before implementation. |
 
@@ -30,7 +30,7 @@ How work gets done on Sela. Applies to every contributor and automated coding ag
 2. QA test plan, with the acceptance criteria written as automated tests.
 3. PRs (local checks green, checklist complete, reviewed).
 4. RC from green `main` (DevOps).
-5. QA manual pass on X11 (rendering / window manager / OS only).
+5. QA manual pass on Fedora GNOME Wayland (primary; rendering / window manager / OS only via orca-computer-use). X11 optional add-on.
 6. QA + PM sign-off.
 7. Tag (DevOps).
 
