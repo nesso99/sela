@@ -339,6 +339,12 @@ impl GridDelegate {
         }
     }
 
+    /// Headless UI tests: read session column-width cache.
+    #[cfg(test)]
+    pub(crate) fn test_cached_column_width(&self, name: &str) -> Option<f32> {
+        self.column_widths.get(name).copied()
+    }
+
     pub fn set_loading_message(&mut self) {
         self.empty_message = "Running…".into();
     }
