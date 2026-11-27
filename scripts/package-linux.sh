@@ -15,6 +15,7 @@ REPO_ROOT="${REPO_ROOT:-$(pwd)}"
 ARCH="${ARCH:-x86_64}"
 
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 test -x "$BINARY"
 
 base="sela-${VERSION}-linux-${ARCH}"
@@ -24,9 +25,11 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/$base"
 cp "$BINARY" "$stage/$base/sela"
 cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/README.md" "$stage/$base/"
+# Desktop entry + icon so the tarball can be installed into ~/.local/share.
+cp "$REPO_ROOT/packaging/linux/sela.desktop" "$REPO_ROOT/packaging/linux/sela.png" "$stage/$base/"
 (
   cd "$stage"
-  tar -czf "$OLDPWD/$OUT_DIR/${base}.tar.gz" "$base"
+  tar -czf "$OUT_DIR/${base}.tar.gz" "$base"
 )
 
 # Minimal AppDir: do not bundle Vulkan/Wayland/X11 — the host provides those.
