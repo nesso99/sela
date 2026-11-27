@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.6.0] - 2026-11-27
+
+### Added
+
+- Multi-line text and JSON cells open a popover editor instead of staying on "Use SQL to change it." Enter inserts a newline, accept stores the typed value, and cancel leaves the old one. Typing is not auto-paired. The popover stays inside the results area. A highlighted cell opens it; a row or column selection does not (#72).
+
 ## [0.5.0] - 2026-11-27
 
 ### Fixed
