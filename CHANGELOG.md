@@ -9,9 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `scripts/bench-nfr.sh` measures cold start, idle memory and grid fps and writes `docs/benchmarks.md` (M4-2). An opt-in `SELA_BENCH_STARTUP=1` prints a first-frame timestamp on stderr.
-
 ### Fixed
+
+## [1.0.0] - 2026-11-27
+
+First stable release.
+
+### Added
+
+- Release packages for Linux (`tar.gz`, AppImage), macOS arm64 (`dmg`, `zip`) and Windows (`zip`), published with `SHA256SUMS`. The macOS and Windows packages are unsigned (owner decision), and macOS builds are Apple Silicon (arm64) only (M4-1, #169).
+- `scripts/bench-nfr.sh` measures cold start, idle memory and grid fps and writes `docs/benchmarks.md` (M4-2, #170). An opt-in `SELA_BENCH_STARTUP=1` prints a first-frame timestamp on stderr. Published numbers (Linux, AMD Ryzen 9 5900X, hardware Vulkan): cold start to first frame about 125 ms median (125.3 ms), idle memory about 107 MiB RSS (107.1 MiB, 3 saved connections), and a 100 000 × 50 grid fling of 24.0 fps vertical / 25.9 fps horizontal. The grid figure is a lower bound from the bench harness, which builds synthetic pages on the UI thread, not a measured real frame time and not a 60 fps claim; measuring real frame times is tracked in #171.
+
+### Changed
+
+- The macOS bundle identifier is now `app.sela.app` (M4-3, #167).
+- The release workflow's `version` input is optional and defaults to the workspace `Cargo.toml` version (#173).
 
 ## [0.8.0] - 2026-11-27
 
