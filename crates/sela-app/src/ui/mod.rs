@@ -1,5 +1,6 @@
 //! The GPUI window. Database work is started here and finished on the tokio runtime.
 
+mod bench;
 mod decorations;
 mod file_picker;
 mod form;
