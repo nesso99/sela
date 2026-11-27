@@ -24,7 +24,7 @@ Readers take any `std::io::Read`. Column metadata comes from an injectable `Tabl
 - Safe mode gates import as a write (`decide_import_gate` / `ensure_import_allowed`).
 - Input must be valid UTF-8. A leading UTF-8 BOM is stripped when present.
 - Preview (first 100 rows) and the whole-file data-row count run in a background task and cancel when the dialog closes.
-- **In-memory import limit (IM-07 partial):** the UI builds a full in-memory `ChangePlan` (one planned statement per imported row) then runs `apply_changes` in a single transaction. Very large CSVs therefore hold the plan in memory until commit finishes. A streaming insert sink that does not materialize the whole plan is backlog for v0.3.
+- **Streaming import (v0.7.0):** rows stream one `INSERT` at a time through a bounded channel into a single transaction. Memory stays flat for large files. The transaction commits only after the last row; a cancel, a parse error (reported with its 1-based CSV line), or a failing statement such as a duplicate key rolls the whole import back.
 
 ## Tests
 

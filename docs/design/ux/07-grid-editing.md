@@ -11,12 +11,12 @@ Editing is an overlay on the table Data grid. It does not write to the database 
 | Surface | Editing |
 | --- | --- |
 | Table Data, with a primary key | Yes. A composite primary key is one key. Every key column is part of the later `WHERE`. |
-| Table Data, no primary key | Read-only. See [Read-only](#read-only). A unique NOT NULL constraint is not a key in v0.2. |
+| Table Data, no primary key | Editable when the table has a unique NOT NULL index (v0.8.0); otherwise read-only. See [Read-only](#read-only). |
 | View | Read-only. |
 | Structure pane | No overlay. |
 | SQL result tab | Read-only. `Enter` does not open an editor. |
 
-v0.2 matches the core in #65: `ChangeSet` rejects a table with no primary key (`ChangeError::NoPrimaryKey`). Using a unique NOT NULL constraint as the row key is an M2 follow-up on the [roadmap backlog](../roadmap.md).
+`ChangeSet` uses the primary key as the row identity. Since v0.8.0 a table with no primary key falls back to its smallest unique NOT NULL index. Partial and expression indexes are never used, so a `WHERE` can match only one row. A table with neither stays read-only and `ChangeSet` rejects it (`ChangeError::NoPrimaryKey`).
 
 Generated and identity columns are not editable: `serial`, `IDENTITY`, `GENERATED`, `AUTO_INCREMENT`, and a SQLite `INTEGER PRIMARY KEY` rowid alias. They stay on screen. The tooltip is `Filled on commit.`
 
@@ -119,7 +119,7 @@ The Data pane shows the first reason that applies:
 | --- | --- |
 | Safe mode is Read-only | `Read-only · safe mode on this connection.` |
 | View | `Read-only · views are read-only.` |
-| No primary key | `Read-only · this table has no primary key.` |
+| No primary or unique NOT NULL key | `Read-only · this table has no primary or unique NOT NULL key.` |
 
 `Enter`, double-click, Insert, Duplicate, and Delete do nothing. Status repeats the same sentence. `Space` still inspects. Filter and sort still run.
 
@@ -169,7 +169,7 @@ Grid focus context, editor closed. Full chords are also in [README.md](./README.
 
 ## Decisions
 
-1. v0.2 edits only a table with a primary key. No primary key is read-only, and the strip says why. A unique NOT NULL key is backlog ([roadmap.md](../roadmap.md)).
+1. Edits need a row key: a primary key, or a unique NOT NULL index (v0.8.0). Without one the table is read-only, and the strip says why.
 2. `Escape` cancels the open cell editor or popover only. It does not discard the `ChangeSet`. Discard is `secondary-shift-z` (editor closed) and the Discard button, and it confirms.
 3. Duplicate leaves primary-key cells unset so an identity column can fill them. A non-generated key stays empty until the user types it. Commit stays disabled until those cells are set.
 4. Inserted and duplicated rows are marked on the row (wash and gutter). Per-cell triangles are only for edits to a row that already exists on the server.
