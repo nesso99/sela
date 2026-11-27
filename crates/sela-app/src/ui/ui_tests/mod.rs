@@ -12,6 +12,7 @@ mod grid_column_width;
 mod grid_editing;
 mod harness;
 mod long_value_popover;
+mod pane_toolbar;
 mod reconnect;
 mod sql_autocomplete;
 mod sql_result_tab;

@@ -105,59 +105,6 @@ impl Workspace {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .when(self.table_open(), |row| {
-                                let this_data = this.clone();
-                                let this_structure = this.clone();
-                                let this_refresh = this.clone();
-                                let on_data = matches!(table_pane, TablePane::Data);
-                                let on_structure = matches!(table_pane, TablePane::Structure);
-                                row.child(
-                            h_flex()
-                                .gap_1()
-                                .child(
-                                    Button::new("pane-data")
-                                        .xsmall()
-                                        .label("Data")
-                                        .primary()
-                                        .when(!on_data, |button| button.ghost())
-                                        .disabled(!connected)
-                                        .tooltip("Show table rows (Ctrl/⌘+Shift+[)")
-                                        .on_click(move |_, _, cx| {
-                                            this_data.update(cx, |workspace, cx| {
-                                                workspace.show_table_data(cx)
-                                            });
-                                        }),
-                                )
-                                .child(
-                                    Button::new("pane-structure")
-                                        .xsmall()
-                                        .label("Structure")
-                                        .primary()
-                                        .when(!on_structure, |button| button.ghost())
-                                        .disabled(!connected)
-                                        .tooltip("Show columns, indexes, FKs, DDL (Ctrl/⌘+Shift+])")
-                                        .on_click(move |_, _, cx| {
-                                            this_structure.update(cx, |workspace, cx| {
-                                                workspace.show_table_structure(cx)
-                                            });
-                                        }),
-                                )
-                                .when(on_structure, |row| {
-                                    row.child(
-                                        Button::new("pane-structure-refresh")
-                                            .xsmall()
-                                            .label("Refresh")
-                                            .disabled(!connected || busy)
-                                            .tooltip("Reload structure for this table")
-                                            .on_click(move |_, _, cx| {
-                                                this_refresh.update(cx, |workspace, cx| {
-                                                    workspace.refresh_structure(cx)
-                                                });
-                                            }),
-                                    )
-                                }),
-                        )
-                            })
                             .when(matches!(table_pane, TablePane::Data), |row| {
                                 let this_filter = this.clone();
                                 let this_prev = this.clone();
@@ -287,6 +234,59 @@ impl Workspace {
                                             });
                                         }),
                                 )
+                            })
+                            .when(self.table_open(), |row| {
+                                let this_data = this.clone();
+                                let this_structure = this.clone();
+                                let this_refresh = this.clone();
+                                let on_data = matches!(table_pane, TablePane::Data);
+                                let on_structure = matches!(table_pane, TablePane::Structure);
+                                row.child(
+                            h_flex()
+                                .gap_1()
+                                .when(on_structure, |row| {
+                                    row.child(
+                                        Button::new("pane-structure-refresh")
+                                            .xsmall()
+                                            .label("Refresh")
+                                            .disabled(!connected || busy)
+                                            .tooltip("Reload structure for this table")
+                                            .on_click(move |_, _, cx| {
+                                                this_refresh.update(cx, |workspace, cx| {
+                                                    workspace.refresh_structure(cx)
+                                                });
+                                            }),
+                                    )
+                                })
+                                .child(
+                                    Button::new("pane-data")
+                                        .xsmall()
+                                        .label("Data")
+                                        .primary()
+                                        .when(!on_data, |button| button.ghost())
+                                        .disabled(!connected)
+                                        .tooltip("Show table rows (Ctrl/⌘+Shift+[)")
+                                        .on_click(move |_, _, cx| {
+                                            this_data.update(cx, |workspace, cx| {
+                                                workspace.show_table_data(cx)
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("pane-structure")
+                                        .xsmall()
+                                        .label("Structure")
+                                        .primary()
+                                        .when(!on_structure, |button| button.ghost())
+                                        .disabled(!connected)
+                                        .tooltip("Show columns, indexes, FKs, DDL (Ctrl/⌘+Shift+])")
+                                        .on_click(move |_, _, cx| {
+                                            this_structure.update(cx, |workspace, cx| {
+                                                workspace.show_table_structure(cx)
+                                            });
+                                        }),
+                                )
+                        )
                             }),
                     ),
             )
