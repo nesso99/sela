@@ -4,9 +4,7 @@
 
 Sela is a native desktop database client for PostgreSQL, MySQL, and SQLite. Early TablePlus-style slice: save a connection, browse schemas and tables, open tabs, page or stream results, cancel queries, and inspect structure — built with Rust and [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) via [GPUI Kit](https://github.com/longbridge/gpui-kit) **0.10.0**.
 
-![Screenshot placeholder](docs/empty.png)
-
-*Replace with a current product screenshot.*
+![Sela with the sample library open on main.books](docs/screenshot.png)
 
 ## Quick start
 
