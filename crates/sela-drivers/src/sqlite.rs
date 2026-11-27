@@ -1537,6 +1537,67 @@ mod tests {
         assert_eq!(page.rows[0][0], Value::Int(2));
     }
 
+    /// Row identity without a PK: unique NOT NULL key drives commit + optimistic WHERE;
+    /// a table with neither key is rejected.
+    #[tokio::test]
+    async fn unique_not_null_key_commits_and_no_key_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uniq_key.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        session
+            .execute("CREATE TABLE sela_uk (code TEXT NOT NULL UNIQUE, name TEXT)")
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO sela_uk (code, name) VALUES ('a', 'x'), ('b', 'y')")
+            .await
+            .unwrap();
+        session
+            .execute("CREATE TABLE sela_nokey (code TEXT, name TEXT)")
+            .await
+            .unwrap();
+
+        let structure = session.describe_table("main", "sela_uk").await.unwrap();
+        let mut cs = ChangeSet::from_structure(&structure).unwrap();
+        assert_eq!(cs.pk_columns(), ["code".to_string()]);
+        cs.set_cell(
+            &[Value::text("a")],
+            "name",
+            Value::text("x"),
+            Value::text("changed"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+        let page = session
+            .query("SELECT name FROM sela_uk WHERE code = 'a'")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("changed"));
+
+        // Optimistic WHERE: stale old value conflicts and does not apply.
+        let mut cs = ChangeSet::from_structure(&structure).unwrap();
+        cs.set_cell(
+            &[Value::text("a")],
+            "name",
+            Value::text("stale"),
+            Value::text("again"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        let err = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::ChangeConflict { .. }), "{err:?}");
+
+        let nokey = session.describe_table("main", "sela_nokey").await.unwrap();
+        assert!(ChangeSet::from_structure(&nokey).is_err());
+    }
+
     /// CAN-02 (SQLite cooperative): pre-cancelled token → nothing applied.
     /// Blocked-writer interrupt is not available (M1 SQLite cancel limitation).
     #[tokio::test]
