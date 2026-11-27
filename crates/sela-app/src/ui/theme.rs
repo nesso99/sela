@@ -279,12 +279,22 @@ mod tests {
     }
 
     #[test]
-    fn active_tab_differs_from_inactive() {
-        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+    fn active_tab_foregrounds_are_pinned() {
+        // Kit defaults already differ, so pin our own overrides.
+        for (mode, inactive, active) in [
+            (ThemeMode::Light, "#525252", "#0A0A0A"),
+            (ThemeMode::Dark, "#A3A3A3", "#FAFAFA"),
+        ] {
             let mut theme = Theme::from(ThemeColor::light().as_ref());
             theme.apply_config(&Rc::new(sela_theme_config(mode, DEFAULT_FONT_SIZE)));
-            assert_ne!(
-                theme.tab_active_foreground, theme.tab_foreground,
+            assert_eq!(
+                theme.tab_foreground,
+                try_parse_color(inactive).unwrap(),
+                "{mode:?}"
+            );
+            assert_eq!(
+                theme.tab_active_foreground,
+                try_parse_color(active).unwrap(),
                 "{mode:?}"
             );
         }
