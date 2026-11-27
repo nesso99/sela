@@ -67,6 +67,7 @@ impl Workspace {
             .child(
                 h_flex()
                     .flex_1()
+                    .min_w(px(0.))
                     .h_full()
                     .px_3()
                     .items_center()

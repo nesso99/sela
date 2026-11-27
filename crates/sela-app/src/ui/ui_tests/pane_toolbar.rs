@@ -32,14 +32,14 @@ fn seed_sample_db(path: &std::path::Path) {
     .expect("sample sqlite");
 }
 
-async fn open_workspace_fixture(cx: &mut TestAppContext) -> WorkspaceFixture {
+async fn open_workspace_fixture(cx: &mut TestAppContext, width: f32) -> WorkspaceFixture {
     cx.executor().allow_parking();
     let dir = TempDir::new().expect("temp dir");
     let db_path = dir.path().join("sample.sqlite");
     seed_sample_db(&db_path);
     let dir_path: PathBuf = dir.path().to_path_buf();
     let (handle, workspace) =
-        super::harness::open_window(cx, size(px(1180.), px(760.)), |window, cx| {
+        super::harness::open_window(cx, size(px(width), px(760.)), |window, cx| {
             cx.new(|cx| Workspace::new_for_tests(&dir_path, window, cx))
         });
     let handle = handle.into();
@@ -63,9 +63,8 @@ async fn open_workspace_fixture(cx: &mut TestAppContext) -> WorkspaceFixture {
     }
 }
 
-#[gpui_kit::test]
-async fn pane_toggle_stays_put_between_data_and_structure(cx: &mut TestAppContext) {
-    let fix = open_workspace_fixture(cx).await;
+async fn toggle_stays_put(cx: &mut TestAppContext, width: f32) {
+    let fix = open_workspace_fixture(cx, width).await;
     cx.update_window(fix.handle, |_, window, cx| {
         fix.workspace
             .update(cx, |ws, cx| ws.test_open_table("main", "books", window, cx));
@@ -84,6 +83,12 @@ async fn pane_toggle_stays_put_between_data_and_structure(cx: &mut TestAppContex
             )
         };
         let (data_left, data_right, data_toggle_x) = span(window);
+        // The toggle is right-anchored: it must sit inside the window (real overflow bug at min width).
+        assert!(
+            data_right <= window.viewport_size().width,
+            "toggle right edge {data_right:?} must be inside window width {:?}",
+            window.viewport_size().width
+        );
         window.click("pane-structure", cx);
         window.render_frame(cx);
         assert!(
@@ -96,4 +101,16 @@ async fn pane_toggle_stays_put_between_data_and_structure(cx: &mut TestAppContex
         assert_eq!(toggle_x, data_toggle_x, "toggle x must not move");
     })
     .expect("toggle");
+}
+
+/// Default window width (`ui/mod.rs`).
+#[gpui_kit::test]
+async fn pane_toggle_stays_put_at_default_width(cx: &mut TestAppContext) {
+    toggle_stays_put(cx, 1180.).await;
+}
+
+/// Minimum window width (`window_min_size` in `ui/mod.rs`).
+#[gpui_kit::test]
+async fn pane_toggle_stays_put_at_min_width(cx: &mut TestAppContext) {
+    toggle_stays_put(cx, 880.).await;
 }
