@@ -8,6 +8,15 @@ Sela is open source under **GPL-3.0-or-later** (see [`LICENSE`](./LICENSE)). Tea
 
 All project text — docs, source comments, UI strings, commit messages, and pull request descriptions — must be in **English**.
 
+## Your first build in about 15 minutes
+
+1. Install Rust **1.85+**, a C toolchain and `pkg-config` (OS packages: [installation.md](./docs/user/installation.md)). On Linux you also need a Vulkan driver (Mesa) and a Wayland or X11 session.
+2. `git clone https://github.com/nesso99/sela && cd sela`
+3. `cargo run -p sela-app` — the first build downloads and compiles GPUI and takes the longest (about 10 minutes on a laptop); later builds are incremental.
+4. In the sidebar open **Sample library** (SQLite, no server needed) and click around.
+5. Run the [local checks](#local-checks). Postgres/MySQL are optional: `docker compose up -d` and the env vars below.
+6. Pick a `backlog` issue or one from the [version roadmap](./docs/design/roadmap.md), branch from `main` and follow the steps below.
+
 ## How to contribute
 
 1. Fork the repository and create a topic branch from `main`.
