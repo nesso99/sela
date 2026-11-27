@@ -241,6 +241,10 @@ impl Render for GridEditHost {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &DuplicateEditRow, _, cx| {
+                // Same guard as Workspace: editor open → chord stays with the field.
+                if !this.edit.row_chords_allowed() {
+                    return;
+                }
                 let columns = vec![
                     ("id".into(), Value::Int(1)),
                     ("note".into(), Value::Null),
@@ -423,6 +427,33 @@ fn duplicate_then_copy_as_insert_keeps_null_and_int_unquoted(cx: &mut TestAppCon
             .and_then(|item| item.text())
             .expect("clipboard");
         assert_eq!(clip, sql);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn duplicate_chord_is_noop_while_cell_editor_open(cx: &mut TestAppContext) {
+    let (handle, host) = super::harness::open_window(cx, size(px(900.), px(600.)), |window, cx| {
+        cx.new(|cx| GridEditHost::new(window, cx))
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        host.update(cx, |h, cx| {
+            let id = h.edit.insert_blank_row().unwrap();
+            h.begin_overlay_edit(id, "note", 1, window, cx);
+        });
+        window.render_frame(cx);
+        let before = host.read(cx).edit.overlay.len();
+        window.dispatch_action(Box::new(DuplicateEditRow), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            host.read(cx).edit.overlay.len(),
+            before,
+            "Duplicate must no-op"
+        );
+        assert!(!host.read(cx).edit.row_chords_allowed());
+        host.update(cx, |h, _| h.edit.cancel_editor());
+        assert!(host.read(cx).edit.row_chords_allowed());
     })
     .unwrap();
 }

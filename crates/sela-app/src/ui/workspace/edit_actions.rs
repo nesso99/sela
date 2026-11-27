@@ -190,7 +190,7 @@ impl Workspace {
             .as_ref()
             .map(|edit| build_edit_paint(edit, &view.grid.read(cx).delegate().result))
             .unwrap_or_default();
-        if view.edit.as_ref().is_some_and(|e| e.editor.is_some()) {
+        if view.edit.as_ref().is_some_and(|e| !e.row_chords_allowed()) {
             paint.editor_input = Some(view.cell_editor.clone());
         }
         let grid = view.grid.clone();
@@ -428,7 +428,7 @@ impl Workspace {
             return;
         }
         // Do not inspect while the cell editor is open (Space must type a space).
-        if view.edit.as_ref().is_some_and(|e| e.editor.is_some()) {
+        if view.edit.as_ref().is_some_and(|e| !e.row_chords_allowed()) {
             return;
         }
         let selection = view.grid.read(cx).selection();
@@ -603,6 +603,13 @@ impl Workspace {
         let _ = self.accept_cell_editor(cx);
     }
 
+    /// True while the active tab's in-cell editor is open.
+    pub(super) fn active_cell_editor_open(&self) -> bool {
+        self.active_view()
+            .and_then(|v| v.edit.as_ref())
+            .is_some_and(|e| !e.row_chords_allowed())
+    }
+
     pub(super) fn insert_edit_row(&mut self, cx: &mut Context<Self>) {
         self.sync_active_edit_safe_mode();
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
@@ -723,7 +730,7 @@ impl Workspace {
             .views
             .get(&tab_id)
             .and_then(|v| v.edit.as_ref())
-            .is_some_and(|e| e.editor.is_some())
+            .is_some_and(|e| !e.row_chords_allowed())
         {
             return;
         }
@@ -946,10 +953,14 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
             continue;
         }
         let mut dirty_cols = BTreeMap::new();
+        let mut dirty_null = std::collections::BTreeSet::new();
         if marker == RowMarker::Dirty || marker == RowMarker::Deleted {
             for col in result.columns() {
                 if let Some(v) = edit.pending_server_value(&pk, &col.name) {
                     dirty_cols.insert(col.name.clone(), v.display().into_owned());
+                    if v.is_null() {
+                        dirty_null.insert(col.name.clone());
+                    }
                 }
             }
         }
@@ -964,6 +975,7 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
             EditPaintRow {
                 marker,
                 dirty_display: dirty_cols,
+                dirty_null,
                 original_display: original,
             },
         );

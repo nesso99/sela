@@ -60,6 +60,8 @@ pub struct EditPaintState {
 pub struct EditPaintRow {
     pub marker: RowMarker,
     pub dirty_display: BTreeMap<String, String>,
+    /// Columns whose pending value is a real SQL NULL (not the text `NULL`).
+    pub dirty_null: std::collections::BTreeSet<String>,
     pub original_display: BTreeMap<String, String>,
 }
 
@@ -74,6 +76,12 @@ pub struct OverlayPaintRow {
     pub after_server_row: Option<usize>,
     pub required_unset: Vec<String>,
     pub generated: Vec<String>,
+}
+
+/// Overlay cell paint: `(null-styled, text)`. Only a real SQL NULL is
+/// null-styled; the text value `NULL` paints as normal text (#72).
+fn overlay_value_paint(v: &Value) -> (bool, String) {
+    (v.is_null(), v.display().into_owned())
 }
 
 enum CellKind {
@@ -178,7 +186,8 @@ impl GridDelegate {
         } else if required && value.is_none() {
             (true, SharedString::from("Required"))
         } else if let Some(v) = value {
-            (v.is_null(), SharedString::from(v.display().into_owned()))
+            let (nullish, text) = overlay_value_paint(v);
+            (nullish, SharedString::from(text))
         } else {
             (true, SharedString::from(""))
         };
@@ -814,6 +823,11 @@ impl TableDelegate for GridDelegate {
             .server
             .get(&server_row)
             .and_then(|r| r.dirty_display.get(&col_name).cloned());
+        let dirty_is_null = self
+            .edit_paint
+            .server
+            .get(&server_row)
+            .is_some_and(|r| r.dirty_null.contains(&col_name));
         let show_triangle = marker == RowMarker::Dirty
             && self
                 .edit_paint
@@ -844,8 +858,7 @@ impl TableDelegate for GridDelegate {
         };
         let is_decode = matches!(kind, CellKind::Decode(_));
         let (null, loading, text) = if let Some(display) = dirty_override {
-            let is_null = display == "NULL";
-            (is_null, false, SharedString::from(display))
+            (dirty_is_null, false, SharedString::from(display))
         } else {
             match kind {
                 CellKind::Loading => (false, true, SharedString::from("…")),
@@ -1530,6 +1543,15 @@ mod tests {
             !insert.contains("NULL"),
             "'' must not become NULL: {insert}"
         );
+    }
+
+    #[test]
+    fn text_null_string_is_not_painted_as_sql_null() {
+        let (nullish, text) = overlay_value_paint(&Value::text("NULL"));
+        assert!(!nullish, "text 'NULL' must not paint as SQL NULL");
+        assert_eq!(text, "NULL");
+        let (nullish, _) = overlay_value_paint(&Value::Null);
+        assert!(nullish, "real NULL stays null-styled");
     }
 
     #[test]
