@@ -1448,6 +1448,8 @@ mod tests {
                 columns: vec!["id".into()],
                 unique: true,
                 primary: true,
+                partial: false,
+                expression: false,
                 definition: None,
             }],
             foreign_keys: vec![],
@@ -1480,6 +1482,8 @@ mod tests {
             columns: vec!["id".into()],
             unique: true,
             primary: false,
+            partial: false,
+            expression: false,
             definition: None,
         }];
         let session = EditSession::from_structure(&s, Dialect::Postgres, RelationKind::Table);

@@ -199,6 +199,8 @@ impl MysqlSession {
                     columns: vec![column],
                     unique: non_unique == 0,
                     primary,
+                    partial: false,
+                    expression: false,
                     definition: None,
                 });
             }

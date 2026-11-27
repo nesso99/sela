@@ -20,6 +20,10 @@ pub struct IndexInfo {
     pub columns: Vec<String>,
     pub unique: bool,
     pub primary: bool,
+    /// Partial index (has a predicate): uniqueness only holds for a subset of rows.
+    pub partial: bool,
+    /// Index has an expression member (not a plain column), so `columns` is incomplete.
+    pub expression: bool,
     /// Engine-provided definition (`CREATE INDEX …` / `pg_get_indexdef`), when available.
     pub definition: Option<String>,
 }
@@ -71,11 +75,7 @@ impl TableStructure {
         self.indexes
             .iter()
             .filter(|idx| idx.unique && !idx.primary && !idx.columns.is_empty())
-            .filter(|idx| {
-                !idx.definition
-                    .as_deref()
-                    .is_some_and(|d| d.to_ascii_uppercase().contains(" WHERE "))
-            })
+            .filter(|idx| !idx.partial && !idx.expression)
             .filter(|idx| {
                 idx.columns.iter().all(|c| {
                     self.columns
@@ -114,6 +114,8 @@ mod tests {
             columns: cols.iter().map(|c| c.to_string()).collect(),
             unique: true,
             primary: false,
+            partial: false,
+            expression: false,
             definition: def.map(str::to_string),
         }
     }
@@ -151,20 +153,30 @@ mod tests {
     }
 
     #[test]
+    fn row_key_rejects_flagged_partial_and_expression_indexes() {
+        let mut partial = uidx("u_p", &["a"], None);
+        partial.partial = true;
+        let mut expr = uidx("u_e", &["a"], None); // e.g. UNIQUE (a, lower(b)) -> columns [a]
+        expr.expression = true;
+        let t = table(vec![col("a", false)], vec![partial, expr]);
+        assert_eq!(t.row_key_columns(), None);
+    }
+
+    #[test]
     fn row_key_rejects_nullable_partial_and_non_unique() {
         let mut non_unique = uidx("n", &["a"], None);
         non_unique.unique = false;
         let t = table(
             vec![col("a", false), col("b", true), col("c", false)],
-            vec![
-                non_unique,
-                uidx("u_b", &["b"], None),
-                uidx(
+            vec![non_unique, uidx("u_b", &["b"], None), {
+                let mut i = uidx(
                     "u_c",
                     &["c"],
                     Some("CREATE UNIQUE INDEX u_c ON t (c) WHERE c > 0"),
-                ),
-            ],
+                );
+                i.partial = true;
+                i
+            }],
         );
         assert_eq!(t.row_key_columns(), None);
     }

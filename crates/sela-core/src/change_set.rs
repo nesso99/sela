@@ -615,6 +615,8 @@ mod tests {
                 columns: vec!["code".into()],
                 unique: true,
                 primary: false,
+                partial: false,
+                expression: false,
                 definition: None,
             }],
             foreign_keys: vec![],

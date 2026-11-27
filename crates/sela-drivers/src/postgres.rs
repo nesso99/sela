@@ -139,6 +139,8 @@ impl PostgresSession {
             "SELECT i.relname AS name,
                     ix.indisunique AS is_unique,
                     ix.indisprimary AS is_primary,
+                    (ix.indpred IS NOT NULL) AS is_partial,
+                    (ix.indexprs IS NOT NULL OR 0 = ANY(ix.indkey::int2[])) AS has_expr,
                     pg_get_indexdef(ix.indexrelid) AS definition,
                     COALESCE(
                       (
@@ -169,6 +171,8 @@ impl PostgresSession {
                 columns,
                 unique: row.try_get("is_unique").map_err(crate::sqlx_err)?,
                 primary: row.try_get("is_primary").map_err(crate::sqlx_err)?,
+                partial: row.try_get("is_partial").map_err(crate::sqlx_err)?,
+                expression: row.try_get("has_expr").map_err(crate::sqlx_err)?,
                 definition: row.try_get("definition").map_err(crate::sqlx_err)?,
             });
         }
