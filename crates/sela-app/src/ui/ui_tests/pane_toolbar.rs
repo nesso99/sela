@@ -63,11 +63,6 @@ async fn open_workspace_fixture(cx: &mut TestAppContext) -> WorkspaceFixture {
     }
 }
 
-fn right_edge(name: &'static str, window: &mut gpui_kit::Window) -> gpui_kit::Pixels {
-    let b = window.find(name).bounds();
-    b.origin.x + b.size.width
-}
-
 #[gpui_kit::test]
 async fn pane_toggle_stays_put_between_data_and_structure(cx: &mut TestAppContext) {
     let fix = open_workspace_fixture(cx).await;
@@ -78,18 +73,27 @@ async fn pane_toggle_stays_put_between_data_and_structure(cx: &mut TestAppContex
     })
     .expect("open books");
     cx.update_window(fix.handle, |_, window, cx| {
-        assert!(
-            window.try_find("edit-insert").is_some(),
-            "Data shows Insert"
-        );
-        let data_edge = right_edge("pane-structure", window);
+        let span = |window: &mut gpui_kit::Window| {
+            let controls = window.find("filter-toggle").bounds();
+            let toggle = window.find("pane-structure").bounds();
+            // Bar cluster = left edge of the Data-only controls .. right edge of the toggle.
+            (
+                controls.origin.x,
+                toggle.origin.x + toggle.size.width,
+                toggle.origin.x,
+            )
+        };
+        let (data_left, data_right, data_toggle_x) = span(window);
         window.click("pane-structure", cx);
         window.render_frame(cx);
         assert!(
-            window.try_find("edit-insert").is_none(),
-            "Structure hides Insert"
+            window.try_find("pane-structure-refresh").is_some(),
+            "Structure shows Refresh"
         );
-        assert_eq!(right_edge("pane-structure", window), data_edge);
+        let (left, right, toggle_x) = span(window);
+        assert_eq!(left, data_left, "bar start must not move");
+        assert_eq!(right, data_right, "bar width must be equal in both panes");
+        assert_eq!(toggle_x, data_toggle_x, "toggle x must not move");
     })
     .expect("toggle");
 }
