@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.8.0] - 2026-11-27
+
+### Added
+
+- Tables with no primary key but a unique NOT NULL key are now editable. Commit and the optimistic `WHERE` use that key as the row identity. Partial and expression indexes are never used. Tables with neither stay read-only (#164).
+
 ## [0.7.0] - 2026-11-27
 
 ### Added
