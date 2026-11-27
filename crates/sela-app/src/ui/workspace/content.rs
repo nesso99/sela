@@ -7,7 +7,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::table::DataTable;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _, Size};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, IntoElement, Window};
+use gpui_kit::{div, px, Context, IntoElement, TestSupportExt as _, Window};
 
 use sela_config::{content_row_height, DEFAULT_FONT_SIZE};
 use sela_core::{ColumnKind, ConnectionColor};
@@ -73,34 +73,47 @@ impl Workspace {
                     .items_center()
                     .justify_between()
                     .child(
-                        v_flex().min_w(px(0.)).flex_1().child(label).child(
-                            h_flex()
-                                .min_w(px(0.))
-                                .w_full()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    // Endpoint ellipsizes before the Safe: segment.
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .min_w(px(0.))
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(endpoint),
-                                )
-                                .when_some(safe_mode_segment, |row, safe| {
-                                    row.child(
+                        v_flex()
+                            .min_w(px(0.))
+                            .flex_1()
+                            .child(
+                                div()
+                                    .id("pane-toolbar-title")
+                                    .test_support()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(label),
+                            )
+                            .child(
+                                h_flex()
+                                    .min_w(px(0.))
+                                    .w_full()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        // Endpoint ellipsizes before the Safe: segment.
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .flex_shrink_0()
-                                            .child(format!("· {safe}")),
+                                            .min_w(px(0.))
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(endpoint),
                                     )
-                                }),
-                        ),
+                                    .when_some(safe_mode_segment, |row, safe| {
+                                        row.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .flex_shrink_0()
+                                                .child(format!("· {safe}")),
+                                        )
+                                    }),
+                            ),
                     )
                     .child(
                         h_flex()

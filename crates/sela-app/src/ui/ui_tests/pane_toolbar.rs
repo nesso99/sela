@@ -114,3 +114,30 @@ async fn pane_toggle_stays_put_at_default_width(cx: &mut TestAppContext) {
 async fn pane_toggle_stays_put_at_min_width(cx: &mut TestAppContext) {
     toggle_stays_put(cx, 880.).await;
 }
+
+/// A long table name must ellipsize, not paint over the Data controls (#158 review).
+#[gpui_kit::test]
+async fn long_table_name_does_not_overlap_controls(cx: &mut TestAppContext) {
+    let fix = open_workspace_fixture(cx, 880.).await;
+    cx.update_window(fix.handle, |_, window, cx| {
+        fix.workspace.update(cx, |ws, cx| {
+            ws.test_open_table(
+                "main",
+                "a_very_long_table_name_for_the_toolbar_title",
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        let title = window.find("pane-toolbar-title").bounds();
+        let controls = window.find("filter-toggle").bounds();
+        assert!(title.size.height < px(30.), "title must stay on one line");
+        assert!(
+            title.origin.x + title.size.width <= controls.origin.x,
+            "title right edge {:?} must not pass Filter left edge {:?}",
+            title.origin.x + title.size.width,
+            controls.origin.x
+        );
+    })
+    .expect("long title");
+}
