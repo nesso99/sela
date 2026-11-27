@@ -433,6 +433,98 @@ fn begin_cell_edit_opens_popover_when_only_selection_anchor_is_set(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn begin_cell_edit_rejects_row_and_column_without_anchor(cx: &mut TestAppContext) {
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().expect("temp dir");
+    let dir_path: PathBuf = dir.path().to_path_buf();
+    let structure = structure();
+    let page = QueryPage {
+        columns: vec![
+            ColumnMeta {
+                name: "id".into(),
+                type_name: "INTEGER".into(),
+            },
+            ColumnMeta {
+                name: "body".into(),
+                type_name: "TEXT".into(),
+            },
+            ColumnMeta {
+                name: "meta".into(),
+                type_name: "JSONB".into(),
+            },
+        ],
+        rows: vec![vec![
+            Value::Int(1),
+            Value::text("line one\nline two"),
+            Value::json_raw("{\"a\":1}"),
+        ]],
+        duration: Duration::from_millis(0),
+    };
+    let (handle, workspace) =
+        super::harness::open_window(cx, size(px(900.), px(600.)), |window, cx| {
+            cx.new(|cx| Workspace::new_for_tests(&dir_path, window, cx))
+        });
+    cx.update_window(handle.into(), |_, window, cx| {
+        workspace.update(cx, |ws, cx| {
+            ws.test_new_query_tab(window, cx);
+            ws.test_seed_editable_table(structure, page, cx);
+        });
+        window.render_frame(cx);
+
+        let grid = workspace
+            .read(cx)
+            .test_active_grid()
+            .expect("grid on table tab");
+
+        grid.update(cx, |state, cx| {
+            state.set_selected_row(0, cx);
+        });
+        window.render_frame(cx);
+        assert!(
+            grid.read(cx).delegate().selection_anchor.is_none(),
+            "row selection clears the anchor"
+        );
+        grid.read(cx).focus_handle(cx).focus(window, cx);
+        workspace.update(cx, |ws, cx| ws.test_begin_cell_edit(window, cx));
+        window.render_frame(cx);
+        assert_eq!(
+            workspace.read(cx).test_active_status().as_deref(),
+            Some("Select a cell first."),
+            "row-only selection must not invent column 0"
+        );
+        assert!(
+            window.try_find("long-value-accept").is_none(),
+            "row-only selection must not open the popover"
+        );
+
+        grid.update(cx, |state, cx| {
+            state.set_selected_col(2, cx);
+        });
+        window.render_frame(cx);
+        assert!(
+            grid.read(cx).delegate().selection_anchor.is_none(),
+            "column selection clears the anchor"
+        );
+        grid.read(cx).focus_handle(cx).focus(window, cx);
+        workspace.update(cx, |ws, cx| ws.test_begin_cell_edit(window, cx));
+        window.render_frame(cx);
+        assert_eq!(
+            workspace.read(cx).test_active_status().as_deref(),
+            Some("Select a cell first."),
+            "column-only selection must not invent row 0"
+        );
+        assert!(
+            window.try_find("long-value-accept").is_none(),
+            "column-only selection must not open the JSON popover"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn popover_accept_button_stores_value(cx: &mut TestAppContext) {
     let (handle, host) = host(cx);
     cx.update_window(handle.into(), |_, window, cx| {

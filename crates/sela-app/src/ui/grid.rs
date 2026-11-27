@@ -657,14 +657,8 @@ impl GridDelegate {
         }
         match state.selection() {
             TableSelection::Cell(row, col) => Some((row, col)),
-            TableSelection::Row(row) => delegate
-                .selection_anchor
-                .map(|p| (row, p.col))
-                .or(Some((row, 0))),
-            TableSelection::Column(col) => delegate
-                .selection_anchor
-                .map(|p| (p.row, col))
-                .or(Some((0, col))),
+            TableSelection::Row(row) => delegate.selection_anchor.map(|p| (row, p.col)),
+            TableSelection::Column(col) => delegate.selection_anchor.map(|p| (p.row, col)),
             TableSelection::None => {
                 delegate
                     .selection_anchor
