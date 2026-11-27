@@ -239,16 +239,13 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let selection = view.grid.read(cx).selection();
-        let (row, col) = match selection {
-            TableSelection::Cell(r, c) => (r, c),
-            _ => {
-                if let Some(view) = self.view_mut(tab_id) {
-                    view.status = "Select a cell first.".into();
-                }
-                cx.notify();
-                return;
+        let grid = view.grid.read(cx);
+        let Some((row, col)) = crate::ui::grid::GridDelegate::focused_cell_for_edit(grid) else {
+            if let Some(view) = self.view_mut(tab_id) {
+                view.status = "Select a cell first.".into();
             }
+            cx.notify();
+            return;
         };
         let pk_cols = view
             .edit
@@ -516,12 +513,11 @@ impl Workspace {
         if view.edit.as_ref().is_some_and(|e| !e.row_chords_allowed()) {
             return;
         }
-        let selection = view.grid.read(cx).selection();
-        let (row, col) = match selection {
-            TableSelection::Cell(r, c) => (r, c),
-            _ => return,
+        let grid = view.grid.read(cx);
+        let Some((row, col)) = crate::ui::grid::GridDelegate::focused_cell_for_edit(grid) else {
+            return;
         };
-        let delegate = view.grid.read(cx).delegate();
+        let delegate = grid.delegate();
         let overlays = view
             .edit
             .as_ref()

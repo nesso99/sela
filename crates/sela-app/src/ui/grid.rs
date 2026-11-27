@@ -641,6 +641,48 @@ impl GridDelegate {
         })
     }
 
+    /// Coordinates of the cell Enter should edit or Space should inspect.
+    ///
+    /// gpui-component reports only [`TableSelection::Cell`] when
+    /// `selection_mode.is_cell()`. Sela also tracks a focus cell in
+    /// [`Self::selection_anchor`] for rectangular ranges and after some
+    /// navigation paths; use that when the kit selection is absent.
+    pub fn focused_cell_for_edit(state: &TableState<Self>) -> Option<(usize, usize)> {
+        let delegate = state.delegate();
+        if let Some((row, col)) = delegate.pending_edit_cell {
+            return Some((row, col));
+        }
+        if let Some((row, col)) = state.selected_cell() {
+            return Some((row, col));
+        }
+        match state.selection() {
+            TableSelection::Cell(row, col) => Some((row, col)),
+            TableSelection::Row(row) => delegate
+                .selection_anchor
+                .map(|p| (row, p.col))
+                .or(Some((row, 0))),
+            TableSelection::Column(col) => delegate
+                .selection_anchor
+                .map(|p| (p.row, col))
+                .or(Some((0, col))),
+            TableSelection::None => {
+                delegate
+                    .selection_anchor
+                    .map(|p| (p.row, p.col))
+                    .or_else(|| {
+                        delegate.selection_rect.and_then(|rect| {
+                            if rect.row_count() == 1 && rect.col_count() == 1 {
+                                let (min_r, _, min_c, _) = rect.normalized();
+                                Some((min_r, min_c))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+            }
+        }
+    }
+
     /// Resolve the rectangle to copy from DataTable selection + our range.
     pub fn copy_rect(&self, selection: TableSelection) -> Option<SelectionRect> {
         let rows = self.visual_rows().len();

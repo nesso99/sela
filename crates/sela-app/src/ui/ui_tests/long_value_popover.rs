@@ -7,11 +7,13 @@ use gpui_kit::{
     div, px, size, AppContext, Context, ElementId, Entity, Focusable, TestAppContext, Window,
 };
 use sela_core::{
-    ColumnKind, ColumnStructure, Dialect, IndexInfo, RelationKind, TableStructure, Value,
+    ColumnKind, ColumnMeta, ColumnStructure, Dialect, IndexInfo, QueryPage, RelationKind,
+    TableStructure, Value,
 };
 
 use crate::ui::long_value_popover::{long_value_popover, LongValuePopover, LongValuePopoverInput};
 use crate::ui::workspace::edit_session::{EditRowId, EditSession};
+use crate::ui::workspace::Workspace;
 use crate::ui::{AcceptCellEditor, CancelCellEditor};
 
 fn col(name: &str, type_name: &str, nullable: bool) -> ColumnStructure {
@@ -356,6 +358,76 @@ fn popover_cancel_button_closes(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(host.read(cx).edit.editor.is_none(), "Cancel button closes");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn begin_cell_edit_opens_popover_when_only_selection_anchor_is_set(cx: &mut TestAppContext) {
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().expect("temp dir");
+    let dir_path: PathBuf = dir.path().to_path_buf();
+    let structure = structure();
+    let page = QueryPage {
+        columns: vec![
+            ColumnMeta {
+                name: "id".into(),
+                type_name: "INTEGER".into(),
+            },
+            ColumnMeta {
+                name: "body".into(),
+                type_name: "TEXT".into(),
+            },
+            ColumnMeta {
+                name: "meta".into(),
+                type_name: "JSONB".into(),
+            },
+        ],
+        rows: vec![vec![
+            Value::Int(1),
+            Value::text("line one\nline two"),
+            Value::json_raw("{\"a\":1}"),
+        ]],
+        duration: Duration::from_millis(0),
+    };
+    let (handle, workspace) =
+        super::harness::open_window(cx, size(px(900.), px(600.)), |window, cx| {
+            cx.new(|cx| Workspace::new_for_tests(&dir_path, window, cx))
+        });
+    cx.update_window(handle.into(), |_, window, cx| {
+        workspace.update(cx, |ws, cx| {
+            ws.test_new_query_tab(window, cx);
+            ws.test_seed_editable_table(structure, page, cx);
+        });
+        window.render_frame(cx);
+
+        for (col, label) in [(1usize, "multiline text"), (2, "JSON")] {
+            let grid = workspace
+                .read(cx)
+                .test_active_grid()
+                .expect("grid on table tab");
+            grid.update(cx, |state, _| {
+                // Highlight without kit cell selection — the QA failure path.
+                state.delegate_mut().note_cell_focus(0, col, false);
+            });
+            grid.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+            workspace.update(cx, |ws, cx| ws.test_begin_cell_edit(window, cx));
+            window.render_frame(cx);
+            assert!(
+                workspace.read(cx).test_active_status().as_deref() != Some("Select a cell first."),
+                "{label} must not fail cell resolution"
+            );
+            assert!(
+                window.try_find("long-value-accept").is_some(),
+                "{label} must open the popover"
+            );
+            window.press("escape", cx);
+            window.render_frame(cx);
+        }
     })
     .unwrap();
 }
