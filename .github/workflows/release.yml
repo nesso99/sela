@@ -14,11 +14,11 @@ name: Release
 # QA RC (after Quit + --version are on main, and this workflow is merged):
 #   GitHub → Actions → Release → Run workflow
 #     Use workflow from: main
-#     version: 0.6.0
+#     version: 0.7.0
 #     dry_run: true
-#   or: gh workflow run release.yml --ref main -f version=0.6.0 -f dry_run=true
-# Artifacts: that run's page → Artifacts → sela-0.6.0-release-bundle
-#   (and per-platform sela-0.6.0-* artifacts). Retention 14 days.
+#   or: gh workflow run release.yml --ref main -f version=0.7.0 -f dry_run=true
+# Artifacts: that run's page → Artifacts → sela-0.7.0-release-bundle
+#   (and per-platform sela-0.7.0-* artifacts). Retention 14 days.
 
 on:
   push:
@@ -27,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version for artifact names and CHANGELOG section (e.g. 0.6.0 or v0.6.0)"
+        description: "Version for artifact names and CHANGELOG section (e.g. 0.7.0 or v0.7.0)"
         required: true
-        default: "0.6.0"
+        default: "0.7.0"
         type: string
       dry_run:
         description: "Dry run / RC: upload workflow artifacts only (do not publish a GitHub Release)"
@@ -125,7 +125,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
           # macos-14 is rejected on this repo ("macos-14-arm64-us-default"
           # not supported). macos-latest (arm64) matches CI and is enough
-          # for v0.6.0; Intel/universal is deferred.
+          # for v0.7.0; Intel/universal is deferred.
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -351,7 +351,7 @@ jobs:
             echo ""
             echo "See \`SHA256SUMS\` in this release for checksums."
             echo "Builds are unsigned (macOS Gatekeeper / Windows SmartScreen may warn)."
-            echo "macOS builds are **Apple Silicon (arm64) only** for v0.6.0; Intel Macs are not supported yet."
+            echo "macOS builds are **Apple Silicon (arm64) only** for v0.7.0; Intel Macs are not supported yet."
             echo ""
             echo "Binary: \`sela\` (crate \`sela-app\`). Smoke-tested with \`sela --version\`."
           } >>dist/release-notes.md
