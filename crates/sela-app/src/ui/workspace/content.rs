@@ -7,7 +7,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::table::DataTable;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _, Size};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, IntoElement, Window};
+use gpui_kit::{div, px, Context, IntoElement, TestSupportExt as _, Window};
 
 use sela_config::{content_row_height, DEFAULT_FONT_SIZE};
 use sela_core::{ColumnKind, ConnectionColor};
@@ -67,48 +67,224 @@ impl Workspace {
             .child(
                 h_flex()
                     .flex_1()
+                    .min_w(px(0.))
                     .h_full()
                     .px_3()
                     .items_center()
                     .justify_between()
                     .child(
-                        v_flex().min_w(px(0.)).flex_1().child(label).child(
-                            h_flex()
-                                .min_w(px(0.))
-                                .w_full()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    // Endpoint ellipsizes before the Safe: segment.
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .min_w(px(0.))
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(endpoint),
-                                )
-                                .when_some(safe_mode_segment, |row, safe| {
-                                    row.child(
+                        v_flex()
+                            .min_w(px(0.))
+                            .flex_1()
+                            .child(
+                                div()
+                                    .id("pane-toolbar-title")
+                                    .test_support()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(label),
+                            )
+                            .child(
+                                h_flex()
+                                    .min_w(px(0.))
+                                    .w_full()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        // Endpoint ellipsizes before the Safe: segment.
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .flex_shrink_0()
-                                            .child(format!("· {safe}")),
+                                            .min_w(px(0.))
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(endpoint),
                                     )
-                                }),
-                        ),
+                                    .when_some(safe_mode_segment, |row, safe| {
+                                        row.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .flex_shrink_0()
+                                                .child(format!("· {safe}")),
+                                        )
+                                    }),
+                            ),
                     )
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
+                            .when(self.table_open(), |parent| {
+                                let this_refresh = this.clone();
+                                let on_data = matches!(table_pane, TablePane::Data);
+                                // #158: always laid out; hidden in Structure so the bar keeps one width.
+                                let row = h_flex()
+                                    .id("pane-toolbar-data-controls")
+                                    .gap_2()
+                                    .items_center()
+                                    .when(!on_data, |row| row.invisible());
+                                let row = {
+                                    let this_filter = this.clone();
+                                    let this_prev = this.clone();
+                                    let this_next = this.clone();
+                                    let filter_open = self
+                                        .active_view()
+                                        .map(|view| view.filter_bar_open)
+                                        .unwrap_or(false);
+                                    let filter_applied = self
+                                        .active_view()
+                                        .map(|view| !view.filters.is_empty())
+                                        .unwrap_or(false);
+                                    row.when(self.table_open(), |row| {
+                                        row.child(
+                                            Button::new("filter-toggle")
+                                                .xsmall()
+                                                .label(if filter_open {
+                                                    "Filter ▾"
+                                                } else {
+                                                    "Filter"
+                                                })
+                                                .primary()
+                                                // Stay selected when a filter is applied even if the bar is closed.
+                                                .when(!filter_open && !filter_applied, |button| {
+                                                    button.ghost()
+                                                })
+                                                .disabled(!connected)
+                                                .tooltip("Toggle filter bar (Ctrl/⌘+F)")
+                                                .on_click(move |_, window, cx| {
+                                                    this_filter.update(cx, |workspace, cx| {
+                                                        workspace.toggle_filter_bar(window, cx)
+                                                    });
+                                                }),
+                                        )
+                                    })
+                                    .when(self.table_open(), |row| {
+                                        let this_ins = this.clone();
+                                        let this_dup = this.clone();
+                                        let this_del = this.clone();
+                                        let safe_mode = self.active_safe_mode();
+                                        let edit_ro = self
+                                            .active_view()
+                                            .and_then(|v| v.edit.as_ref())
+                                            .is_none_or(|e| !e.is_editable_for(safe_mode));
+                                        let ro_tip = self
+                                            .active_view()
+                                            .and_then(|v| v.edit.as_ref())
+                                            .and_then(|e| e.strip_line_for(safe_mode))
+                                            .unwrap_or("This table is read-only.");
+                                        row.child(
+                                            Button::new("edit-insert")
+                                                .xsmall()
+                                                .ghost()
+                                                .label("Insert")
+                                                .disabled(!connected || edit_ro || busy)
+                                                .tooltip(if edit_ro {
+                                                    ro_tip
+                                                } else {
+                                                    "Insert row (Ctrl/⌘+I)"
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    this_ins.update(cx, |workspace, cx| {
+                                                        workspace.insert_edit_row(cx)
+                                                    });
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("edit-duplicate")
+                                                .xsmall()
+                                                .ghost()
+                                                .label("Duplicate")
+                                                .disabled(!connected || edit_ro || busy)
+                                                .tooltip(if edit_ro {
+                                                    ro_tip
+                                                } else {
+                                                    "Duplicate row (Ctrl/⌘+D)"
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    this_dup.update(cx, |workspace, cx| {
+                                                        workspace.duplicate_edit_row(cx)
+                                                    });
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("edit-delete")
+                                                .xsmall()
+                                                .ghost()
+                                                .label("Delete")
+                                                .disabled(!connected || edit_ro || busy)
+                                                .tooltip(if edit_ro {
+                                                    ro_tip
+                                                } else {
+                                                    "Delete / restore row (Ctrl/⌘+Backspace)"
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    this_del.update(cx, |workspace, cx| {
+                                                        workspace.delete_edit_row(cx)
+                                                    });
+                                                }),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(page_label.to_string()),
+                                    )
+                                    .child(
+                                        Button::new("page-prev")
+                                            .xsmall()
+                                            .label("Previous")
+                                            .disabled(!can_prev || busy || !connected)
+                                            .on_click(move |_, _, cx| {
+                                                this_prev.update(cx, |workspace, cx| {
+                                                    workspace.step_page(-1, cx)
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("page-next")
+                                            .xsmall()
+                                            .label("Next")
+                                            .disabled(!can_next || busy || !connected)
+                                            .on_click(move |_, _, cx| {
+                                                this_next.update(cx, |workspace, cx| {
+                                                    workspace.step_page(1, cx)
+                                                });
+                                            }),
+                                    )
+                                };
+                                parent.child(div().relative().child(row).when(!on_data, |wrap| {
+                                    wrap.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .right_0()
+                                            .flex()
+                                            .items_center()
+                                            .child(
+                                                Button::new("pane-structure-refresh")
+                                                    .xsmall()
+                                                    .label("Refresh")
+                                                    .disabled(!connected || busy)
+                                                    .tooltip("Reload structure for this table")
+                                                    .on_click(move |_, _, cx| {
+                                                        this_refresh.update(cx, |workspace, cx| {
+                                                            workspace.refresh_structure(cx)
+                                                        });
+                                                    }),
+                                            ),
+                                    )
+                                }))
+                            })
                             .when(self.table_open(), |row| {
                                 let this_data = this.clone();
                                 let this_structure = this.clone();
-                                let this_refresh = this.clone();
                                 let on_data = matches!(table_pane, TablePane::Data);
                                 let on_structure = matches!(table_pane, TablePane::Structure);
                                 row.child(
@@ -142,151 +318,7 @@ impl Workspace {
                                             });
                                         }),
                                 )
-                                .when(on_structure, |row| {
-                                    row.child(
-                                        Button::new("pane-structure-refresh")
-                                            .xsmall()
-                                            .label("Refresh")
-                                            .disabled(!connected || busy)
-                                            .tooltip("Reload structure for this table")
-                                            .on_click(move |_, _, cx| {
-                                                this_refresh.update(cx, |workspace, cx| {
-                                                    workspace.refresh_structure(cx)
-                                                });
-                                            }),
-                                    )
-                                }),
                         )
-                            })
-                            .when(matches!(table_pane, TablePane::Data), |row| {
-                                let this_filter = this.clone();
-                                let this_prev = this.clone();
-                                let this_next = this.clone();
-                                let filter_open = self
-                                    .active_view()
-                                    .map(|view| view.filter_bar_open)
-                                    .unwrap_or(false);
-                                let filter_applied = self
-                                    .active_view()
-                                    .map(|view| !view.filters.is_empty())
-                                    .unwrap_or(false);
-                                row.when(self.table_open(), |row| {
-                                    row.child(
-                                        Button::new("filter-toggle")
-                                            .xsmall()
-                                            .label(if filter_open {
-                                                "Filter ▾"
-                                            } else {
-                                                "Filter"
-                                            })
-                                            .primary()
-                                            // Stay selected when a filter is applied even if the bar is closed.
-                                            .when(!filter_open && !filter_applied, |button| {
-                                                button.ghost()
-                                            })
-                                            .disabled(!connected)
-                                            .tooltip("Toggle filter bar (Ctrl/⌘+F)")
-                                            .on_click(move |_, window, cx| {
-                                                this_filter.update(cx, |workspace, cx| {
-                                                    workspace.toggle_filter_bar(window, cx)
-                                                });
-                                            }),
-                                    )
-                                })
-                                .when(self.table_open(), |row| {
-                                    let this_ins = this.clone();
-                                    let this_dup = this.clone();
-                                    let this_del = this.clone();
-                                    let safe_mode = self.active_safe_mode();
-                                    let edit_ro = self
-                                        .active_view()
-                                        .and_then(|v| v.edit.as_ref())
-                                        .is_none_or(|e| !e.is_editable_for(safe_mode));
-                                    let ro_tip = self
-                                        .active_view()
-                                        .and_then(|v| v.edit.as_ref())
-                                        .and_then(|e| e.strip_line_for(safe_mode))
-                                        .unwrap_or("This table is read-only.");
-                                    row.child(
-                                        Button::new("edit-insert")
-                                            .xsmall()
-                                            .ghost()
-                                            .label("Insert")
-                                            .disabled(!connected || edit_ro || busy)
-                                            .tooltip(if edit_ro {
-                                                ro_tip
-                                            } else {
-                                                "Insert row (Ctrl/⌘+I)"
-                                            })
-                                            .on_click(move |_, _, cx| {
-                                                this_ins.update(cx, |workspace, cx| {
-                                                    workspace.insert_edit_row(cx)
-                                                });
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("edit-duplicate")
-                                            .xsmall()
-                                            .ghost()
-                                            .label("Duplicate")
-                                            .disabled(!connected || edit_ro || busy)
-                                            .tooltip(if edit_ro {
-                                                ro_tip
-                                            } else {
-                                                "Duplicate row (Ctrl/⌘+D)"
-                                            })
-                                            .on_click(move |_, _, cx| {
-                                                this_dup.update(cx, |workspace, cx| {
-                                                    workspace.duplicate_edit_row(cx)
-                                                });
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("edit-delete")
-                                            .xsmall()
-                                            .ghost()
-                                            .label("Delete")
-                                            .disabled(!connected || edit_ro || busy)
-                                            .tooltip(if edit_ro {
-                                                ro_tip
-                                            } else {
-                                                "Delete / restore row (Ctrl/⌘+Backspace)"
-                                            })
-                                            .on_click(move |_, _, cx| {
-                                                this_del.update(cx, |workspace, cx| {
-                                                    workspace.delete_edit_row(cx)
-                                                });
-                                            }),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(page_label.to_string()),
-                                )
-                                .child(
-                                    Button::new("page-prev")
-                                        .xsmall()
-                                        .label("Previous")
-                                        .disabled(!can_prev || busy || !connected)
-                                        .on_click(move |_, _, cx| {
-                                            this_prev.update(cx, |workspace, cx| {
-                                                workspace.step_page(-1, cx)
-                                            });
-                                        }),
-                                )
-                                .child(
-                                    Button::new("page-next")
-                                        .xsmall()
-                                        .label("Next")
-                                        .disabled(!can_next || busy || !connected)
-                                        .on_click(move |_, _, cx| {
-                                            this_next.update(cx, |workspace, cx| {
-                                                workspace.step_page(1, cx)
-                                            });
-                                        }),
-                                )
                             }),
                     ),
             )
