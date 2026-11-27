@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>sela</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.sela.app</string>
+	<string>app.sela.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

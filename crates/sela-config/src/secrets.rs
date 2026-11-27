@@ -309,6 +309,21 @@ impl<S: SecretStore> CachingSecrets<S> {
 mod tests {
     use super::*;
 
+    /// Keychain service is stored data: it must never change silently.
+    #[test]
+    fn keychain_service_is_stable() {
+        assert_eq!(SERVICE, "app.sela.database");
+    }
+
+    /// Packaging naming stays in the `app.sela.*` namespace, no legacy names.
+    #[test]
+    fn macos_bundle_id_matches_namespace() {
+        let plist = include_str!("../../../packaging/macos/Info.plist");
+        assert!(plist.contains("<string>app.sela.app</string>"));
+        assert!(!plist.to_lowercase().contains("birch"));
+        assert!(!plist.contains("dev.sela"));
+    }
+
     #[test]
     fn memory_store_round_trip() {
         let secrets = CachingSecrets::new(MemorySecretStore::default());
