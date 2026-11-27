@@ -322,6 +322,17 @@ async fn save_with_empty_name_keeps_button_row_visible(cx: &mut TestAppContext) 
                 "{id} must stay visible after a validation error"
             );
         }
+        // #157: the error lives outside the scrolling body, so it is always visible.
+        assert!(
+            host.read(cx).form.read(cx).test_error().is_some(),
+            "no error set"
+        );
+        window.render_frame(cx);
+        window.within("dialog").find("form-error");
+        assert!(window
+            .within("connection-form-body")
+            .try_find("form-error")
+            .is_none());
     })
     .unwrap();
 }

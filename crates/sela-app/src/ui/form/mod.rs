@@ -10,7 +10,8 @@ use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    div, px, Context, Entity, EventEmitter, IntoElement, MouseButton, Render, Subscription, Window,
+    div, px, Context, Entity, EventEmitter, IntoElement, MouseButton, Render, Subscription,
+    TestSupportExt as _, Window,
 };
 
 use sela_core::{
@@ -991,9 +992,22 @@ impl Render for ConnectionForm {
                         .text_color(cx.theme().danger)
                         .child(warning),
                 )
-            })
+            });
+        // Outside the scroll area so errors stay visible (#157).
+        let status = v_flex()
+            .w_full()
+            .gap_2()
+            .px_1()
+            .pt_2()
             .when_some(self.error.clone(), |form, error| {
-                form.child(div().text_sm().text_color(cx.theme().danger).child(error))
+                form.child(
+                    div()
+                        .id("form-error")
+                        .test_support()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(error),
+                )
             })
             .when_some(test_line, |form, (kind, text)| {
                 let color = match kind {
@@ -1063,11 +1077,13 @@ impl Render for ConnectionForm {
             .child(
                 div()
                     .id("connection-form-body")
+                    .test_support()
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(body),
             )
+            .child(status)
             .child(buttons)
     }
 }
