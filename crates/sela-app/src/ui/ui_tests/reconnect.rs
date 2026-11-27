@@ -61,7 +61,7 @@ impl ReconnectHost {
         self.view.source = GridSource::Table {
             schema: "public".into(),
             table: "edit_pk".into(),
-            kind: RelationKind::Table,
+            kind: Some(RelationKind::Table),
         };
         if needs_load {
             *self.load_requested.lock().expect("flag") += 1;

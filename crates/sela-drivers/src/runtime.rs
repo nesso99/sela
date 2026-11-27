@@ -122,3 +122,70 @@ mod tests {
         }
     }
 }
+
+/// Connection-level failures that a second attempt may clear.
+fn is_transient(err: &DbError) -> bool {
+    use DbError;
+    matches!(err, DbError::Connection { .. } | DbError::Timeout { .. })
+}
+
+/// Run `op` up to `attempts` times, retrying only transient errors.
+pub async fn retry_transient<T, F, Fut>(
+    attempts: usize,
+    delay: std::time::Duration,
+    mut op: F,
+) -> Result<T, DbError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, DbError>>,
+{
+    let mut tried = 0;
+    loop {
+        tried += 1;
+        match op().await {
+            Err(err) if tried < attempts && is_transient(&err) => {
+                tokio::time::sleep(delay * tried as u32).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn retry_transient_retries_connection_errors_only() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let out = retry_transient(3, std::time::Duration::ZERO, || {
+            calls.set(calls.get() + 1);
+            let n = calls.get();
+            async move {
+                if n < 3 {
+                    Err(DbError::connection("reset"))
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await;
+        assert_eq!(out.unwrap(), 3);
+
+        let calls = Cell::new(0);
+        let out: Result<(), _> = retry_transient(3, std::time::Duration::ZERO, || {
+            calls.set(calls.get() + 1);
+            async {
+                Err(DbError::Query {
+                    message: "no such table".into(),
+                    sqlstate: None,
+                    vendor_code: None,
+                })
+            }
+        })
+        .await;
+        assert!(out.is_err());
+        assert_eq!(calls.get(), 1);
+    }
+}
