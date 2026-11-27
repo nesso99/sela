@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.4.0] - 2026-11-27
+
+### Fixed
+
+- Duplicate and Insert no longer run while the cell editor is open (#72).
+- An empty insert whose primary key is generated commits with `DEFAULT VALUES` (Postgres/SQLite) or `() VALUES ()` (MySQL). A non-generated primary key still must be set before commit (#72).
+- A text value written as `NULL` is not painted as SQL NULL (#72).
+
 ## [0.3.2] - 2026-11-27
 
 ### Changed
