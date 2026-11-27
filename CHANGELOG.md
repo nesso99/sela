@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [1.0.1] - 2026-11-27
+
+### Fixed
+
+- The active tab is clearly distinct from inactive tabs in light and dark themes (#161).
+- The Postgres connection error is shown without scrolling (#157).
+- The Data / Structure toolbar keeps the same width and the toggle does not move, and the toggle no longer falls off screen at narrow window widths (#158).
+
+### Known issues
+
+- At the 880 px minimum window width the Safe-mode label can overlap Filter (#179).
+
 ## [1.0.0] - 2026-11-27
 
 First stable release.
