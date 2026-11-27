@@ -155,6 +155,9 @@ pub fn run() {
                     // `window.window_decorations()` is `Decorations::Client`.
                     window_decorations: Some(WindowDecorations::Server),
                     window_min_size: Some(size(px(880.), px(560.))),
+                    // Wayland app_id / X11 class: must match packaging/linux/sela.desktop
+                    // so the shell shows the installed icon.
+                    app_id: Some("sela".into()),
                     ..Default::default()
                 },
                 cx,

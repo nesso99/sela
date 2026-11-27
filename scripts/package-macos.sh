@@ -15,6 +15,7 @@ REPO_ROOT="${REPO_ROOT:-$(pwd)}"
 ARCH_LABEL="${ARCH_LABEL:-arm64}"
 
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 test -x "$BINARY"
 
 stage="$(mktemp -d)"
@@ -27,14 +28,19 @@ chmod +x "$app/Contents/MacOS/sela"
 # Substitute version into Info.plist
 sed "s/@VERSION@/${VERSION}/g" "$REPO_ROOT/packaging/macos/Info.plist" \
   >"$app/Contents/Info.plist"
+cp "$REPO_ROOT/packaging/macos/sela.icns" "$app/Contents/Resources/sela.icns"
 cp "$REPO_ROOT/LICENSE" "$app/Contents/Resources/"
+# Fail early if the plist did not get a real version or the icon is missing.
+grep -q "<string>${VERSION}</string>" "$app/Contents/Info.plist"
+grep -q "<string>app.sela.app</string>" "$app/Contents/Info.plist"
+test -s "$app/Contents/Resources/sela.icns"
 
 base="sela-${VERSION}-macos-${ARCH_LABEL}"
 
 # Zip of the .app (handy when Gatekeeper blocks the DMG open-in-place flow)
 (
   cd "$stage"
-  zip -qy -r "$OLDPWD/$OUT_DIR/${base}.zip" Sela.app
+  zip -qy -r "$OUT_DIR/${base}.zip" Sela.app
 )
 
 # Unsigned DMG via hdiutil

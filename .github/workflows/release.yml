@@ -14,11 +14,11 @@ name: Release
 # QA RC (after Quit + --version are on main, and this workflow is merged):
 #   GitHub → Actions → Release → Run workflow
 #     Use workflow from: main
-#     version: 0.8.0
+#     version: 1.0.0
 #     dry_run: true
-#   or: gh workflow run release.yml --ref main -f version=0.8.0 -f dry_run=true
-# Artifacts: that run's page → Artifacts → sela-0.8.0-release-bundle
-#   (and per-platform sela-0.8.0-* artifacts). Retention 14 days.
+#   or: gh workflow run release.yml --ref main -f version=1.0.0 -f dry_run=true
+# Artifacts: that run's page → Artifacts → sela-1.0.0-release-bundle
+#   (and per-platform sela-1.0.0-* artifacts). Retention 14 days.
 
 on:
   push:
@@ -27,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version for artifact names and CHANGELOG section (e.g. 0.8.0 or v0.8.0)"
+        description: "Version for artifact names and CHANGELOG section (e.g. 1.0.0 or v1.0.0)"
         required: true
-        default: "0.8.0"
+        default: "1.0.0"
         type: string
       dry_run:
         description: "Dry run / RC: upload workflow artifacts only (do not publish a GitHub Release)"
@@ -124,8 +124,9 @@ jobs:
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           # macos-14 is rejected on this repo ("macos-14-arm64-us-default"
-          # not supported). macos-latest (arm64) matches CI and is enough
-          # for v0.8.0; Intel/universal is deferred.
+          # not supported). macos-latest (arm64) matches CI. Intel/universal
+          # is deferred (no cheap Intel runner; would need a cross target and
+          # a second dmg/zip).
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -335,11 +336,26 @@ jobs:
           chmod +x scripts/extract-changelog.sh
           cd dist
           ls -lah
+          # Every platform must ship its installable packages; fail before
+          # publishing a partial release.
+          for f in \
+            "sela-${VERSION}-linux-x86_64.tar.gz" \
+            "Sela-${VERSION}-x86_64.AppImage" \
+            "sela-${VERSION}-macos-arm64.dmg" \
+            "sela-${VERSION}-macos-arm64.zip" \
+            "sela-${VERSION}-windows-x86_64.zip"; do
+            test -s "$f" || { echo "error: missing release asset $f" >&2; exit 1; }
+          done
           # Hash only release payloads (not nested dirs)
           find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-notes.md -print0 \
             | sort -z \
             | xargs -0 sha256sum \
             | sed 's# \./# #' >SHA256SUMS
+          sha256sum -c SHA256SUMS
+          # Each package must be listed in SHA256SUMS.
+          for f in sela-*.tar.gz sela-*.dmg sela-*.zip Sela-*.AppImage; do
+            grep -qF " $f" SHA256SUMS || { echo "error: $f not in SHA256SUMS" >&2; exit 1; }
+          done
           cat SHA256SUMS
           cd ..
           ./scripts/extract-changelog.sh "$VERSION" CHANGELOG.md dist/release-notes.md
@@ -351,7 +367,7 @@ jobs:
             echo ""
             echo "See \`SHA256SUMS\` in this release for checksums."
             echo "Builds are unsigned (macOS Gatekeeper / Windows SmartScreen may warn)."
-            echo "macOS builds are **Apple Silicon (arm64) only** for v0.8.0; Intel Macs are not supported yet."
+            echo "macOS builds are **Apple Silicon (arm64) only**; Intel Macs are not supported yet."
             echo ""
             echo "Binary: \`sela\` (crate \`sela-app\`). Smoke-tested with \`sela --version\`."
           } >>dist/release-notes.md

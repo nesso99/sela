@@ -6,6 +6,8 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>sela</string>
+	<key>CFBundleIconFile</key>
+	<string>sela</string>
 	<key>CFBundleIdentifier</key>
 	<string>app.sela.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -18,6 +20,8 @@
 	<string>@VERSION@</string>
 	<key>CFBundleVersion</key>
 	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
