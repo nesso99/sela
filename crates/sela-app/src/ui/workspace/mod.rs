@@ -986,6 +986,41 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Headless edit flow: table tab + grid page + EditSession (no live query).
+    #[cfg(test)]
+    pub(crate) fn test_seed_editable_table(
+        &mut self,
+        structure: sela_core::TableStructure,
+        page: sela_core::QueryPage,
+        cx: &mut Context<Self>,
+    ) {
+        use sela_core::{Dialect, RelationKind};
+        let Some(view) = self.active_view_mut() else {
+            return;
+        };
+        view.source = GridSource::Table {
+            schema: structure.schema.clone(),
+            table: structure.table.clone(),
+            kind: Some(RelationKind::Table),
+        };
+        view.table_pane = TablePane::Data;
+        view.edit = Some(edit_session::EditSession::from_structure(
+            &structure,
+            Dialect::Postgres,
+            RelationKind::Table,
+        ));
+        view.grid.update(cx, |state, cx| {
+            state.delegate_mut().show_page(page);
+            state.refresh(cx);
+        });
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_begin_cell_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_cell_edit(window, cx);
+    }
+
     #[cfg(test)]
     pub(crate) fn test_connection_safe_mode(&self, id: &str) -> Option<sela_core::SafeMode> {
         self.connections
@@ -1771,7 +1806,9 @@ impl Render for Workspace {
                                         column.child(self.error_banner(cx, error))
                                     })
                                     .child(match table_pane {
-                                        TablePane::Data => self.results_area(cx).into_any_element(),
+                                        TablePane::Data => {
+                                            self.results_area(window, cx).into_any_element()
+                                        }
                                         TablePane::Structure => {
                                             self.structure_area(cx).into_any_element()
                                         }

@@ -5,15 +5,16 @@ use std::collections::BTreeMap;
 use gpui_kit::component::table::TableSelection;
 use gpui_kit::{Context, Focusable as _, Window};
 
-use sela_core::{RelationKind, RowState, TabId, TableStructure, Value};
+use sela_core::{ColumnKind, RelationKind, RowState, TabId, TableStructure, Value};
 
 use super::edit_session::{
     resolve_overlay_anchors, visual_row_map, visual_row_map_for_overlays, EditRowId, EditSession,
     OverlayRow, PendingIndex, ReadOnlyReason, RowMarker, VisualRowRef,
 };
-use super::tab_view::CellInspect;
+use super::tab_view::{CellInspect, TabView};
 use super::{GridSource, Workspace};
 use crate::ui::grid::{EditPaintRow, EditPaintState, OverlayPaintRow};
+use crate::ui::long_value_popover::clamp_popover_anchor;
 
 /// Visual order for the current page, resolving duplicate anchors by source PK.
 fn visual_rows_for(
@@ -204,7 +205,9 @@ impl Workspace {
             .as_ref()
             .map(|edit| build_edit_paint(edit, &view.grid.read(cx).delegate().result))
             .unwrap_or_default();
-        if view.edit.as_ref().is_some_and(|e| !e.row_chords_allowed()) {
+        if view.edit.as_ref().is_some_and(|e| {
+            !e.row_chords_allowed() && !e.editor.as_ref().is_some_and(|ed| ed.popover)
+        }) {
             paint.editor_input = Some(view.cell_editor.clone());
         }
         let grid = view.grid.clone();
@@ -236,16 +239,13 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let selection = view.grid.read(cx).selection();
-        let (row, col) = match selection {
-            TableSelection::Cell(r, c) => (r, c),
-            _ => {
-                if let Some(view) = self.view_mut(tab_id) {
-                    view.status = "Select a cell first.".into();
-                }
-                cx.notify();
-                return;
+        let grid = view.grid.read(cx);
+        let Some((row, col)) = crate::ui::grid::GridDelegate::focused_cell_for_edit(grid) else {
+            if let Some(view) = self.view_mut(tab_id) {
+                view.status = "Select a cell first.".into();
             }
+            cx.notify();
+            return;
         };
         let pk_cols = view
             .edit
@@ -289,6 +289,7 @@ impl Workspace {
         let Some(column) = column else {
             return;
         };
+        let anchor = self.cell_anchor(tab_id, row, col, cx);
         let (pk, current, deleted) = self.server_row_edit_context(tab_id, resolved, &column, cx);
         let old_value = match &edit_row {
             EditRowId::Server { .. } => pk.as_ref().and_then(|p| {
@@ -300,6 +301,7 @@ impl Workspace {
             }),
             EditRowId::Overlay { .. } => current.clone(),
         };
+        let viewport = self.results_area_viewport(window);
         let status_msg;
         {
             let Some(view) = self.view_mut(tab_id) else {
@@ -344,11 +346,39 @@ impl Workspace {
                     } else {
                         "NULL"
                     };
-                    view.cell_editor.update(cx, |input, cx| {
-                        input.set_placeholder(placeholder, window, cx);
-                        input.set_value(&draft, window, cx);
-                    });
-                    view.cell_editor.read(cx).focus_handle(cx).focus(window, cx);
+                    if edit.editor.as_ref().is_some_and(|e| e.popover) {
+                        view.popover_anchor =
+                            clamp_popover_anchor(anchor.0, anchor.1, viewport.0, viewport.1);
+                        let is_json = edit
+                            .editor
+                            .as_ref()
+                            .is_some_and(|e| matches!(e.kind, ColumnKind::Json));
+                        if is_json {
+                            view.popover_editor.update(cx, |input, cx| {
+                                input.set_auto_close(false, window, cx);
+                                input.set_smart_indent(false, window, cx);
+                                input.set_value(&draft, window, cx);
+                            });
+                            view.popover_editor
+                                .read(cx)
+                                .focus_handle(cx)
+                                .focus(window, cx);
+                        } else {
+                            view.popover_textarea.update(cx, |input, cx| {
+                                input.set_value(&draft, window, cx);
+                            });
+                            view.popover_textarea
+                                .read(cx)
+                                .focus_handle(cx)
+                                .focus(window, cx);
+                        }
+                    } else {
+                        view.cell_editor.update(cx, |input, cx| {
+                            input.set_placeholder(placeholder, window, cx);
+                            input.set_value(&draft, window, cx);
+                        });
+                        view.cell_editor.read(cx).focus_handle(cx).focus(window, cx);
+                    }
                     status_msg = None;
                 }
                 Err(msg) => {
@@ -430,6 +460,44 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Offset of a grid cell from the results-area origin (inspect / popover anchor).
+    fn cell_anchor(&self, tab_id: TabId, row: usize, col: usize, cx: &Context<Self>) -> (f32, f32) {
+        let Some(view) = self.views.get(&tab_id) else {
+            return (8.0, 8.0);
+        };
+        let row_h = f32::from(sela_config::content_row_height(self.font_size));
+        {
+            let table = view.grid.read(cx);
+            let mut widths = Vec::with_capacity(col);
+            for c in 0..col {
+                let w = table.col_width(c).map(|p| p.as_f32()).unwrap_or(140.0);
+                widths.push(w);
+            }
+            let scroll_x = table.horizontal_scroll_handle.offset().x.as_f32();
+            let scroll_y = table
+                .vertical_scroll_handle
+                .0
+                .borrow()
+                .base_handle
+                .offset()
+                .y
+                .as_f32();
+            // DataTable row header is `w_3()` (0.75rem ≈ 12px); header band is one row.
+            cell_inspect_anchor(
+                row,
+                col,
+                &widths,
+                CellInspectLayout {
+                    row_height: row_h,
+                    header_height: row_h,
+                    row_header_width: 12.0,
+                    scroll_x,
+                    scroll_y,
+                },
+            )
+        }
+    }
+
     /// Space: open the inspect popover for the focused cell (01 / 07).
     pub(super) fn inspect_focused_cell(&mut self, cx: &mut Context<Self>) {
         let Some(tab_id) = self.tabs.active().map(|t| t.id) else {
@@ -445,12 +513,11 @@ impl Workspace {
         if view.edit.as_ref().is_some_and(|e| !e.row_chords_allowed()) {
             return;
         }
-        let selection = view.grid.read(cx).selection();
-        let (row, col) = match selection {
-            TableSelection::Cell(r, c) => (r, c),
-            _ => return,
+        let grid = view.grid.read(cx);
+        let Some((row, col)) = crate::ui::grid::GridDelegate::focused_cell_for_edit(grid) else {
+            return;
         };
-        let delegate = view.grid.read(cx).delegate();
+        let delegate = grid.delegate();
         let overlays = view
             .edit
             .as_ref()
@@ -499,37 +566,7 @@ impl Workspace {
                 (value, None)
             }
         };
-        let row_h = f32::from(sela_config::content_row_height(self.font_size));
-        let (anchor_left, anchor_top) = {
-            let table = view.grid.read(cx);
-            let mut widths = Vec::with_capacity(col);
-            for c in 0..col {
-                let w = table.col_width(c).map(|p| p.as_f32()).unwrap_or(140.0);
-                widths.push(w);
-            }
-            let scroll_x = table.horizontal_scroll_handle.offset().x.as_f32();
-            let scroll_y = table
-                .vertical_scroll_handle
-                .0
-                .borrow()
-                .base_handle
-                .offset()
-                .y
-                .as_f32();
-            // DataTable row header is `w_3()` (0.75rem ≈ 12px); header band is one row.
-            cell_inspect_anchor(
-                row,
-                col,
-                &widths,
-                CellInspectLayout {
-                    row_height: row_h,
-                    header_height: row_h,
-                    row_header_width: 12.0,
-                    scroll_x,
-                    scroll_y,
-                },
-            )
-        };
+        let (anchor_left, anchor_top) = self.cell_anchor(tab_id, row, col, cx);
         let inspect = match dirty_display {
             Some(display) => CellInspect {
                 column,
@@ -570,7 +607,7 @@ impl Workspace {
         let draft = self
             .views
             .get(&tab_id)
-            .map(|v| v.cell_editor.read(cx).value().to_string())
+            .map(|v| popover_or_cell_draft(v, cx))
             .unwrap_or_default();
         // Sync draft from the input. The ghost NULL button sets `forced_null` and
         // clears the input before accept; leave that path alone.
@@ -611,6 +648,12 @@ impl Workspace {
         }
         if let Some(view) = self.views.get(&tab_id) {
             view.cell_editor.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+            view.popover_editor.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+            view.popover_textarea.update(cx, |input, cx| {
                 input.set_value("", window, cx);
             });
         }
@@ -864,6 +907,23 @@ pub(crate) fn cell_inspect_for_value(column: &str, type_name: &str, value: &Valu
         decode_error: value.is_decode_error(),
         anchor_left: 8.0,
         anchor_top: 8.0,
+    }
+}
+
+fn popover_or_cell_draft(view: &TabView, cx: &gpui_kit::App) -> String {
+    if let Some(ed) = view
+        .edit
+        .as_ref()
+        .and_then(|e| e.editor.as_ref())
+        .filter(|e| e.popover)
+    {
+        if matches!(ed.kind, ColumnKind::Json) {
+            view.popover_editor.read(cx).value().to_string()
+        } else {
+            view.popover_textarea.read(cx).value().to_string()
+        }
+    } else {
+        view.cell_editor.read(cx).value().to_string()
     }
 }
 

@@ -4,6 +4,7 @@ mod decorations;
 mod file_picker;
 mod form;
 pub(crate) mod grid;
+pub(crate) mod long_value_popover;
 mod palette_list;
 mod theme;
 mod workspace;
@@ -361,6 +362,19 @@ pub(crate) fn install_sela_keybindings(cx: &mut gpui_kit::App) {
         "secondary-enter",
         Box::new(AcceptCellEditor),
         Some("CellEditor"),
+    );
+    // Long-value popover: Enter inserts a newline; Ctrl/Cmd+Enter accepts.
+    bind_secondary(
+        cx,
+        "escape",
+        Box::new(CancelCellEditor),
+        Some(long_value_popover::LONG_VALUE_KEY_CONTEXT),
+    );
+    bind_secondary(
+        cx,
+        "secondary-enter",
+        Box::new(AcceptCellEditor),
+        Some(long_value_popover::LONG_VALUE_KEY_CONTEXT),
     );
     bind_secondary(
         cx,
