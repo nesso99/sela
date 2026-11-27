@@ -32,7 +32,9 @@ pub(crate) enum ReadOnlyReason {
 impl ReadOnlyReason {
     pub fn strip_line(&self) -> Option<&'static str> {
         match self {
-            Self::NoPrimaryKey => Some("Read-only · this table has no primary key."),
+            Self::NoPrimaryKey => {
+                Some("Read-only · this table has no primary or unique NOT NULL key.")
+            }
             Self::View => Some("Read-only · views are read-only."),
             Self::SqlResult => None, // status only, no strip
             Self::Loading => None,
@@ -43,7 +45,7 @@ impl ReadOnlyReason {
 
     pub fn status_line(&self) -> &'static str {
         match self {
-            Self::NoPrimaryKey => "Read-only · this table has no primary key.",
+            Self::NoPrimaryKey => "Read-only · this table has no primary or unique NOT NULL key.",
             Self::View => "Read-only · views are read-only.",
             Self::SqlResult => "SQL results are read-only. Open the table to edit.",
             Self::Loading => "Loading table structure…",
@@ -1446,6 +1448,8 @@ mod tests {
                 columns: vec!["id".into()],
                 unique: true,
                 primary: true,
+                partial: false,
+                expression: false,
                 definition: None,
             }],
             foreign_keys: vec![],
@@ -1466,8 +1470,34 @@ mod tests {
         assert!(!session.is_editable_for(session.connection_safe_mode));
         assert_eq!(
             session.strip_line_for(session.connection_safe_mode),
-            Some("Read-only · this table has no primary key.")
+            Some("Read-only · this table has no primary or unique NOT NULL key.")
         );
+    }
+
+    #[test]
+    fn unique_not_null_key_makes_table_editable() {
+        let mut s = books_structure();
+        s.indexes = vec![IndexInfo {
+            name: "books_id_uidx".into(),
+            columns: vec!["id".into()],
+            unique: true,
+            primary: false,
+            partial: false,
+            expression: false,
+            definition: None,
+        }];
+        let session = EditSession::from_structure(&s, Dialect::Postgres, RelationKind::Table);
+        assert!(session.is_editable_for(session.connection_safe_mode));
+        assert_eq!(
+            session.changeset.as_ref().unwrap().pk_columns(),
+            ["id".to_string()]
+        );
+
+        // Nullable unique column is not a usable key.
+        s.columns[0].nullable = true;
+        let session = EditSession::from_structure(&s, Dialect::Postgres, RelationKind::Table);
+        assert!(!session.is_editable_for(session.connection_safe_mode));
+        assert_eq!(session.read_only, Some(ReadOnlyReason::NoPrimaryKey));
     }
 
     #[test]
@@ -2223,7 +2253,7 @@ mod tests {
         assert_eq!(session.read_only, Some(ReadOnlyReason::StructureError));
         assert_ne!(
             session.strip_line_for(session.connection_safe_mode),
-            Some("Read-only · this table has no primary key.")
+            Some("Read-only · this table has no primary or unique NOT NULL key.")
         );
     }
 

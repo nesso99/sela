@@ -114,7 +114,7 @@ impl SqliteSession {
 
     async fn load_indexes(&self, schema_q: &str, table: &str) -> Result<Vec<IndexInfo>, DbError> {
         let list_sql = format!(
-            "SELECT name, \"unique\", origin
+            "SELECT name, \"unique\", origin, partial
              FROM {schema_q}.pragma_index_list(?)
              ORDER BY seq"
         );
@@ -144,6 +144,8 @@ impl SqliteSession {
                 columns: pk_columns,
                 unique: true,
                 primary: true,
+                partial: false,
+                expression: false,
                 definition: None,
             });
         }
@@ -152,6 +154,7 @@ impl SqliteSession {
             let name: String = row.try_get("name").map_err(crate::sqlx_err)?;
             let unique: i64 = row.try_get("unique").map_err(crate::sqlx_err)?;
             let origin: String = row.try_get("origin").map_err(crate::sqlx_err)?;
+            let partial: i64 = row.try_get("partial").map_err(crate::sqlx_err)?;
             // Skip the autoindex that backs the PRIMARY KEY; we already added it above.
             if origin == "pk" {
                 continue;
@@ -163,10 +166,18 @@ impl SqliteSession {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(crate::sqlx_err)?;
-            let columns = col_rows
-                .into_iter()
-                .map(|col| col.try_get::<String, _>("name").map_err(crate::sqlx_err))
-                .collect::<Result<Vec<_>, _>>()?;
+            // Expression members report a NULL name; they are not plain columns.
+            let mut columns = Vec::new();
+            let mut expression = false;
+            for col in col_rows {
+                match col
+                    .try_get::<Option<String>, _>("name")
+                    .map_err(crate::sqlx_err)?
+                {
+                    Some(c) => columns.push(c),
+                    None => expression = true,
+                }
+            }
             let def_sql = format!(
                 "SELECT sql FROM {schema_q}.sqlite_schema WHERE type = 'index' AND name = ?"
             );
@@ -184,6 +195,8 @@ impl SqliteSession {
                 columns,
                 unique: unique != 0,
                 primary: false,
+                partial: partial != 0,
+                expression,
                 definition,
             });
         }
@@ -1535,6 +1548,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(page.rows[0][0], Value::Int(2));
+    }
+
+    /// Partial (any whitespace around WHERE) and expression unique indexes must
+    /// never become the row identity, since their WHERE could match many rows.
+    #[tokio::test]
+    async fn partial_and_expression_unique_indexes_are_not_row_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uniq_bad.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        for sql in [
+            "CREATE TABLE p1 (a INTEGER NOT NULL, b INTEGER)",
+            "CREATE UNIQUE INDEX p1_u ON p1 (a)\nWHERE b > 0",
+            "CREATE TABLE p2 (a INTEGER NOT NULL, b INTEGER)",
+            "CREATE UNIQUE INDEX p2_u ON p2 (a) WHERE(b > 0)",
+            "CREATE TABLE e1 (a INTEGER NOT NULL, b TEXT NOT NULL)",
+            "CREATE UNIQUE INDEX e1_u ON e1 (a, lower(b))",
+        ] {
+            session.execute(sql).await.unwrap();
+        }
+        for t in ["p1", "p2", "e1"] {
+            let s = session.describe_table("main", t).await.unwrap();
+            assert_eq!(s.row_key_columns(), None, "{t}");
+        }
+    }
+
+    /// Row identity without a PK: unique NOT NULL key drives commit + optimistic WHERE;
+    /// a table with neither key is rejected.
+    #[tokio::test]
+    async fn unique_not_null_key_commits_and_no_key_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uniq_key.sqlite");
+        let session = SqliteSession::open(&path, true).await.unwrap();
+        session
+            .execute("CREATE TABLE sela_uk (code TEXT NOT NULL UNIQUE, name TEXT)")
+            .await
+            .unwrap();
+        session
+            .execute("INSERT INTO sela_uk (code, name) VALUES ('a', 'x'), ('b', 'y')")
+            .await
+            .unwrap();
+        session
+            .execute("CREATE TABLE sela_nokey (code TEXT, name TEXT)")
+            .await
+            .unwrap();
+
+        let structure = session.describe_table("main", "sela_uk").await.unwrap();
+        let mut cs = ChangeSet::from_structure(&structure).unwrap();
+        assert_eq!(cs.pk_columns(), ["code".to_string()]);
+        cs.set_cell(
+            &[Value::text("a")],
+            "name",
+            Value::text("x"),
+            Value::text("changed"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap();
+        let page = session
+            .query("SELECT name FROM sela_uk WHERE code = 'a'")
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0][0], Value::text("changed"));
+
+        // Optimistic WHERE: stale old value conflicts and does not apply.
+        let mut cs = ChangeSet::from_structure(&structure).unwrap();
+        cs.set_cell(
+            &[Value::text("a")],
+            "name",
+            Value::text("stale"),
+            Value::text("again"),
+        )
+        .unwrap();
+        let plan = ChangePlan::build(&cs, Dialect::Sqlite).unwrap();
+        let err = session
+            .apply_changes(&plan, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::ChangeConflict { .. }), "{err:?}");
+
+        let nokey = session.describe_table("main", "sela_nokey").await.unwrap();
+        assert!(ChangeSet::from_structure(&nokey).is_err());
     }
 
     /// CAN-02 (SQLite cooperative): pre-cancelled token → nothing applied.

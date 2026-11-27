@@ -70,7 +70,7 @@ pub enum RowChange {
 /// Errors from constructing or mutating a [`ChangeSet`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ChangeError {
-    #[error("table has no primary key and is not editable")]
+    #[error("table has no primary key or unique NOT NULL key and is not editable")]
     NoPrimaryKey,
     #[error("primary key expects {expected} value(s), got {got}")]
     PkArity { expected: usize, got: usize },
@@ -152,10 +152,11 @@ impl ChangeSet {
         })
     }
 
-    /// Build from introspection. Fails when the table has no primary key.
+    /// Build from introspection. Uses the primary key, else a unique NOT NULL key;
+    /// fails when the table has neither.
     pub fn from_structure(structure: &TableStructure) -> Result<Self, ChangeError> {
         let pk = structure
-            .primary_key_columns()
+            .row_key_columns()
             .ok_or(ChangeError::NoPrimaryKey)?;
         let columns = structure
             .columns
@@ -593,5 +594,35 @@ mod tests {
             ChangeSet::from_structure(&structure).unwrap_err(),
             ChangeError::NoPrimaryKey
         );
+    }
+
+    #[test]
+    fn from_structure_uses_unique_not_null_key() {
+        let col = |name: &str, nullable| crate::structure::ColumnStructure {
+            name: name.into(),
+            type_name: "text".into(),
+            nullable,
+            default: None,
+            comment: None,
+            generated: false,
+        };
+        let structure = TableStructure {
+            schema: "main".into(),
+            table: "t".into(),
+            columns: vec![col("code", false), col("name", true)],
+            indexes: vec![crate::structure::IndexInfo {
+                name: "t_code_uidx".into(),
+                columns: vec!["code".into()],
+                unique: true,
+                primary: false,
+                partial: false,
+                expression: false,
+                definition: None,
+            }],
+            foreign_keys: vec![],
+            ddl: String::new(),
+        };
+        let cs = ChangeSet::from_structure(&structure).unwrap();
+        assert_eq!(cs.pk_columns(), ["code".to_string()]);
     }
 }

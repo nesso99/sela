@@ -61,6 +61,8 @@ fn books_structure() -> TableStructure {
             columns: vec!["id".into()],
             unique: true,
             primary: true,
+            partial: false,
+            expression: false,
             definition: None,
         }],
         foreign_keys: vec![],

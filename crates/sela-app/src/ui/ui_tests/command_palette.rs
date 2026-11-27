@@ -911,6 +911,8 @@ fn cancelled_commit_pending_bar_copy(_cx: &mut TestAppContext) {
             columns: vec!["id".into()],
             unique: true,
             primary: true,
+            partial: false,
+            expression: false,
             definition: None,
         }],
         foreign_keys: vec![],
