@@ -310,7 +310,8 @@ fn validate_parsed_value(raw: &str, kind: ColumnKind, item: usize) -> Result<(),
             }
         }
         ColumnKind::Int => {
-            if raw.trim().parse::<i64>().is_err() {
+            let t = raw.trim();
+            if t.parse::<i64>().is_err() && t.parse::<u64>().is_err() {
                 return Err(if item > 0 {
                     format!("{prefix}an integer")
                 } else {
@@ -378,6 +379,9 @@ pub fn parse_filter_value(raw: &str, type_name: Option<&str>) -> Value {
         ColumnKind::Int => {
             if let Ok(n) = raw.trim().parse::<i64>() {
                 return Value::Int(n);
+            }
+            if let Ok(n) = raw.trim().parse::<u64>() {
+                return Value::UInt(n);
             }
         }
         ColumnKind::Float | ColumnKind::Decimal => {
@@ -924,6 +928,10 @@ mod tests {
     #[test]
     fn type_aware_parsing() {
         assert_eq!(parse_filter_value("42", Some("integer")), Value::Int(42));
+        assert_eq!(
+            parse_filter_value("18446744073709551615", Some("BIGINT UNSIGNED")),
+            Value::UInt(u64::MAX)
+        );
         assert_eq!(
             parse_filter_value("true", Some("boolean")),
             Value::Bool(true)

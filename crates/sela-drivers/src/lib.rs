@@ -41,7 +41,7 @@ pub fn refine_sqlite_column_types_if_needed(
     }
 }
 pub(crate) use error_map::sqlx_err;
-pub use runtime::drive;
+pub use runtime::{drive, retry_transient};
 pub use sela_ssh::{SshAuthSecrets, SshPaths};
 pub use ssh_connect::{ConnectAuth, ConnectOutcome, UnknownSshHostKeyChallenge};
 pub use tokio_util::sync::CancellationToken;

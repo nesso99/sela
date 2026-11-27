@@ -4,6 +4,50 @@ use sela_core::Value;
 use sqlx::query::Query;
 use sqlx::{Database, Encode, Type};
 
+/// Native binding of `u64` where the backend has an unsigned 64-bit integer.
+///
+/// MySQL binds `BIGINT UNSIGNED` natively. Postgres and SQLite have no
+/// unsigned 64-bit type, so values above `i64::MAX` fall back to text.
+pub(crate) trait BindUInt: Database + Sized {
+    fn bind_uint<'q>(
+        query: Query<'q, Self, <Self as Database>::Arguments>,
+        value: u64,
+    ) -> Query<'q, Self, <Self as Database>::Arguments>;
+}
+
+impl BindUInt for sqlx::MySql {
+    fn bind_uint<'q>(
+        query: Query<'q, Self, <Self as Database>::Arguments>,
+        value: u64,
+    ) -> Query<'q, Self, <Self as Database>::Arguments> {
+        query.bind(value)
+    }
+}
+
+impl BindUInt for sqlx::Postgres {
+    fn bind_uint<'q>(
+        query: Query<'q, Self, <Self as Database>::Arguments>,
+        value: u64,
+    ) -> Query<'q, Self, <Self as Database>::Arguments> {
+        match i64::try_from(value) {
+            Ok(n) => query.bind(n),
+            Err(_) => query.bind(value.to_string()),
+        }
+    }
+}
+
+impl BindUInt for sqlx::Sqlite {
+    fn bind_uint<'q>(
+        query: Query<'q, Self, <Self as Database>::Arguments>,
+        value: u64,
+    ) -> Query<'q, Self, <Self as Database>::Arguments> {
+        match i64::try_from(value) {
+            Ok(n) => query.bind(n),
+            Err(_) => query.bind(value.to_string()),
+        }
+    }
+}
+
 /// Bind filter/sort parameters for any sqlx database.
 ///
 /// Types that a backend cannot encode natively are bound as text so the
@@ -13,7 +57,7 @@ pub(crate) fn bind_params<'q, DB>(
     params: &'q [Value],
 ) -> Query<'q, DB, <DB as Database>::Arguments>
 where
-    DB: Database,
+    DB: Database + BindUInt,
     bool: Encode<'q, DB> + Type<DB>,
     i64: Encode<'q, DB> + Type<DB>,
     f64: Encode<'q, DB> + Type<DB>,
@@ -27,13 +71,7 @@ where
             Value::Null => query.bind(Option::<String>::None),
             Value::Bool(v) => query.bind(*v),
             Value::Int(v) => query.bind(*v),
-            Value::UInt(v) => {
-                if let Ok(n) = i64::try_from(*v) {
-                    query.bind(n)
-                } else {
-                    query.bind(v.to_string())
-                }
-            }
+            Value::UInt(v) => DB::bind_uint(query, *v),
             Value::Float(v) => query.bind(*v),
             Value::Text(v) => query.bind(v.as_ref()),
             Value::Bytes(v) => query.bind(v.as_slice()),

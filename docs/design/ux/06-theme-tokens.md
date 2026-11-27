@@ -288,7 +288,6 @@ These stay fixed at every step. Text inside them may grow until the largest step
 | status.height | 28 | `text_xs` at the top step is 16. |
 | tab.height | 28 | The strip does not grow. |
 | editor.header, history header | 28 | The header chrome. |
-| SSD menu row | 32 | Linux and Windows when the OS draws the frame. [01-main-window.md](./01-main-window.md#client-side-title-bar). |
 | Client title bar | 34 | gpui-component `TitleBar`. Does not scale. |
 | editor.band | 176 | The splitter default, not a font metric. Fewer lines fit when the line height grows. |
 | sidebar.width, dialog.width, window size | unchanged | Layout, not type. The sidebar footer button row wraps at large UI steps so **Disconnect** is not clipped. |

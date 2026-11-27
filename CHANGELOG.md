@@ -9,11 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Fixed
+
+## [0.5.0] - 2026-11-27
+
+### Fixed
+
+- Pending-edit paint looks up a row by primary-key identity (`pk_match`), not by display text, so SQL NULL and the text NULL, long byte keys, and -0.0 versus 0.0 do not paint the wrong row (#72).
+- A restored view tab stays a view when its kind was not saved, and a structure-load error is the no-primary-key strip only for a missing primary key. Connection and timeout errors are retried (#72).
+- `BIGINT UNSIGNED` values above `i64::MAX` round-trip as an unsigned integer through the editor and binders (#72).
+
+## [0.4.0] - 2026-11-27
+
+### Fixed
+
+- Duplicate and Insert no longer run while the cell editor is open (#72).
+- An empty insert whose primary key is generated commits with `DEFAULT VALUES` (Postgres/SQLite) or `() VALUES ()` (MySQL). A non-generated primary key still must be set before commit (#72).
+- A text value written as `NULL` is not painted as SQL NULL (#72).
+
+## [0.3.2] - 2026-11-27
+
+### Changed
+
+- Remove the in-window File menu from the Linux/Windows CSD title bar and the SSD menu row; Quit remains via Ctrl+Q and the close control (#147).
+
+## [0.3.1] - 2026-11-26
+
+### Added
+
 - Double-click a column header’s right edge to auto-fit width to the widest visible cell (header included), with min/max clamps; data and SQL result grids (#118).
+- Fedora QA launch/stop scripts (`scripts/qa-launch-fedora.sh`, `scripts/qa-stop-fedora.sh`) and AT-SPI enablement for Orca computer-use (#145, #146).
+- Local-first verification policy in `AGENTS.md` / contributing (#143).
+- Fedora GNOME Wayland as primary QA gate (not exempted) (#144).
 
 ### Fixed
 
 - Data grid keeps user-resized column widths across sort, header/cell selection, pagination, and refresh within the same result columns (#137).
+- New-connection form scrolls so Cancel, Test, Save, and Save & connect stay visible when a validation error is shown; Run / Run all close the SQL autocomplete popup (#140).
+- Running SQL from a table tab opens a new Query tab and runs there; the table tab stays a table (#141).
 
 ## [0.3.0] - 2026-11-26
 

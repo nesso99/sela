@@ -80,9 +80,6 @@ impl ChangePlan {
                     updates.push(build_update(changeset, dialect, pk, cells)?);
                 }
                 RowChange::Insert { values, .. } => {
-                    if values.is_empty() {
-                        return Err(ChangeError::EmptyInsert);
-                    }
                     inserts.push(build_insert(changeset, dialect, values)?);
                 }
             }
@@ -379,14 +376,26 @@ fn build_insert(
         cols.push(col.clone());
         params.push(value.clone());
     }
+    let table = qualify(dialect, &changeset.table().schema, &changeset.table().table)?;
     if cols.is_empty() {
-        return Err(ChangeError::EmptyInsert);
+        // Nothing set: let the engine fill defaults / generated keys.
+        // MySQL/MariaDB reject DEFAULT VALUES and need `() VALUES ()`.
+        let sql = match dialect {
+            Dialect::Mysql => format!("INSERT INTO {table} () VALUES ()"),
+            Dialect::Postgres | Dialect::Sqlite => {
+                format!("INSERT INTO {table} DEFAULT VALUES")
+            }
+        };
+        return Ok(PlannedStatement {
+            op: PlanOp::Insert,
+            sql,
+            params,
+            pk: Vec::new(),
+            unchecked_optimistic: Vec::new(),
+        });
     }
 
-    let mut sql = format!(
-        "INSERT INTO {} (",
-        qualify(dialect, &changeset.table().schema, &changeset.table().table)?
-    );
+    let mut sql = format!("INSERT INTO {table} (");
     for (i, col) in cols.iter().enumerate() {
         if i > 0 {
             sql.push_str(", ");
@@ -555,6 +564,29 @@ mod tests {
             vec!["a\"b".into(), "c`d".into(), "name".into(), "note".into()],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn empty_insert_uses_default_values() {
+        let mut cs = ChangeSet::try_new(
+            TableRef::new("public", "books"),
+            vec!["id".into()],
+            vec!["id".into(), "title".into()],
+        )
+        .unwrap();
+        cs.insert_row(BTreeMap::new()).unwrap();
+        let pg = ChangePlan::build(&cs, Dialect::Postgres).unwrap();
+        assert_eq!(
+            pg.statements[0].sql,
+            "INSERT INTO \"public\".\"books\" DEFAULT VALUES"
+        );
+        assert!(pg.statements[0].params.is_empty());
+        let my = ChangePlan::build(&cs, Dialect::Mysql).unwrap();
+        assert!(
+            my.statements[0].sql.ends_with("() VALUES ()"),
+            "{}",
+            my.statements[0].sql
+        );
     }
 
     #[test]

@@ -13,7 +13,6 @@
 #
 # Writes:
 #   OUT_DIR/01-main-window.png
-#   OUT_DIR/02-file-menu.png
 #
 # Exit non-zero on failure (caller may set continue-on-error).
 set -euo pipefail
@@ -123,15 +122,6 @@ capture() {
 }
 
 capture "$OUT_DIR/01-main-window.png"
-
-# File is a content-sized ghost Button in the SSD menu bar (height 32px,
-# left-padded ~4px). Click the label centre once; --window coords are
-# client-local. Double-click would toggle the dropdown closed again.
-xdotool windowactivate --sync "$WID" || true
-xdotool mousemove --window "$WID" 28 16 click 1
-sleep 1.5
-
-capture "$OUT_DIR/02-file-menu.png"
 
 ls -lah "$OUT_DIR"/*.png
 echo "screenshot-smoke: done"
