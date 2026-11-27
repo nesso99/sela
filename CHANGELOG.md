@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.5.0] - 2026-11-27
+
+### Fixed
+
+- Pending-edit paint looks up a row by primary-key identity (`pk_match`), not by display text, so SQL NULL and the text NULL, long byte keys, and -0.0 versus 0.0 do not paint the wrong row (#72).
+- A restored view tab stays a view when its kind was not saved, and a structure-load error is the no-primary-key strip only for a missing primary key. Connection and timeout errors are retried (#72).
+- `BIGINT UNSIGNED` values above `i64::MAX` round-trip as an unsigned integer through the editor and binders (#72).
+
 ## [0.4.0] - 2026-11-27
 
 ### Fixed
