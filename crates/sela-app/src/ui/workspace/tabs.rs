@@ -50,6 +50,7 @@ impl Workspace {
             .child(
                 TabBar::new("sela-tabs")
                     .w_full()
+                    .underline()
                     .selected_index(selected)
                     .when(items.is_empty(), |bar| {
                         bar.child(Tab::new().label("No tabs").disabled(true))

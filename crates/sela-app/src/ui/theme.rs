@@ -186,6 +186,8 @@ fn light_overrides() -> serde_json::Value {
         "table.head.foreground": "#525252",
         "ring": "#2563EB",
         "input.border": "#767676",
+        "tab.foreground": "#525252",
+        "tab.active.foreground": "#0A0A0A",
         // A missing primary.foreground falls back to foreground (near-black),
         // which disappears on the near-black primary fill. Keep the kit pair.
         "primary.foreground": "#FAFAFA",
@@ -208,6 +210,8 @@ fn dark_overrides() -> serde_json::Value {
         "list.even.background": "#171717",
         "ring": "#60A5FA",
         "input.border": "#737373",
+        "tab.foreground": "#A3A3A3",
+        "tab.active.foreground": "#FAFAFA",
     })
 }
 
@@ -272,6 +276,28 @@ mod tests {
         assert!(light.status_error.a > 0.9);
         let dark = SelaPalette::for_mode(ThemeMode::Dark);
         assert!(dark.cell_decode_bg.a > 0.9);
+    }
+
+    #[test]
+    fn active_tab_foregrounds_are_pinned() {
+        // Kit defaults already differ, so pin our own overrides.
+        for (mode, inactive, active) in [
+            (ThemeMode::Light, "#525252", "#0A0A0A"),
+            (ThemeMode::Dark, "#A3A3A3", "#FAFAFA"),
+        ] {
+            let mut theme = Theme::from(ThemeColor::light().as_ref());
+            theme.apply_config(&Rc::new(sela_theme_config(mode, DEFAULT_FONT_SIZE)));
+            assert_eq!(
+                theme.tab_foreground,
+                try_parse_color(inactive).unwrap(),
+                "{mode:?}"
+            );
+            assert_eq!(
+                theme.tab_active_foreground,
+                try_parse_color(active).unwrap(),
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]
