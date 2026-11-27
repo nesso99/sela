@@ -43,6 +43,7 @@ Font size (Cmd/Ctrl+= / − / 0), the command palette / quick open, and grid edi
 | Edit focused cell | Enter or double-click (grid focused; table with PK) |
 | Inspect focused cell | Space (grid focused; any cell, including read-only). Inside the cell editor, Space types a space. |
 | Cancel open cell editor / close inspect | Escape (does not discard the pending set) |
+| Accept / cancel the popover editor (multi-line text and JSON cells) | Cmd/Ctrl+Enter / Escape (Enter inserts a newline) |
 | Insert / Duplicate / Delete row | Cmd/Ctrl+I / Cmd/Ctrl+D / Cmd/Ctrl+Backspace (grid focused) |
 | Quick open (tables) | Cmd/Ctrl+P |
 | Command palette (actions) | Cmd/Ctrl+Shift+P |
