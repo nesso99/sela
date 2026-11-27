@@ -127,7 +127,7 @@ pub(crate) struct CellEditor {
     /// Original server / pending value used for ChangeSet merge (`old_value`).
     pub old_value: Option<Value>,
     pub validation_error: Option<String>,
-    #[allow(dead_code)]
+    /// Long value: edit in the popover (multi-line text, JSON), not in the cell.
     pub popover: bool,
 }
 
@@ -776,11 +776,6 @@ impl EditSession {
             if v.is_decode_error() || v.is_unsupported_placeholder() {
                 return Err("This cell is read-only.");
             }
-            // Multi-line / CR cells stay read-only until a popover editor exists.
-            let display = v.display();
-            if display.contains('\n') || display.contains('\r') {
-                return Err("Use SQL to change it.");
-            }
         }
         Ok(())
     }
@@ -830,7 +825,10 @@ impl EditSession {
         };
         let original_display = draft.clone();
         let started_as_null = is_null;
-        let popover = matches!(kind, ColumnKind::Json);
+        // JSON and multi-line / CR values edit in the popover (#72, v0.6.0).
+        let popover = matches!(kind, ColumnKind::Json)
+            || original_display.contains('\n')
+            || original_display.contains('\r');
         self.editor = Some(CellEditor {
             row,
             column,
@@ -1298,7 +1296,7 @@ fn parse_timestamp_value(raw: &str) -> Option<Value> {
     None
 }
 
-fn kind_label(kind: ColumnKind) -> &'static str {
+pub(crate) fn kind_label(kind: ColumnKind) -> &'static str {
     match kind {
         ColumnKind::Bool => "bool",
         ColumnKind::Int => "integer",
@@ -2127,13 +2125,12 @@ mod tests {
     }
 
     #[test]
-    fn multiline_cell_is_read_only() {
+    fn multiline_cell_is_editable_in_popover() {
         let session =
             EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
-        let err = session
+        assert!(session
             .cell_editable("title", Some(&Value::text("a\nb")), false)
-            .unwrap_err();
-        assert_eq!(err, "Use SQL to change it.");
+            .is_ok());
     }
 
     #[test]

@@ -12,6 +12,7 @@ use gpui_kit::{div, px, Context, IntoElement};
 use sela_config::{content_row_height, DEFAULT_FONT_SIZE};
 use sela_core::ConnectionColor;
 
+use super::super::long_value_popover::{long_value_popover, LongValuePopover};
 use super::super::theme::SelaPalette;
 use super::{TablePane, Workspace};
 
@@ -346,6 +347,20 @@ impl Workspace {
         let inspect = self
             .active_view()
             .and_then(|view| view.cell_inspect.clone());
+        let long_value = self.active_view().and_then(|view| {
+            let ed = view.edit.as_ref()?.editor.as_ref().filter(|e| e.popover)?;
+            let info = LongValuePopover {
+                title: format!(
+                    "{} · {}",
+                    ed.column,
+                    super::edit_session::kind_label(ed.kind)
+                ),
+                error: ed.validation_error.clone(),
+                anchor_left: view.popover_anchor.0,
+                anchor_top: view.popover_anchor.1,
+            };
+            Some((view.popover_editor.clone(), info))
+        });
         let row_h = content_row_height(self.font_size);
         let table_size = if self.font_size <= DEFAULT_FONT_SIZE {
             Size::XSmall
@@ -364,6 +379,9 @@ impl Workspace {
                         .bordered(true)
                         .with_size(table_size),
                 )
+            })
+            .when_some(long_value, |area, (input, info)| {
+                area.child(long_value_popover(&input, info, cx))
             })
             .when_some(inspect, |area, info| {
                 let title = if info.decode_error {
