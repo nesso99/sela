@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.7.0] - 2026-11-27
+
+### Added
+
+- Large CSV import streams rows through one bounded, cancellable, transactional sink, so memory stays flat and a cancel or error rolls the whole import back (IM-07, #162).
+
 ## [0.6.0] - 2026-11-27
 
 ### Added
