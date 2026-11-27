@@ -480,14 +480,6 @@ impl EditSession {
                 }
             }
         }
-        // Empty insert values would fail ChangePlan::build.
-        for change in cs.changes() {
-            if let RowChange::Insert { values, .. } = change {
-                if values.is_empty() {
-                    return Some("Set a primary key for the new row.");
-                }
-            }
-        }
         None
     }
 
@@ -577,6 +569,12 @@ impl EditSession {
             }
         }
         None
+    }
+
+    /// Ctrl/Cmd+D (Duplicate) and Ctrl/Cmd+I (Insert) stay with the field while
+    /// the in-cell editor is open, like Discard.
+    pub fn row_chords_allowed(&self) -> bool {
+        self.editor.is_none()
     }
 
     pub fn is_generated(&self, column: &str) -> bool {
@@ -1712,12 +1710,12 @@ mod tests {
     fn commit_blocked_until_pk_set_on_insert() {
         let mut session =
             EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
-        // id is generated (nextval) — does not block.
+        // id is generated (nextval): an untouched row omits it (DEFAULT VALUES).
         session.insert_blank_row().unwrap();
-        // Empty insert with only generated PK still blocks via EmptyInsert / empty values.
-        assert!(session
-            .commit_blocked_reason_for(session.connection_safe_mode)
-            .is_some());
+        assert_eq!(
+            session.commit_blocked_reason_for(session.connection_safe_mode),
+            None
+        );
 
         // Manual non-generated PK table.
         let mut structure = books_structure();

@@ -1643,13 +1643,22 @@ impl Render for Workspace {
             .on_action({
                 let this = this.clone();
                 move |_: &InsertEditRow, _, cx| {
-                    this.update(cx, |workspace, cx| workspace.insert_edit_row(cx));
+                    this.update(cx, |workspace, cx| {
+                        // Editor open: the chord stays with the field.
+                        if !workspace.active_cell_editor_open() {
+                            workspace.insert_edit_row(cx);
+                        }
+                    });
                 }
             })
             .on_action({
                 let this = this.clone();
                 move |_: &DuplicateEditRow, _, cx| {
-                    this.update(cx, |workspace, cx| workspace.duplicate_edit_row(cx));
+                    this.update(cx, |workspace, cx| {
+                        if !workspace.active_cell_editor_open() {
+                            workspace.duplicate_edit_row(cx);
+                        }
+                    });
                 }
             })
             .on_action({
