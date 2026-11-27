@@ -506,7 +506,7 @@ impl Workspace {
                     view.source = GridSource::Table {
                         schema,
                         table,
-                        kind: sela_core::RelationKind::Table,
+                        kind: None,
                     };
                     view.filters = filters;
                     view.sorts = sorts;
@@ -574,7 +574,7 @@ mod tests {
         GridSource::Table {
             schema: "public".into(),
             table: "edit_pk".into(),
-            kind: RelationKind::Table,
+            kind: Some(RelationKind::Table),
         }
     }
 

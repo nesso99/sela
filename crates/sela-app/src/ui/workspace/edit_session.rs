@@ -22,6 +22,11 @@ pub(crate) enum ReadOnlyReason {
     SqlResult,
     /// Structure not loaded yet (transient; strip stays hidden).
     Loading,
+    /// Introspection succeeded but the change set could not be built (not a
+    /// missing primary key).
+    StructureError,
+    /// Table vs view is not known yet (restored tab before the catalog loads).
+    UnknownKind,
 }
 
 impl ReadOnlyReason {
@@ -31,6 +36,8 @@ impl ReadOnlyReason {
             Self::View => Some("Read-only · views are read-only."),
             Self::SqlResult => None, // status only, no strip
             Self::Loading => None,
+            Self::StructureError => Some("Read-only · couldn't read this table's structure."),
+            Self::UnknownKind => Some("Read-only · couldn't tell whether this is a table or view."),
         }
     }
 
@@ -40,6 +47,8 @@ impl ReadOnlyReason {
             Self::View => "Read-only · views are read-only.",
             Self::SqlResult => "SQL results are read-only. Open the table to edit.",
             Self::Loading => "Loading table structure…",
+            Self::StructureError => "Read-only · couldn't read this table's structure.",
+            Self::UnknownKind => "Read-only · couldn't tell whether this is a table or view.",
         }
     }
 }
@@ -269,7 +278,7 @@ pub(crate) struct EditSession {
 }
 
 /// Newtype so `Vec<Value>` can be a BTreeMap key via display+Debug-stable order.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PkKey(Vec<String>);
 
 impl PkKey {
@@ -278,7 +287,84 @@ impl PkKey {
     }
 }
 
+/// One-pass lookup over a session's pending changes, keyed by primary key, so
+/// painting a page is O(rows + changes) instead of O(rows x changes).
+pub(crate) struct PendingIndex<'a> {
+    by_pk: HashMap<PkKey, &'a RowChange>,
+    inserts: HashMap<u64, &'a BTreeMap<String, Value>>,
+    preserved: &'a BTreeMap<PkKey, BTreeMap<String, CellChange>>,
+    /// Number of key lookups served; lets tests assert the index is used.
+    lookups: std::cell::Cell<usize>,
+}
+
+impl PendingIndex<'_> {
+    fn change(&self, pk: &[Value]) -> Option<&RowChange> {
+        self.lookups.set(self.lookups.get() + 1);
+        self.by_pk.get(&PkKey::from_values(pk)).copied()
+    }
+
+    pub fn marker(&self, pk: &[Value]) -> RowMarker {
+        match self.change(pk) {
+            Some(RowChange::Delete { .. }) => RowMarker::Deleted,
+            Some(RowChange::Update { cells, .. }) if !cells.is_empty() => RowMarker::Dirty,
+            _ => RowMarker::Clean,
+        }
+    }
+
+    pub fn pending_value(&self, pk: &[Value], column: &str) -> Option<&Value> {
+        match self.change(pk)? {
+            RowChange::Update { cells, .. } => cells.get(column).map(|c| &c.new_value),
+            RowChange::Delete { .. } => self
+                .preserved
+                .get(&PkKey::from_values(pk))
+                .and_then(|cells| cells.get(column).map(|c| &c.new_value)),
+            RowChange::Insert { .. } => None,
+        }
+    }
+
+    pub fn original_value(&self, pk: &[Value], column: &str) -> Option<&Value> {
+        if let Some(RowChange::Update { cells, .. }) = self.change(pk) {
+            return cells.get(column).map(|c| &c.old_value);
+        }
+        self.preserved
+            .get(&PkKey::from_values(pk))
+            .and_then(|cells| cells.get(column).map(|c| &c.old_value))
+    }
+
+    pub fn insert_values(&self, insert_id: u64) -> Option<&BTreeMap<String, Value>> {
+        self.inserts.get(&insert_id).copied()
+    }
+
+    #[cfg(test)]
+    pub fn lookup_count(&self) -> usize {
+        self.lookups.get()
+    }
+}
+
 impl EditSession {
+    pub(crate) fn pending_index(&self) -> PendingIndex<'_> {
+        let mut by_pk = HashMap::new();
+        let mut inserts = HashMap::new();
+        if let Some(cs) = &self.changeset {
+            for change in cs.changes() {
+                match change {
+                    RowChange::Update { pk, .. } | RowChange::Delete { pk, .. } => {
+                        by_pk.entry(PkKey::from_values(pk)).or_insert(change);
+                    }
+                    RowChange::Insert { id, values } => {
+                        inserts.insert(*id, values);
+                    }
+                }
+            }
+        }
+        PendingIndex {
+            by_pk,
+            inserts,
+            preserved: &self.preserved_updates,
+            lookups: std::cell::Cell::new(0),
+        }
+    }
+
     /// SQL result tab — never editable; no strip.
     pub fn sql_result() -> Self {
         Self {
@@ -326,6 +412,13 @@ impl EditSession {
             commit_conflict: false,
             connection_safe_mode: SafeMode::Off,
         }
+    }
+
+    /// Table-vs-view unknown: stay read-only rather than assume `Table`.
+    pub fn unresolved_kind(dialect: Dialect) -> Self {
+        let mut s = Self::loading(dialect, RelationKind::Table);
+        s.read_only = Some(ReadOnlyReason::UnknownKind);
+        s
     }
 
     /// Build from introspection. No PK → read-only strip.
@@ -395,7 +488,7 @@ impl EditSession {
             },
             Err(_) => Self {
                 relation_kind,
-                read_only: Some(ReadOnlyReason::NoPrimaryKey),
+                read_only: Some(ReadOnlyReason::StructureError),
                 changeset: None,
                 generated_columns: generated,
                 column_types,
@@ -1048,6 +1141,15 @@ fn pk_match(a: &[Value], b: &[Value]) -> bool {
         })
 }
 
+/// `i64` when it fits; otherwise `u64` (BIGINT UNSIGNED above `i64::MAX`).
+fn parse_int_value(raw: &str) -> Option<Value> {
+    let t = raw.trim();
+    t.parse::<i64>()
+        .map(Value::Int)
+        .ok()
+        .or_else(|| t.parse::<u64>().map(Value::UInt).ok())
+}
+
 /// Parse editor text into a [`Value`]. Empty text for Text → `''`; other kinds error.
 pub(crate) fn parse_edit_value(
     raw: &str,
@@ -1064,11 +1166,9 @@ pub(crate) fn parse_edit_value(
                 Err(format!("Enter a valid {type_label}, or set NULL."))
             }
         }
-        ColumnKind::Int => raw
-            .trim()
-            .parse::<i64>()
-            .map(Value::Int)
-            .map_err(|_| format!("Enter a valid {type_label}, or set NULL.")),
+        ColumnKind::Int => {
+            parse_int_value(raw).ok_or_else(|| format!("Enter a valid {type_label}, or set NULL."))
+        }
         ColumnKind::Float => {
             let n: f64 = raw
                 .trim()
@@ -1998,5 +2098,111 @@ mod tests {
             deleted: 0,
         };
         assert_eq!(counts.summary_left(), "3 pending · 2 updated, 1 inserted");
+    }
+
+    #[test]
+    fn pending_index_matches_linear_lookups() {
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let cs = session.changeset.as_mut().unwrap();
+        cs.set_cell(
+            &[Value::Int(1)],
+            "title",
+            Value::text("a"),
+            Value::text("b"),
+        )
+        .unwrap();
+        cs.delete_row(&[Value::Int(2)]).unwrap();
+        let index = session.pending_index();
+        for id in 0..5 {
+            let pk = [Value::Int(id)];
+            assert_eq!(index.marker(&pk), session.row_marker_for_server(&pk));
+            assert_eq!(
+                index.pending_value(&pk, "title"),
+                session.pending_server_value(&pk, "title")
+            );
+            assert_eq!(
+                index.original_value(&pk, "title"),
+                session.original_server_value(&pk, "title")
+            );
+        }
+    }
+
+    #[test]
+    fn paint_uses_pk_index_one_lookup_per_row() {
+        use sela_core::{ColumnMeta, ResultWindow};
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let cs = session.changeset.as_mut().unwrap();
+        for id in 0..50 {
+            cs.set_cell(
+                &[Value::Int(id)],
+                "title",
+                Value::text("a"),
+                Value::text("b"),
+            )
+            .unwrap();
+        }
+        let mut result = ResultWindow::with_capacity(4, 100);
+        let columns: Vec<ColumnMeta> = books_structure()
+            .columns
+            .iter()
+            .map(|c| ColumnMeta {
+                name: c.name.clone(),
+                type_name: c.type_name.clone(),
+            })
+            .collect();
+        let width = columns.len();
+        result.reset(columns, 100);
+        let rows = (0..100)
+            .map(|i| {
+                let mut row = vec![Value::Null; width];
+                row[0] = Value::Int(i);
+                row
+            })
+            .collect();
+        result.insert_page(0, rows);
+        let index = session.pending_index();
+        let paint = super::super::edit_actions::build_edit_paint_with(&session, &result, &index);
+        assert_eq!(paint.server.len(), 50);
+        // One index probe per marker check plus per dirty cell; never rows x changes.
+        let probes = index.lookup_count();
+        assert!(probes < 100 * 10, "unexpected probe count {probes}");
+        assert!(probes >= 100);
+    }
+
+    #[test]
+    fn non_pk_structure_error_is_not_reported_as_no_primary_key() {
+        let mut structure = books_structure();
+        structure.indexes[0].columns = vec!["ghost".into()];
+        let session =
+            EditSession::from_structure(&structure, Dialect::Postgres, RelationKind::Table);
+        assert_eq!(session.read_only, Some(ReadOnlyReason::StructureError));
+        assert_ne!(
+            session.strip_line_for(session.connection_safe_mode),
+            Some("Read-only · this table has no primary key.")
+        );
+    }
+
+    #[test]
+    fn unknown_kind_is_read_only_not_table() {
+        let session = EditSession::unresolved_kind(Dialect::Postgres);
+        assert_eq!(session.read_only, Some(ReadOnlyReason::UnknownKind));
+        assert!(!session.is_editable_for(session.connection_safe_mode));
+    }
+
+    #[test]
+    fn bigint_unsigned_above_i64_max_parses_as_uint() {
+        let big = "18446744073709551615";
+        assert_eq!(
+            parse_edit_value(big, ColumnKind::Int, Dialect::Mysql),
+            Ok(Value::UInt(u64::MAX))
+        );
+        assert_eq!(
+            parse_edit_value("9223372036854775807", ColumnKind::Int, Dialect::Mysql),
+            Ok(Value::Int(i64::MAX))
+        );
+        assert!(parse_edit_value("18446744073709551616", ColumnKind::Int, Dialect::Mysql).is_err());
+        assert_eq!(Value::UInt(u64::MAX).display(), big);
     }
 }

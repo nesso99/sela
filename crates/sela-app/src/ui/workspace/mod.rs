@@ -251,7 +251,8 @@ pub(crate) enum GridSource {
     Table {
         schema: String,
         table: String,
-        kind: sela_core::RelationKind,
+        /// `None` until resolved from the catalog (restored tabs have no kind).
+        kind: Option<sela_core::RelationKind>,
     },
     Sql(String),
 }
@@ -979,7 +980,7 @@ impl Workspace {
         view.source = GridSource::Table {
             schema: "main".into(),
             table: "books".into(),
-            kind: RelationKind::Table,
+            kind: Some(RelationKind::Table),
         };
         view.table_pane = TablePane::Data;
         cx.notify();

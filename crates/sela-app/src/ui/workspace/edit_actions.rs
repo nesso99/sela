@@ -9,7 +9,7 @@ use sela_core::{RelationKind, RowState, TabId, TableStructure, Value};
 
 use super::edit_session::{
     resolve_overlay_anchors, visual_row_map, visual_row_map_for_overlays, EditRowId, EditSession,
-    OverlayRow, ReadOnlyReason, RowMarker, VisualRowRef,
+    OverlayRow, PendingIndex, ReadOnlyReason, RowMarker, VisualRowRef,
 };
 use super::tab_view::CellInspect;
 use super::{GridSource, Workspace};
@@ -32,17 +32,9 @@ fn visual_rows_for(
 }
 
 impl Workspace {
-    /// Relation kind from the loaded catalog, defaulting to Table.
-    pub(super) fn relation_kind_for(&self, schema: &str, table: &str) -> RelationKind {
-        for loaded in &self.catalog {
-            if loaded.name != schema {
-                continue;
-            }
-            if let Some(info) = loaded.tables.iter().find(|t| t.name == table) {
-                return info.kind;
-            }
-        }
-        RelationKind::Table
+    /// Relation kind from the loaded catalog; `None` when not (yet) known.
+    pub(super) fn relation_kind_for(&self, schema: &str, table: &str) -> Option<RelationKind> {
+        catalog_kind(&self.catalog, schema, table)
     }
 
     pub(super) fn ensure_edit_session_loading(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
@@ -54,19 +46,30 @@ impl Workspace {
         let Some(view) = self.views.get_mut(&tab_id) else {
             return;
         };
-        match &view.source {
+        // Restored tabs carry no kind; resolve from the catalog when known.
+        let resolved = match &view.source {
+            GridSource::Table {
+                schema,
+                table,
+                kind,
+            } => kind.or_else(|| catalog_kind(&self.catalog, schema, table)),
+            _ => None,
+        };
+        match &mut view.source {
             GridSource::Table {
                 schema,
                 table,
                 kind,
             } => {
-                let kind = *kind;
+                *kind = resolved;
                 if view.edit.is_none() {
-                    view.edit = Some(EditSession::loading(dialect, kind));
+                    view.edit = Some(match resolved {
+                        Some(kind) => EditSession::loading(dialect, kind),
+                        None => EditSession::unresolved_kind(dialect),
+                    });
                 }
                 let schema = schema.clone();
                 let table = table.clone();
-                let _ = view;
                 self.ensure_structure_for_edit(tab_id, schema, table, cx);
             }
             GridSource::Sql(_) => {
@@ -101,9 +104,13 @@ impl Workspace {
         let expected_table = table.clone();
         let kind = self.relation_kind_for(&schema, &table);
         cx.spawn(async move |this, async_cx| {
-            let result =
-                sela_drivers::drive(async move { session.describe_table(&schema, &table).await })
-                    .await;
+            let result = sela_drivers::drive(async move {
+                sela_drivers::retry_transient(STRUCTURE_ATTEMPTS, STRUCTURE_RETRY_DELAY, || {
+                    session.describe_table(&schema, &table)
+                })
+                .await
+            })
+            .await;
             this.update(async_cx, |this, cx| {
                 let still = this.views.get(&tab_id).is_some_and(|view| {
                     matches!(
@@ -130,7 +137,10 @@ impl Workspace {
                                 // Spec: do not wipe pending edits when structure refresh fails.
                                 view.status = format!("Structure for edit failed: {err}");
                             } else {
-                                view.edit = Some(EditSession::loading(dialect, kind));
+                                view.edit = Some(match kind {
+                                    Some(kind) => EditSession::loading(dialect, kind),
+                                    None => EditSession::unresolved_kind(dialect),
+                                });
                                 view.status = format!("Structure for edit failed: {err}");
                             }
                         }
@@ -154,14 +164,14 @@ impl Workspace {
             .as_ref()
             .map(|s| s.dialect())
             .unwrap_or(sela_core::Dialect::Sqlite);
-        let kind = self
-            .views
-            .get(&tab_id)
-            .and_then(|v| match &v.source {
-                GridSource::Table { kind, .. } => Some(*kind),
-                _ => None,
-            })
-            .unwrap_or(RelationKind::Table);
+        let kind = self.views.get(&tab_id).and_then(|v| match &v.source {
+            GridSource::Table {
+                kind,
+                schema,
+                table,
+            } => kind.or_else(|| catalog_kind(&self.catalog, schema, table)),
+            _ => None,
+        });
         // Keep pending edits if the same table already has a dirty session.
         let keep = self
             .views
@@ -173,7 +183,11 @@ impl Workspace {
             return;
         }
         if let Some(view) = self.view_mut(tab_id) {
-            view.edit = Some(EditSession::from_structure(&structure, dialect, kind));
+            view.edit = Some(match kind {
+                Some(kind) => EditSession::from_structure(&structure, dialect, kind),
+                // Never assume Table: an unknown relation stays read-only.
+                None => EditSession::unresolved_kind(dialect),
+            });
         }
         self.sync_tab_dirty(tab_id);
         self.sync_grid_edit_paint(tab_id, cx);
@@ -929,6 +943,26 @@ fn extract_optimistic_expected(
     expected
 }
 
+const STRUCTURE_ATTEMPTS: usize = 3;
+/// Zero in tests so retries never leak timers onto the shared db runtime.
+const STRUCTURE_RETRY_DELAY: std::time::Duration = if cfg!(test) {
+    std::time::Duration::ZERO
+} else {
+    std::time::Duration::from_millis(250)
+};
+
+fn catalog_kind(
+    catalog: &[super::LoadedSchema],
+    schema: &str,
+    table: &str,
+) -> Option<RelationKind> {
+    catalog
+        .iter()
+        .filter(|loaded| loaded.name == schema)
+        .find_map(|loaded| loaded.tables.iter().find(|t| t.name == table))
+        .map(|info| info.kind)
+}
+
 fn cell_value_at(result: &sela_core::ResultWindow, row: usize, column: &str) -> Option<Value> {
     let ix = result.columns().iter().position(|c| c.name == column)?;
     match result.row(row) {
@@ -938,6 +972,15 @@ fn cell_value_at(result: &sela_core::ResultWindow, row: usize, column: &str) -> 
 }
 
 fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> EditPaintState {
+    build_edit_paint_with(edit, result, &edit.pending_index())
+}
+
+/// Paint state using a prebuilt [`PendingIndex`] (one hash lookup per row).
+pub(super) fn build_edit_paint_with(
+    edit: &EditSession,
+    result: &sela_core::ResultWindow,
+    index: &PendingIndex<'_>,
+) -> EditPaintState {
     let mut paint = EditPaintState::default();
     let pk_cols = edit
         .changeset
@@ -948,7 +991,7 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
         let Some(pk) = extract_pk(result, row_ix, &pk_cols) else {
             continue;
         };
-        let marker = edit.row_marker_for_server(&pk);
+        let marker = index.marker(&pk);
         if marker == RowMarker::Clean {
             continue;
         }
@@ -956,7 +999,7 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
         let mut dirty_null = std::collections::BTreeSet::new();
         if marker == RowMarker::Dirty || marker == RowMarker::Deleted {
             for col in result.columns() {
-                if let Some(v) = edit.pending_server_value(&pk, &col.name) {
+                if let Some(v) = index.pending_value(&pk, &col.name) {
                     dirty_cols.insert(col.name.clone(), v.display().into_owned());
                     if v.is_null() {
                         dirty_null.insert(col.name.clone());
@@ -966,7 +1009,7 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
         }
         let mut original = BTreeMap::new();
         for col in result.columns() {
-            if let Some(v) = edit.original_server_value(&pk, &col.name) {
+            if let Some(v) = index.original_value(&pk, &col.name) {
                 original.insert(col.name.clone(), v.display().into_owned());
             }
         }
@@ -986,18 +1029,10 @@ fn build_edit_paint(edit: &EditSession, result: &sela_core::ResultWindow) -> Edi
     let overlay_anchors = resolve_overlay_anchors(&edit.overlay, &page_pks);
     for (overlay, after_server_row) in edit.overlay.iter().zip(overlay_anchors) {
         let marker = edit.row_marker_for_overlay(overlay.insert_id);
-        let mut raw = BTreeMap::new();
-        if let Some(cs) = &edit.changeset {
-            for change in cs.changes() {
-                if let sela_core::RowChange::Insert { id, values: vals } = change {
-                    if *id == overlay.insert_id {
-                        for (k, v) in vals {
-                            raw.insert(k.clone(), v.clone());
-                        }
-                    }
-                }
-            }
-        }
+        let raw = index
+            .insert_values(overlay.insert_id)
+            .cloned()
+            .unwrap_or_default();
         paint.overlays.push(OverlayPaintRow {
             insert_id: overlay.insert_id,
             marker,
