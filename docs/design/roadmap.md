@@ -126,7 +126,7 @@ Also: rename Birch → Sela (#1). License + cargo-deny (#14).
 | --- | --- | --- |
 | M4-1 | Signed packages for 3 OS in CI | Installable from GitHub Releases |
 | M4-2 | Hit NFRs: start, fps, memory; publish benchmark report | Numbers in release notes |
-| M4-3 | Naming polish (bundle id, docs); keychain already `app.sela.database` | Branding consistent; no Birch leftovers |
+| M4-3 | Naming polish (bundle id, docs); keychain already `app.sela.database` | Branding consistent; no Birch leftovers. **Done** (#167): macOS bundle id is `app.sela.app`. The remaining mentions of Birch in PRD, SPECS and this file only record the rename. |
 | M4-4 | User docs, shortcuts page, CONTRIBUTING | New contributor builds in ~15 minutes |
 
 After v1: structure editing (DDL with preview), MariaDB (near MySQL driver), DuckDB, SQL Server, ClickHouse, Redis, ER diagram, AI/MCP.
