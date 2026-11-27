@@ -5,15 +5,16 @@ use std::collections::BTreeMap;
 use gpui_kit::component::table::TableSelection;
 use gpui_kit::{Context, Focusable as _, Window};
 
-use sela_core::{RelationKind, RowState, TabId, TableStructure, Value};
+use sela_core::{ColumnKind, RelationKind, RowState, TabId, TableStructure, Value};
 
 use super::edit_session::{
     resolve_overlay_anchors, visual_row_map, visual_row_map_for_overlays, EditRowId, EditSession,
     OverlayRow, PendingIndex, ReadOnlyReason, RowMarker, VisualRowRef,
 };
-use super::tab_view::CellInspect;
+use super::tab_view::{CellInspect, TabView};
 use super::{GridSource, Workspace};
 use crate::ui::grid::{EditPaintRow, EditPaintState, OverlayPaintRow};
+use crate::ui::long_value_popover::clamp_popover_anchor;
 
 /// Visual order for the current page, resolving duplicate anchors by source PK.
 fn visual_rows_for(
@@ -303,6 +304,7 @@ impl Workspace {
             }),
             EditRowId::Overlay { .. } => current.clone(),
         };
+        let viewport = self.results_area_viewport(window);
         let status_msg;
         {
             let Some(view) = self.view_mut(tab_id) else {
@@ -348,14 +350,31 @@ impl Workspace {
                         "NULL"
                     };
                     if edit.editor.as_ref().is_some_and(|e| e.popover) {
-                        view.popover_anchor = anchor;
-                        view.popover_editor.update(cx, |input, cx| {
-                            input.set_value(&draft, window, cx);
-                        });
-                        view.popover_editor
-                            .read(cx)
-                            .focus_handle(cx)
-                            .focus(window, cx);
+                        view.popover_anchor =
+                            clamp_popover_anchor(anchor.0, anchor.1, viewport.0, viewport.1);
+                        let is_json = edit
+                            .editor
+                            .as_ref()
+                            .is_some_and(|e| matches!(e.kind, ColumnKind::Json));
+                        if is_json {
+                            view.popover_editor.update(cx, |input, cx| {
+                                input.set_auto_close(false, window, cx);
+                                input.set_smart_indent(false, window, cx);
+                                input.set_value(&draft, window, cx);
+                            });
+                            view.popover_editor
+                                .read(cx)
+                                .focus_handle(cx)
+                                .focus(window, cx);
+                        } else {
+                            view.popover_textarea.update(cx, |input, cx| {
+                                input.set_value(&draft, window, cx);
+                            });
+                            view.popover_textarea
+                                .read(cx)
+                                .focus_handle(cx)
+                                .focus(window, cx);
+                        }
                     } else {
                         view.cell_editor.update(cx, |input, cx| {
                             input.set_placeholder(placeholder, window, cx);
@@ -592,17 +611,7 @@ impl Workspace {
         let draft = self
             .views
             .get(&tab_id)
-            .map(|v| {
-                if v.edit
-                    .as_ref()
-                    .and_then(|e| e.editor.as_ref())
-                    .is_some_and(|e| e.popover)
-                {
-                    v.popover_editor.read(cx).value().to_string()
-                } else {
-                    v.cell_editor.read(cx).value().to_string()
-                }
-            })
+            .map(|v| popover_or_cell_draft(v, cx))
             .unwrap_or_default();
         // Sync draft from the input. The ghost NULL button sets `forced_null` and
         // clears the input before accept; leave that path alone.
@@ -646,6 +655,9 @@ impl Workspace {
                 input.set_value("", window, cx);
             });
             view.popover_editor.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+            view.popover_textarea.update(cx, |input, cx| {
                 input.set_value("", window, cx);
             });
         }
@@ -899,6 +911,23 @@ pub(crate) fn cell_inspect_for_value(column: &str, type_name: &str, value: &Valu
         decode_error: value.is_decode_error(),
         anchor_left: 8.0,
         anchor_top: 8.0,
+    }
+}
+
+fn popover_or_cell_draft(view: &TabView, cx: &gpui_kit::App) -> String {
+    if let Some(ed) = view
+        .edit
+        .as_ref()
+        .and_then(|e| e.editor.as_ref())
+        .filter(|e| e.popover)
+    {
+        if matches!(ed.kind, ColumnKind::Json) {
+            view.popover_editor.read(cx).value().to_string()
+        } else {
+            view.popover_textarea.read(cx).value().to_string()
+        }
+    } else {
+        view.cell_editor.read(cx).value().to_string()
     }
 }
 

@@ -7,12 +7,14 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::table::DataTable;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable as _, Sizable as _, Size};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Context, IntoElement};
+use gpui_kit::{div, px, Context, IntoElement, Window};
 
 use sela_config::{content_row_height, DEFAULT_FONT_SIZE};
-use sela_core::ConnectionColor;
+use sela_core::{ColumnKind, ConnectionColor};
 
-use super::super::long_value_popover::{long_value_popover, LongValuePopover};
+use super::super::long_value_popover::{
+    clamp_popover_anchor, long_value_popover, LongValuePopover, LongValuePopoverInput,
+};
 use super::super::theme::SelaPalette;
 use super::{TablePane, Workspace};
 
@@ -341,14 +343,61 @@ impl Workspace {
             .child(status)
     }
 
-    pub(super) fn results_area(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// Approximate results-area viewport for popover placement (relative origin).
+    pub(crate) fn results_area_viewport(&self, window: &Window) -> (f32, f32) {
+        let bounds = window.bounds().size;
+        const SIDEBAR: f32 = 292.;
+        const TITLE: f32 = 44.;
+        const TAB_BAR: f32 = 28.;
+        const TOOLBAR: f32 = 36.;
+        const FILTER_BAR: f32 = 72.;
+        const PENDING_BAR: f32 = 26.;
+        const RESULT_STRIP: f32 = 24.;
+        const STATUS_BAR: f32 = 28.;
+
+        let mut chrome_above = TITLE + TAB_BAR + TOOLBAR;
+        if let Some(view) = self.active_view() {
+            if view.filter_bar_open {
+                chrome_above += FILTER_BAR;
+            }
+            if view.edit.as_ref().is_some_and(|e| e.changeset.is_some()) {
+                chrome_above += PENDING_BAR;
+            }
+        }
+        if self.banner_error().is_some() {
+            chrome_above += 40.;
+        }
+
+        let mut chrome_below = RESULT_STRIP + STATUS_BAR;
+        if let Some(view) = self.active_view() {
+            chrome_below += view.editor_body_height();
+        }
+
+        let width = (f32::from(bounds.width) - SIDEBAR).max(0.);
+        let height = (f32::from(bounds.height) - chrome_above - chrome_below).max(0.);
+        (width.max(100.), height.max(100.))
+    }
+
+    pub(super) fn results_area(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let this = cx.entity();
         let grid = self.active_view().map(|view| view.grid.clone());
         let inspect = self
             .active_view()
             .and_then(|view| view.cell_inspect.clone());
+        let viewport = self.results_area_viewport(window);
         let long_value = self.active_view().and_then(|view| {
             let ed = view.edit.as_ref()?.editor.as_ref().filter(|e| e.popover)?;
+            let (anchor_left, anchor_top) = clamp_popover_anchor(
+                view.popover_anchor.0,
+                view.popover_anchor.1,
+                viewport.0,
+                viewport.1,
+            );
+            let input = if matches!(ed.kind, ColumnKind::Json) {
+                LongValuePopoverInput::Json(&view.popover_editor)
+            } else {
+                LongValuePopoverInput::Text(&view.popover_textarea)
+            };
             let info = LongValuePopover {
                 title: format!(
                     "{} · {}",
@@ -356,10 +405,10 @@ impl Workspace {
                     super::edit_session::kind_label(ed.kind)
                 ),
                 error: ed.validation_error.clone(),
-                anchor_left: view.popover_anchor.0,
-                anchor_top: view.popover_anchor.1,
+                anchor_left,
+                anchor_top,
             };
-            Some((view.popover_editor.clone(), info))
+            Some((input, info))
         });
         let row_h = content_row_height(self.font_size);
         let table_size = if self.font_size <= DEFAULT_FONT_SIZE {
@@ -381,7 +430,7 @@ impl Workspace {
                 )
             })
             .when_some(long_value, |area, (input, info)| {
-                area.child(long_value_popover(&input, info, cx))
+                area.child(long_value_popover(input, info, cx))
             })
             .when_some(inspect, |area, info| {
                 let title = if info.decode_error {

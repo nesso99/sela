@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui_kit::component::input::{
-    EditorState, GutterDecorationCollection, InputState, TextDecorationCollection,
+    EditorState, GutterDecorationCollection, InputState, TextDecorationCollection, TextareaState,
 };
 use gpui_kit::component::table::TableState;
 use gpui_kit::{px, AppContext as _, Entity, Focusable as _, SharedString, Window};
@@ -97,8 +97,9 @@ pub(crate) struct TabView {
     pub edit: Option<EditSession>,
     /// Shared input for the open in-cell editor.
     pub cell_editor: Entity<InputState>,
-    /// Multi-line editor for long values (multi-line text, JSON; #72).
+    /// JSON long-value popover (#72). Plain multi-line text uses `popover_textarea`.
     pub popover_editor: Entity<EditorState>,
+    pub popover_textarea: Entity<TextareaState>,
     /// Popover offset from the results-area origin, set when the editor opens.
     pub popover_anchor: (f32, f32),
     /// Set after a successful commit while the page reload is in flight.
@@ -145,7 +146,13 @@ impl TabView {
         });
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in SQL"));
         let cell_editor = cx.new(|cx| InputState::new(window, cx).placeholder("NULL"));
-        let popover_editor = cx.new(|cx| EditorState::new(window, cx).placeholder("NULL"));
+        let popover_editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .placeholder("NULL")
+                .auto_close(false)
+                .smart_indent(false)
+        });
+        let popover_textarea = cx.new(|cx| TextareaState::new(window, cx).placeholder("NULL"));
         Self {
             grid,
             sql,
@@ -194,6 +201,7 @@ impl TabView {
             edit: None,
             cell_editor,
             popover_editor,
+            popover_textarea,
             popover_anchor: (8.0, 8.0),
             post_commit_reload: false,
             cell_inspect: None,
@@ -215,6 +223,11 @@ impl TabView {
             .is_focused(window)
             || self
                 .popover_editor
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .popover_textarea
                 .read(cx)
                 .focus_handle(cx)
                 .is_focused(window)

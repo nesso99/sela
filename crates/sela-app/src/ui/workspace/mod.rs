@@ -1771,7 +1771,9 @@ impl Render for Workspace {
                                         column.child(self.error_banner(cx, error))
                                     })
                                     .child(match table_pane {
-                                        TablePane::Data => self.results_area(cx).into_any_element(),
+                                        TablePane::Data => {
+                                            self.results_area(window, cx).into_any_element()
+                                        }
                                         TablePane::Structure => {
                                             self.structure_area(cx).into_any_element()
                                         }

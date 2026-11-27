@@ -1,13 +1,16 @@
 //! Long-value popover editor (#72, v0.6.0): open, accept, cancel.
 
-use gpui_kit::component::input::EditorState;
+use gpui_kit::component::input::{EditorState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{div, px, size, AppContext, Context, Entity, Focusable, TestAppContext, Window};
+use gpui_kit::{
+    div, px, size, AppContext, Context, ElementId, Entity, Focusable, TestAppContext, Window,
+};
+use sela_core::{
+    ColumnKind, ColumnStructure, Dialect, IndexInfo, RelationKind, TableStructure, Value,
+};
 
-use sela_core::{ColumnStructure, Dialect, IndexInfo, RelationKind, TableStructure, Value};
-
-use crate::ui::long_value_popover::{long_value_popover, LongValuePopover};
+use crate::ui::long_value_popover::{long_value_popover, LongValuePopover, LongValuePopoverInput};
 use crate::ui::workspace::edit_session::{EditRowId, EditSession};
 use crate::ui::{AcceptCellEditor, CancelCellEditor};
 
@@ -45,7 +48,8 @@ fn structure() -> TableStructure {
 
 struct PopoverHost {
     edit: EditSession,
-    editor: Entity<EditorState>,
+    textarea: Entity<TextareaState>,
+    json_editor: Entity<EditorState>,
     focus: gpui_kit::FocusHandle,
 }
 
@@ -53,8 +57,28 @@ impl PopoverHost {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             edit: EditSession::from_structure(&structure(), Dialect::Postgres, RelationKind::Table),
-            editor: cx.new(|cx| EditorState::new(window, cx)),
+            textarea: cx.new(|cx| TextareaState::new(window, cx)),
+            json_editor: cx.new(|cx| {
+                EditorState::new(window, cx)
+                    .auto_close(false)
+                    .smart_indent(false)
+            }),
             focus: cx.focus_handle(),
+        }
+    }
+
+    fn popover_kind(&self) -> Option<ColumnKind> {
+        self.edit
+            .editor
+            .as_ref()
+            .filter(|e| e.popover)
+            .map(|e| e.kind)
+    }
+
+    fn draft_entity_for_kind(&self, kind: ColumnKind) -> ElementId {
+        match kind {
+            ColumnKind::Json => ("input", self.json_editor.entity_id()).into(),
+            _ => ("input", self.textarea.entity_id()).into(),
         }
     }
 
@@ -82,9 +106,18 @@ impl PopoverHost {
         let ed = self.edit.editor.as_ref().expect("editor");
         if ed.popover {
             let draft = ed.draft.clone();
-            self.editor
-                .update(cx, |input, cx| input.set_value(draft, window, cx));
-            self.editor.read(cx).focus_handle(cx).focus(window, cx);
+            match ed.kind {
+                ColumnKind::Json => {
+                    self.json_editor
+                        .update(cx, |input, cx| input.set_value(draft, window, cx));
+                    self.json_editor.read(cx).focus_handle(cx).focus(window, cx);
+                }
+                _ => {
+                    self.textarea
+                        .update(cx, |input, cx| input.set_value(draft, window, cx));
+                    self.textarea.read(cx).focus_handle(cx).focus(window, cx);
+                }
+            }
         }
         cx.notify();
     }
@@ -92,24 +125,33 @@ impl PopoverHost {
 
 impl Render for PopoverHost {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let popover = self
-            .edit
-            .editor
-            .as_ref()
-            .filter(|e| e.popover)
-            .map(|e| LongValuePopover {
-                title: e.column.clone(),
-                error: e.validation_error.clone(),
-                anchor_left: 8.,
-                anchor_top: 8.,
-            });
+        let popover = self.edit.editor.as_ref().filter(|e| e.popover).map(|e| {
+            let input = if matches!(e.kind, ColumnKind::Json) {
+                LongValuePopoverInput::Json(&self.json_editor)
+            } else {
+                LongValuePopoverInput::Text(&self.textarea)
+            };
+            (
+                input,
+                LongValuePopover {
+                    title: e.column.clone(),
+                    error: e.validation_error.clone(),
+                    anchor_left: 8.,
+                    anchor_top: 8.,
+                },
+            )
+        });
         div()
             .id("popover-host")
             .track_focus(&self.focus)
             .size_full()
             .relative()
-            .on_action(cx.listener(|this, _: &AcceptCellEditor, _, cx| {
-                let draft = this.editor.read(cx).value().to_string();
+            .on_action(cx.listener(|this, _: &AcceptCellEditor, _window, cx| {
+                let draft = match this.popover_kind() {
+                    Some(ColumnKind::Json) => this.json_editor.read(cx).value().to_string(),
+                    Some(_) => this.textarea.read(cx).value().to_string(),
+                    None => String::new(),
+                };
                 if let Some(ed) = &mut this.edit.editor {
                     ed.draft = draft;
                 }
@@ -120,8 +162,8 @@ impl Render for PopoverHost {
                 this.edit.cancel_editor();
                 cx.notify();
             }))
-            .when_some(popover, |root, info| {
-                root.child(long_value_popover(&self.editor, info, cx))
+            .when_some(popover, |root, (input, info)| {
+                root.child(long_value_popover(input, info, cx))
             })
     }
 }
@@ -183,7 +225,7 @@ fn popover_accept_keeps_newlines_and_closes(cx: &mut TestAppContext) {
         });
         window.render_frame(cx);
         host.update(cx, |h, cx| {
-            h.editor.update(cx, |e, cx| {
+            h.textarea.update(cx, |e, cx| {
                 e.set_value("line one\nline two\nthree", window, cx)
             })
         });
@@ -218,11 +260,11 @@ fn popover_enter_inserts_newline_and_invalid_json_stays_open(cx: &mut TestAppCon
         window.press("enter", cx);
         assert!(host.read(cx).edit.editor.is_some(), "Enter must not accept");
         assert!(
-            host.read(cx).editor.read(cx).value().contains('\n'),
+            host.read(cx).json_editor.read(cx).value().contains('\n'),
             "Enter adds a newline"
         );
         host.update(cx, |h, cx| {
-            h.editor
+            h.json_editor
                 .update(cx, |e, cx| e.set_value("{oops", window, cx))
         });
         window.press("secondary-enter", cx);
@@ -231,6 +273,39 @@ fn popover_enter_inserts_newline_and_invalid_json_stays_open(cx: &mut TestAppCon
             host.read(cx).edit.editor.is_some(),
             "invalid JSON keeps the popover open"
         );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn popover_typing_stores_text_and_braces_as_typed(cx: &mut TestAppContext) {
+    let (handle, host) = host(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        host.update(cx, |h, cx| {
+            h.open("body", 1, Value::text("a\nb"), window, cx)
+        });
+        window.render_frame(cx);
+        let target = host.update(cx, |h, _| h.draft_entity_for_kind(ColumnKind::Text));
+        window.click(target, cx);
+        window.press("secondary-a", cx);
+        window.press("backspace", cx);
+        window.input("it's", cx);
+        assert_eq!(host.read(cx).textarea.read(cx).value(), "it's");
+
+        host.update(cx, |h, _| h.edit.cancel_editor());
+        window.render_frame(cx);
+
+        host.update(cx, |h, cx| {
+            h.open("meta", 2, Value::json_raw("{}"), window, cx)
+        });
+        window.render_frame(cx);
+        let target = host.update(cx, |h, _| h.draft_entity_for_kind(ColumnKind::Json));
+        window.click(target, cx);
+        window.press("secondary-a", cx);
+        window.press("backspace", cx);
+        window.input("{", cx);
+        assert_eq!(host.read(cx).json_editor.read(cx).value(), "{");
     })
     .unwrap();
 }
@@ -245,7 +320,7 @@ fn popover_cancel_discards_draft(cx: &mut TestAppContext) {
         });
         window.render_frame(cx);
         host.update(cx, |h, cx| {
-            h.editor
+            h.textarea
                 .update(cx, |e, cx| e.set_value("changed", window, cx))
         });
         window.press("escape", cx);
@@ -295,7 +370,8 @@ fn popover_accept_button_stores_value(cx: &mut TestAppContext) {
         });
         window.render_frame(cx);
         host.update(cx, |h, cx| {
-            h.editor.update(cx, |e, cx| e.set_value("p\nq", window, cx))
+            h.textarea
+                .update(cx, |e, cx| e.set_value("p\nq", window, cx))
         });
         window.click("long-value-accept", cx);
     })
