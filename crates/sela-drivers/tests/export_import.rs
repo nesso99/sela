@@ -443,3 +443,142 @@ async fn im07_prescan_count_matches_single_transaction_all_engines() {
         drop_table(fx.session(), &fx.schema, &table).await;
     }
 }
+
+/// IM-07: a file far larger than the stream buffer imports in one transaction.
+#[tokio::test]
+async fn im07_streaming_large_import_all_engines() {
+    for fx in all_engine_fixtures().await {
+        let table = unique_table_name();
+        create_exim_table(fx.session(), &fx.schema, &table).await;
+        let csv = large_import_csv(20_000);
+        let n = driver_import_csv(
+            fx.session(),
+            fx.dialect,
+            &fx.schema,
+            &table,
+            &csv,
+            CsvImportOptions::default(),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .expect("large import");
+        assert_eq!(n, 20_000, "{}", fx.label);
+        assert_eq!(
+            row_count(fx.session(), &fx.schema, &table).await,
+            20_000,
+            "{}",
+            fx.label
+        );
+        drop_table(fx.session(), &fx.schema, &table).await;
+    }
+}
+
+/// IM-07 / IM-06: a bad row long after many INSERTs already ran rolls them all back.
+#[tokio::test]
+async fn im07_late_row_error_rolls_back_streamed_inserts_all_engines() {
+    for fx in all_engine_fixtures().await {
+        let table = unique_table_name();
+        create_exim_table(fx.session(), &fx.schema, &table).await;
+        let mut csv = large_import_csv(1_000);
+        csv.extend_from_slice(b"not-int,bad,\n");
+        let err = driver_import_csv(
+            fx.session(),
+            fx.dialect,
+            &fx.schema,
+            &table,
+            &csv,
+            CsvImportOptions::default(),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .expect_err("late type error");
+        assert!(
+            matches!(err, ImportError::Row { line: 1002, .. }),
+            "{}: {err:?}",
+            fx.label
+        );
+        assert_eq!(
+            row_count(fx.session(), &fx.schema, &table).await,
+            0,
+            "{}",
+            fx.label
+        );
+        drop_table(fx.session(), &fx.schema, &table).await;
+    }
+}
+
+/// IM-07: a stream that closes without `End` never commits.
+#[tokio::test]
+async fn im07_stream_closed_without_end_rolls_back_all_engines() {
+    use sela_core::{PlanOp, PlanStreamItem, PlannedStatement, TableRef, Value};
+    for fx in all_engine_fixtures().await {
+        let table = unique_table_name();
+        create_exim_table(fx.session(), &fx.schema, &table).await;
+        let qual = sela_core::qualify(fx.dialect, &fx.schema, &table).unwrap();
+        let ph = sela_core::bind_placeholder(fx.dialect, 0);
+        let (tx, rx) = async_channel::bounded(8);
+        for id in 0..3 {
+            tx.send(PlanStreamItem::Statement(PlannedStatement {
+                op: PlanOp::Insert,
+                sql: format!("INSERT INTO {qual} (id, title) VALUES ({ph}, 'x')"),
+                params: vec![Value::Int(id)],
+                pk: Vec::new(),
+                unchecked_optimistic: Vec::new(),
+            }))
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        let err = fx
+            .session()
+            .apply_statement_stream(
+                fx.dialect,
+                &TableRef::new(fx.schema.clone(), table.clone()),
+                rx,
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("no End marker");
+        assert!(err.to_string().contains("ended"), "{}: {err}", fx.label);
+        assert_eq!(
+            row_count(fx.session(), &fx.schema, &table).await,
+            0,
+            "{}",
+            fx.label
+        );
+        drop_table(fx.session(), &fx.schema, &table).await;
+    }
+}
+
+/// IM-07: tables without a primary key stream through the insert-only builder.
+#[tokio::test]
+async fn im07_streaming_import_without_primary_key_sqlite() {
+    for fx in all_engine_fixtures().await {
+        if fx.label != "sqlite" {
+            continue;
+        }
+        let table = unique_table_name();
+        let qual = sela_core::qualify(fx.dialect, &fx.schema, &table).unwrap();
+        fx.session()
+            .execute(&format!("CREATE TABLE {qual} (id integer, title text)"))
+            .await
+            .unwrap();
+        let n = driver_import_csv(
+            fx.session(),
+            fx.dialect,
+            &fx.schema,
+            &table,
+            b"id,title\n1,a\n2,b\n",
+            CsvImportOptions::default(),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(row_count(fx.session(), &fx.schema, &table).await, 2);
+        drop_table(fx.session(), &fx.schema, &table).await;
+    }
+}

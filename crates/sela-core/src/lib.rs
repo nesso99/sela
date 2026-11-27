@@ -16,6 +16,7 @@ mod error;
 mod export;
 mod filter;
 mod history;
+mod import_stream;
 mod result_window;
 mod safe_mode;
 mod schema_source;
@@ -74,6 +75,10 @@ pub use history::{
     history_rows_label_affected, history_rows_label_for_rows, history_sql_contains_password_clause,
     history_sql_preview, should_record_history_sql, HistoryEntry, HistoryFilter, HistoryOutcome,
     HISTORY_PASSWORD_SKIP_NOTE, HISTORY_ROW_CAP,
+};
+pub use import_stream::{
+    run_streaming_import, stream_import_rows, ImportStatementBuilder, PlanStreamItem,
+    IMPORT_STREAM_CAPACITY,
 };
 pub use result_window::{CellView, ResultWindow, RowState, ROW_WINDOW_MAX_PAGES};
 pub use safe_mode::{

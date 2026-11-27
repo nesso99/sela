@@ -1637,6 +1637,15 @@ mod tests {
         ) -> Result<crate::change_plan::ApplyChangesResult, DbError> {
             Err(DbError::query("unused"))
         }
+        async fn apply_statement_stream(
+            &self,
+            _dialect: Dialect,
+            _table: &crate::change_set::TableRef,
+            _statements: async_channel::Receiver<crate::import_stream::PlanStreamItem>,
+            _cancel: CancellationToken,
+        ) -> Result<crate::change_plan::ApplyChangesResult, DbError> {
+            Err(DbError::query("unused"))
+        }
         async fn estimate_table_rows(
             &self,
             _schema: &str,

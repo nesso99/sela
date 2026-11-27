@@ -101,6 +101,18 @@ impl ChangePlan {
         self.statements.is_empty()
     }
 
+    /// Build the single `INSERT` for `values` against `changeset`'s table
+    /// without queueing it in the change set (streaming import sink).
+    /// Same SQL as [`Self::build`] produces for a queued insert.
+    pub fn insert_statement(
+        changeset: &ChangeSet,
+        dialect: Dialect,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<PlannedStatement, ChangeError> {
+        changeset.check_columns(values.keys())?;
+        build_insert(changeset, dialect, values)
+    }
+
     /// Human-readable preview with SQL literals (display only — never execute).
     ///
     /// Includes `BEGIN;` / `COMMIT;` so M2-3 can show the full transaction.

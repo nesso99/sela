@@ -15,12 +15,10 @@ use gpui_kit::{px, Context, SharedString, Window};
 use tokio_util::sync::CancellationToken;
 
 use sela_core::{
-    bind_placeholder, build_table_select, decide_import_gate, discard_export_partial,
-    ensure_import_allowed, export_query, export_rows, qualify, quote_ident, ChangePlan, ChangeSet,
-    ColumnMapping, ColumnMeta, CsvImportOptions, CsvImporter, DatabaseSession, Dialect,
-    ExportError, ExportFormat, GridCommitGate, ImportError, ImportRow, ImportRowSink, PlanOp,
-    PlannedStatement, RowState, SafeMode, TableRef, TableStructure, Value,
-    IMPORT_REFUSED_READ_ONLY_STATUS,
+    build_table_select, decide_import_gate, discard_export_partial, ensure_import_allowed,
+    export_query, export_rows, run_streaming_import, ColumnMapping, ColumnMeta, CsvImportOptions,
+    CsvImporter, DatabaseSession, Dialect, ExportError, ExportFormat, GridCommitGate, ImportError,
+    RowState, SafeMode, TableStructure, Value, IMPORT_REFUSED_READ_ONLY_STATUS,
 };
 use sela_drivers::drive;
 
@@ -929,8 +927,8 @@ pub(crate) async fn run_export(
 }
 
 /// Stream CSV via [`CsvImporter`], applying dialog mapping (including when there
-/// is no header row). Builds an in-memory [`ChangePlan`] then `apply_changes`
-/// (IM-07 streaming sink is backlog for v0.3).
+/// is no header row). Streams one `INSERT` per row into a single transaction
+/// ([`run_streaming_import`], IM-07); memory stays bounded for large files.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_import(
     session: &dyn DatabaseSession,
@@ -977,112 +975,11 @@ pub(crate) async fn run_import(
         importer = importer.with_mapping(mapping);
     }
 
-    let plan = match ChangeSet::from_structure(&structure) {
-        Ok(mut cs) => {
-            drain_importer_into_sink(&mut importer, &mut cs, &cancel, &done)?;
-            ChangePlan::build(&cs, dialect).map_err(|e| ImportError::Sink(e.to_string()))?
-        }
-        Err(_) => {
-            let mut rows = Vec::new();
-            let mut collector = CollectSink { rows: &mut rows };
-            drain_importer_into_sink(&mut importer, &mut collector, &cancel, &done)?;
-            build_insert_only_plan(dialect, schema, table, &rows)?
-        }
-    };
-
     if cancel.is_cancelled() {
         return Err(ImportError::Cancelled);
     }
-
-    let row_count = done.load(Ordering::Relaxed);
-    session.apply_changes(&plan, cancel).await.map_err(|e| {
-        if matches!(e, sela_core::DbError::Cancelled { .. }) {
-            ImportError::Cancelled
-        } else {
-            ImportError::Sink(e.to_string())
-        }
-    })?;
-    Ok(row_count.max(plan.statements.len() as u64))
-}
-
-fn drain_importer_into_sink<R, S>(
-    importer: &mut CsvImporter<R>,
-    sink: &mut S,
-    cancel: &CancellationToken,
-    done: &Arc<AtomicU64>,
-) -> Result<u64, ImportError>
-where
-    R: std::io::Read,
-    S: ImportRowSink,
-{
-    let mut rows = 0u64;
-    while let Some(item) = importer.next_row() {
-        if cancel.is_cancelled() {
-            return Err(ImportError::Cancelled);
-        }
-        sink.push_row(item?)?;
-        rows += 1;
-        done.store(rows, Ordering::Relaxed);
-    }
-    Ok(rows)
-}
-
-struct CollectSink<'a> {
-    rows: &'a mut Vec<ImportRow>,
-}
-
-impl ImportRowSink for CollectSink<'_> {
-    fn push_row(&mut self, row: ImportRow) -> Result<(), ImportError> {
-        self.rows.push(row);
-        Ok(())
-    }
-}
-
-fn build_insert_only_plan(
-    dialect: Dialect,
-    schema: &str,
-    table: &str,
-    rows: &[ImportRow],
-) -> Result<ChangePlan, ImportError> {
-    let table_ref = TableRef::new(schema, table);
-    let mut statements = Vec::with_capacity(rows.len());
-    for row in rows {
-        if row.values.is_empty() {
-            continue;
-        }
-        let cols: Vec<_> = row.values.keys().cloned().collect();
-        let params: Vec<_> = cols.iter().map(|c| row.values[c].clone()).collect();
-        let mut sql = format!(
-            "INSERT INTO {} (",
-            qualify(dialect, schema, table).map_err(|e| ImportError::Sink(e.to_string()))?
-        );
-        for (i, col) in cols.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push_str(&quote_ident(dialect, col).map_err(|e| ImportError::Sink(e.to_string()))?);
-        }
-        sql.push_str(") VALUES (");
-        for i in 0..cols.len() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push_str(&bind_placeholder(dialect, i));
-        }
-        sql.push(')');
-        statements.push(PlannedStatement {
-            op: PlanOp::Insert,
-            sql,
-            params,
-            pk: Vec::new(),
-            unchecked_optimistic: Vec::new(),
-        });
-    }
-    Ok(ChangePlan {
-        dialect,
-        table: table_ref,
-        statements,
-    })
+    run_streaming_import(session, dialect, &structure, importer, cancel, done.clone()).await?;
+    Ok(done.load(Ordering::Relaxed))
 }
 
 #[cfg(test)]
@@ -1261,6 +1158,65 @@ mod transfer_e2e {
         .unwrap_err();
         assert!(matches!(err, ImportError::Cancelled));
         let page = session.query("SELECT count(*) FROM items2").await.unwrap();
+        assert_eq!(page.rows[0][0].display(), "0");
+    }
+
+    #[tokio::test]
+    async fn import_streams_large_file_and_rolls_back_on_late_row_error() {
+        let (dir, session) = open_sample().await;
+        session
+            .execute("CREATE TABLE items3 (id INTEGER PRIMARY KEY, title TEXT NOT NULL)")
+            .await
+            .unwrap();
+        let opts = || CsvImportOptions {
+            has_header: true,
+            required_columns: vec!["id".into(), "title".into()],
+            ..CsvImportOptions::default()
+        };
+        let mut body = String::from("id,title\n");
+        for i in 0..5000 {
+            body.push_str(&format!("{i},row{i}\n"));
+        }
+        let ok_path = dir.path().join("ok.csv");
+        fs::write(&ok_path, &body).unwrap();
+        let done = Arc::new(AtomicU64::new(0));
+        let n = run_import(
+            session.as_ref(),
+            Dialect::Sqlite,
+            &ok_path,
+            "main",
+            "items3",
+            opts(),
+            None,
+            CancellationToken::new(),
+            done.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 5000);
+        let page = session.query("SELECT count(*) FROM items3").await.unwrap();
+        assert_eq!(page.rows[0][0].display(), "5000");
+
+        // Duplicate PK on the last row: every earlier INSERT must roll back.
+        session.execute("DELETE FROM items3").await.unwrap();
+        body.push_str("0,dup\n");
+        let bad_path = dir.path().join("bad.csv");
+        fs::write(&bad_path, body).unwrap();
+        let err = run_import(
+            session.as_ref(),
+            Dialect::Sqlite,
+            &bad_path,
+            "main",
+            "items3",
+            opts(),
+            None,
+            CancellationToken::new(),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ImportError::Sink(_)), "{err:?}");
+        let page = session.query("SELECT count(*) FROM items3").await.unwrap();
         assert_eq!(page.rows[0][0].display(), "0");
     }
 }

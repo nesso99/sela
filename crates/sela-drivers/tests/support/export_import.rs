@@ -6,9 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sela_core::{
-    bind_placeholder, count_csv_data_rows, export_query, qualify, quote_ident, ChangePlan,
-    ChangeSet, ColumnMeta, CsvImportOptions, CsvImporter, DatabaseSession, Dialect, Engine,
-    ImportError, ImportRow, ImportRowSink, PlanOp, PlannedStatement, TableRef, Value,
+    count_csv_data_rows, export_query, qualify, run_streaming_import, ColumnMeta, CsvImportOptions,
+    CsvImporter, DatabaseSession, Dialect, Engine, ImportError, Value,
 };
 use sela_core::{parse_connection_url, SavedConnection};
 use sela_drivers::{connect, create_sample_database};
@@ -196,89 +195,6 @@ pub async fn row_count(session: &dyn DatabaseSession, schema: &str, table: &str)
         .expect("count")
 }
 
-struct CollectSink<'a> {
-    rows: &'a mut Vec<ImportRow>,
-}
-
-impl ImportRowSink for CollectSink<'_> {
-    fn push_row(&mut self, row: ImportRow) -> Result<(), ImportError> {
-        self.rows.push(row);
-        Ok(())
-    }
-}
-
-fn build_insert_only_plan(
-    dialect: Dialect,
-    schema: &str,
-    table: &str,
-    rows: &[ImportRow],
-) -> Result<ChangePlan, ImportError> {
-    let table_ref = TableRef::new(schema, table);
-    let mut statements = Vec::with_capacity(rows.len());
-    for row in rows {
-        if row.values.is_empty() {
-            continue;
-        }
-        let cols: Vec<_> = row.values.keys().cloned().collect();
-        let params: Vec<_> = cols.iter().map(|c| row.values[c].clone()).collect();
-        let mut sql = format!(
-            "INSERT INTO {} (",
-            qualify(dialect, schema, table).map_err(|e| ImportError::Sink(e.to_string()))?
-        );
-        for (i, col) in cols.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push_str(&quote_ident(dialect, col).map_err(|e| ImportError::Sink(e.to_string()))?);
-        }
-        sql.push_str(") VALUES (");
-        for i in 0..cols.len() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push_str(&bind_placeholder(dialect, i));
-        }
-        sql.push(')');
-        statements.push(PlannedStatement {
-            op: PlanOp::Insert,
-            sql,
-            params,
-            pk: Vec::new(),
-            unchecked_optimistic: Vec::new(),
-        });
-    }
-    Ok(ChangePlan {
-        dialect,
-        table: table_ref,
-        statements,
-    })
-}
-
-fn drain_importer_into_sink<R, S>(
-    importer: &mut CsvImporter<R>,
-    sink: &mut S,
-    cancel: &CancellationToken,
-    done: &Arc<AtomicU64>,
-    progress: &mut dyn FnMut(u64),
-) -> Result<u64, ImportError>
-where
-    R: std::io::Read,
-    S: ImportRowSink,
-{
-    let mut rows = 0u64;
-    while let Some(item) = importer.next_row() {
-        if cancel.is_cancelled() {
-            return Err(ImportError::Cancelled);
-        }
-        let row = item?;
-        sink.push_row(row)?;
-        rows += 1;
-        done.store(rows, Ordering::Relaxed);
-        progress(rows);
-    }
-    Ok(rows)
-}
-
 /// CSV bytes with `count` unique insert rows (header + ids `0..count-1`).
 pub fn large_import_csv(count: usize) -> Vec<u8> {
     let mut body = String::from("id,title,note\n");
@@ -298,18 +214,18 @@ pub fn duplicate_pk_import_csv() -> Vec<u8> {
     body.into_bytes()
 }
 
+/// Stream `csv` through the streaming import sink (IM-07).
 #[allow(clippy::too_many_arguments)]
-async fn build_import_plan_from_csv(
+async fn stream_csv_import(
     session: &dyn DatabaseSession,
     dialect: Dialect,
     schema: &str,
     table: &str,
     csv: &[u8],
     options: CsvImportOptions,
-    drain_cancel: &CancellationToken,
-    done: &Arc<AtomicU64>,
-    on_progress: &mut dyn FnMut(u64),
-) -> Result<ChangePlan, ImportError> {
+    cancel: CancellationToken,
+    done: Arc<AtomicU64>,
+) -> Result<u64, ImportError> {
     let structure = session
         .describe_table(schema, table)
         .await
@@ -322,31 +238,12 @@ async fn build_import_plan_from_csv(
             type_name: c.type_name.clone(),
         })
         .collect();
-
-    let reader = Cursor::new(csv);
-    let mut importer = CsvImporter::open_with_columns(reader, &table_columns, options)?;
-
-    match ChangeSet::from_structure(&structure) {
-        Ok(mut cs) => {
-            drain_importer_into_sink(&mut importer, &mut cs, drain_cancel, done, on_progress)?;
-            ChangePlan::build(&cs, dialect).map_err(|e| ImportError::Sink(e.to_string()))
-        }
-        Err(_) => {
-            let mut rows = Vec::new();
-            let mut collector = CollectSink { rows: &mut rows };
-            drain_importer_into_sink(
-                &mut importer,
-                &mut collector,
-                drain_cancel,
-                done,
-                on_progress,
-            )?;
-            build_insert_only_plan(dialect, schema, table, &rows)
-        }
-    }
+    let importer =
+        CsvImporter::open_with_columns(Cursor::new(csv.to_vec()), &table_columns, options)?;
+    run_streaming_import(session, dialect, &structure, importer, cancel, done).await
 }
 
-/// Driver import: stream CSV, build one [`ChangePlan`], `apply_changes` in one transaction.
+/// Driver import: stream CSV rows into one transaction (`apply_statement_stream`).
 #[allow(clippy::too_many_arguments)]
 pub async fn driver_import_csv(
     session: &dyn DatabaseSession,
@@ -356,42 +253,14 @@ pub async fn driver_import_csv(
     csv: &[u8],
     options: CsvImportOptions,
     cancel: CancellationToken,
-    mut on_progress: impl FnMut(u64),
+    _on_progress: impl FnMut(u64),
 ) -> Result<u64, ImportError> {
     let done = Arc::new(AtomicU64::new(0));
-    let plan = build_import_plan_from_csv(
-        session,
-        dialect,
-        schema,
-        table,
-        csv,
-        options,
-        &cancel,
-        &done,
-        &mut on_progress,
-    )
-    .await?;
-
-    if cancel.is_cancelled() {
-        return Err(ImportError::Cancelled);
-    }
-
-    session
-        .apply_changes(&plan, cancel)
-        .await
-        .map_err(map_apply_error)?;
-    Ok(done.load(Ordering::Relaxed))
+    stream_csv_import(session, dialect, schema, table, csv, options, cancel, done).await
 }
 
-fn map_apply_error(e: sela_core::DbError) -> ImportError {
-    if matches!(e, sela_core::DbError::Cancelled { .. }) {
-        ImportError::Cancelled
-    } else {
-        ImportError::Sink(e.to_string())
-    }
-}
-
-/// IM-04: parse the full CSV, then cancel while `apply_changes` is in flight.
+/// IM-04 / IM-07: cancel once the reader is `cancel_after_rows` rows in, while
+/// the transaction is open. Returns rows read when the stream stopped.
 pub async fn driver_import_cancel_during_apply(
     session: &dyn DatabaseSession,
     dialect: Dialect,
@@ -401,40 +270,18 @@ pub async fn driver_import_cancel_during_apply(
     options: CsvImportOptions,
 ) -> Result<(), ImportError> {
     let done = Arc::new(AtomicU64::new(0));
-    let parse_cancel = CancellationToken::new();
-    let mut noop = |_| {};
-    let plan = build_import_plan_from_csv(
-        session,
-        dialect,
-        schema,
-        table,
-        csv,
-        options,
-        &parse_cancel,
-        &done,
-        &mut noop,
-    )
-    .await?;
-    assert!(
-        plan.statements.len() > 100,
-        "need enough INSERTs for mid-apply cancel"
-    );
-
     let cancel = CancellationToken::new();
     let trip = cancel.clone();
+    let watch = done.clone();
     tokio::spawn(async move {
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
+        while watch.load(Ordering::Relaxed) < 200 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
         trip.cancel();
     });
-
-    session
-        .apply_changes(&plan, cancel)
+    stream_csv_import(session, dialect, schema, table, csv, options, cancel, done)
         .await
-        .map_err(map_apply_error)?;
-    Ok(())
+        .map(|_| ())
 }
 
 /// Export a session query into an in-memory UTF-8 buffer.
