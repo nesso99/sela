@@ -6,8 +6,10 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::change_plan::{ApplyChangesResult, ChangePlan};
+use crate::change_set::TableRef;
 use crate::error::DbError;
 use crate::filter::{self, FilterCondition, SortSpec};
+use crate::import_stream::PlanStreamItem;
 use crate::sql::{self, StatementKind};
 use crate::structure::TableStructure;
 use crate::types::{
@@ -44,6 +46,20 @@ pub trait DatabaseSession: Send + Sync {
     async fn apply_changes(
         &self,
         plan: &ChangePlan,
+        cancel: CancellationToken,
+    ) -> Result<ApplyChangesResult, DbError>;
+
+    /// Apply `INSERT`/DML statements received from `statements` in a single
+    /// transaction, without buffering them all (streaming import, IM-07).
+    ///
+    /// Commits only after [`PlanStreamItem::End`]; a channel that closes
+    /// without it, a cancel, or any statement error rolls everything back.
+    /// Same cancel and conflict rules as [`Self::apply_changes`].
+    async fn apply_statement_stream(
+        &self,
+        dialect: Dialect,
+        table: &TableRef,
+        statements: async_channel::Receiver<PlanStreamItem>,
         cancel: CancellationToken,
     ) -> Result<ApplyChangesResult, DbError>;
 

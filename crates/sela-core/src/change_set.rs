@@ -214,6 +214,16 @@ impl ChangeSet {
         Ok(())
     }
 
+    pub(crate) fn check_columns<'a>(
+        &self,
+        columns: impl IntoIterator<Item = &'a String>,
+    ) -> Result<(), ChangeError> {
+        for column in columns {
+            self.require_column(column)?;
+        }
+        Ok(())
+    }
+
     fn require_column(&self, column: &str) -> Result<(), ChangeError> {
         if self.columns.iter().any(|c| c == column) {
             Ok(())

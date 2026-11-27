@@ -353,7 +353,27 @@ impl DatabaseSession for SqliteSession {
         plan: &ChangePlan,
         cancel: CancellationToken,
     ) -> Result<ApplyChangesResult, DbError> {
-        crate::change_exec::apply_sqlite(&self.pool, plan, cancel).await
+        crate::change_exec::apply_sqlite(
+            &self.pool,
+            crate::change_exec::StatementSource::plan(plan),
+            cancel,
+        )
+        .await
+    }
+
+    async fn apply_statement_stream(
+        &self,
+        dialect: Dialect,
+        table: &sela_core::TableRef,
+        statements: async_channel::Receiver<sela_core::PlanStreamItem>,
+        cancel: CancellationToken,
+    ) -> Result<ApplyChangesResult, DbError> {
+        crate::change_exec::apply_sqlite(
+            &self.pool,
+            crate::change_exec::StatementSource::stream(dialect, table, statements),
+            cancel,
+        )
+        .await
     }
 
     async fn estimate_table_rows(

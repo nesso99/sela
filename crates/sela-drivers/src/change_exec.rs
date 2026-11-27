@@ -28,21 +28,121 @@
 //! call `.found_rows(true)` explicitly when opening MySQL pools so URL-parsed
 //! options keep that behaviour (see `mysql.rs`).
 
+use std::borrow::Cow;
 use std::time::Duration;
 
-use sela_core::{ApplyChangesResult, ChangePlan, DbError, Dialect};
+use sela_core::{
+    ApplyChangesResult, ChangePlan, DbError, Dialect, PlanStreamItem, PlannedStatement, TableRef,
+};
 use sqlx::Connection;
 use tokio_util::sync::CancellationToken;
 
+/// Where statements come from: a fully built plan, or a stream (IM-07 import)
+/// that commits only after [`PlanStreamItem::End`].
+pub(crate) enum StatementSource<'a> {
+    Plan {
+        plan: &'a ChangePlan,
+        next: usize,
+    },
+    Stream {
+        dialect: Dialect,
+        table: &'a TableRef,
+        rx: async_channel::Receiver<PlanStreamItem>,
+        executed: usize,
+    },
+}
+
+impl<'a> StatementSource<'a> {
+    pub(crate) fn plan(plan: &'a ChangePlan) -> Self {
+        Self::Plan { plan, next: 0 }
+    }
+
+    pub(crate) fn stream(
+        dialect: Dialect,
+        table: &'a TableRef,
+        rx: async_channel::Receiver<PlanStreamItem>,
+    ) -> Self {
+        Self::Stream {
+            dialect,
+            table,
+            rx,
+            executed: 0,
+        }
+    }
+
+    fn dialect(&self) -> Dialect {
+        match self {
+            Self::Plan { plan, .. } => plan.dialect,
+            Self::Stream { dialect, .. } => *dialect,
+        }
+    }
+
+    fn table(&self) -> &TableRef {
+        match self {
+            Self::Plan { plan, .. } => &plan.table,
+            Self::Stream { table, .. } => table,
+        }
+    }
+
+    fn is_empty_plan(&self) -> bool {
+        matches!(self, Self::Plan { plan, .. } if plan.statements.is_empty())
+    }
+
+    fn executed(&self) -> usize {
+        match self {
+            Self::Plan { next, .. } => *next,
+            Self::Stream { executed, .. } => *executed,
+        }
+    }
+
+    /// Next statement, `None` at a clean end. Stream closed early is an error.
+    async fn next(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Cow<'a, PlannedStatement>>, DbError> {
+        match self {
+            Self::Plan { plan, next } => {
+                let stmt = plan.statements.get(*next).map(Cow::Borrowed);
+                if stmt.is_some() {
+                    *next += 1;
+                }
+                Ok(stmt)
+            }
+            Self::Stream { rx, executed, .. } => {
+                let item = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        return Err(DbError::cancelled("apply cancelled"));
+                    }
+                    item = rx.recv() => item,
+                };
+                match item {
+                    Ok(PlanStreamItem::Statement(stmt)) => {
+                        *executed += 1;
+                        Ok(Some(Cow::Owned(stmt)))
+                    }
+                    Ok(PlanStreamItem::End) => Ok(None),
+                    Err(_) if cancel.is_cancelled() => Err(DbError::cancelled("apply cancelled")),
+                    Err(_) => Err(DbError::query("statement stream ended before it finished")),
+                }
+            }
+        }
+    }
+}
+
 macro_rules! run_statements_in_tx {
-    ($tx:expr, $plan:expr, $cancel:expr) => {{
-        let plan: &::sela_core::ChangePlan = $plan;
+    ($tx:expr, $source:expr, $cancel:expr) => {{
+        let source: &mut $crate::change_exec::StatementSource<'_> = $source;
         let cancel: &::tokio_util::sync::CancellationToken = $cancel;
         let mut rows_affected = 0u64;
-        for (statement_index, stmt) in plan.statements.iter().enumerate() {
+        loop {
             if cancel.is_cancelled() {
                 return Err(::sela_core::DbError::cancelled("apply cancelled"));
             }
+            let Some(stmt) = source.next(cancel).await? else {
+                break;
+            };
+            let statement_index = source.executed() - 1;
             let exec =
                 $crate::bind_params($crate::query(&stmt.sql), &stmt.params).execute(&mut *$tx);
             let result = ::tokio::select! {
@@ -58,7 +158,7 @@ macro_rules! run_statements_in_tx {
                     if n != 1 {
                         // Dropping `tx` without commit rolls the whole plan back.
                         return Err(::sela_core::DbError::change_conflict(
-                            &plan.table,
+                            source.table(),
                             statement_index,
                             n,
                             &stmt.pk,
@@ -74,17 +174,18 @@ macro_rules! run_statements_in_tx {
         }
         $tx.commit().await.map_err($crate::sqlx_err)?;
         Ok(::sela_core::ApplyChangesResult {
-            statements_executed: plan.statements.len(),
+            statements_executed: source.executed(),
             rows_affected,
         })
     }};
 }
 
-fn dialect_mismatch(plan: &ChangePlan, expected: Dialect) -> Result<(), DbError> {
-    if plan.dialect != expected {
+fn dialect_mismatch(source: &StatementSource<'_>, expected: Dialect) -> Result<(), DbError> {
+    if source.dialect() != expected {
         return Err(DbError::query(format!(
             "change plan dialect {:?} does not match session {:?}",
-            plan.dialect, expected
+            source.dialect(),
+            expected
         )));
     }
     Ok(())
@@ -99,14 +200,14 @@ fn empty_ok() -> ApplyChangesResult {
 
 pub(crate) async fn apply_postgres(
     pool: &sqlx::PgPool,
-    plan: &ChangePlan,
+    mut source: StatementSource<'_>,
     cancel: CancellationToken,
 ) -> Result<ApplyChangesResult, DbError> {
-    dialect_mismatch(plan, Dialect::Postgres)?;
+    dialect_mismatch(&source, Dialect::Postgres)?;
     if cancel.is_cancelled() {
         return Err(DbError::cancelled("apply cancelled"));
     }
-    if plan.statements.is_empty() {
+    if source.is_empty_plan() {
         return Ok(empty_ok());
     }
 
@@ -131,7 +232,7 @@ pub(crate) async fn apply_postgres(
 
     let result = async {
         let mut tx = conn.begin().await.map_err(crate::sqlx_err)?;
-        run_statements_in_tx!(tx, plan, &cancel)
+        run_statements_in_tx!(tx, &mut source, &cancel)
     }
     .await;
 
@@ -147,14 +248,14 @@ pub(crate) async fn apply_postgres(
 
 pub(crate) async fn apply_mysql(
     pool: &sqlx::MySqlPool,
-    plan: &ChangePlan,
+    mut source: StatementSource<'_>,
     cancel: CancellationToken,
 ) -> Result<ApplyChangesResult, DbError> {
-    dialect_mismatch(plan, Dialect::Mysql)?;
+    dialect_mismatch(&source, Dialect::Mysql)?;
     if cancel.is_cancelled() {
         return Err(DbError::cancelled("apply cancelled"));
     }
-    if plan.statements.is_empty() {
+    if source.is_empty_plan() {
         return Ok(empty_ok());
     }
 
@@ -177,7 +278,7 @@ pub(crate) async fn apply_mysql(
 
     let result = async {
         let mut tx = conn.begin().await.map_err(crate::sqlx_err)?;
-        run_statements_in_tx!(tx, plan, &cancel)
+        run_statements_in_tx!(tx, &mut source, &cancel)
     }
     .await;
 
@@ -193,19 +294,19 @@ pub(crate) async fn apply_mysql(
 
 pub(crate) async fn apply_sqlite(
     pool: &sqlx::SqlitePool,
-    plan: &ChangePlan,
+    mut source: StatementSource<'_>,
     cancel: CancellationToken,
 ) -> Result<ApplyChangesResult, DbError> {
-    dialect_mismatch(plan, Dialect::Sqlite)?;
+    dialect_mismatch(&source, Dialect::Sqlite)?;
     if cancel.is_cancelled() {
         return Err(DbError::cancelled("apply cancelled"));
     }
-    if plan.statements.is_empty() {
+    if source.is_empty_plan() {
         return Ok(empty_ok());
     }
 
     // No server-side interrupt (same as stream). Still check the token between
     // statements and select against in-flight executes.
     let mut tx = pool.begin().await.map_err(crate::sqlx_err)?;
-    run_statements_in_tx!(tx, plan, &cancel)
+    run_statements_in_tx!(tx, &mut source, &cancel)
 }
