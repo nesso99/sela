@@ -259,7 +259,7 @@ pub(crate) struct EditSession {
     pub dialect: Dialect,
     pub overlay: Vec<OverlayRow>,
     /// Cell updates preserved when a dirty server row is marked deleted.
-    preserved_updates: BTreeMap<PkKey, BTreeMap<String, CellChange>>,
+    preserved_updates: HashMap<PkKey, BTreeMap<String, CellChange>>,
     pub editor: Option<CellEditor>,
     pub preview_open: bool,
     pub committing: bool,
@@ -277,13 +277,59 @@ pub(crate) struct EditSession {
     pub connection_safe_mode: SafeMode,
 }
 
-/// Newtype so `Vec<Value>` can be a BTreeMap key via display+Debug-stable order.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct PkKey(Vec<String>);
+/// Primary-key identity: equality is exactly [`pk_match`] (typed `Value`
+/// equality, NaN == NaN), never display text. `NULL` != `'NULL'`, long byte
+/// keys compare in full, and `-0.0 == 0.0`.
+#[derive(Debug, Clone)]
+struct PkKey(Vec<Value>);
 
 impl PkKey {
     fn from_values(pk: &[Value]) -> Self {
-        Self(pk.iter().map(|v| v.display().into_owned()).collect())
+        Self(pk.to_vec())
+    }
+}
+
+impl PartialEq for PkKey {
+    fn eq(&self, other: &Self) -> bool {
+        pk_match(&self.0, &other.0)
+    }
+}
+
+impl Eq for PkKey {}
+
+impl std::hash::Hash for PkKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.len().hash(state);
+        for v in &self.0 {
+            std::mem::discriminant(v).hash(state);
+            match v {
+                Value::Null => {}
+                Value::Bool(b) => b.hash(state),
+                Value::Int(n) => n.hash(state),
+                Value::UInt(n) => n.hash(state),
+                Value::Float(f) => {
+                    // Equal under pk_match: 0.0 == -0.0, NaN == NaN.
+                    let bits = if f.is_nan() {
+                        f64::NAN.to_bits()
+                    } else if *f == 0.0 {
+                        0
+                    } else {
+                        f.to_bits()
+                    };
+                    bits.hash(state);
+                }
+                Value::Decimal(d) => d.normalize().to_string().hash(state),
+                Value::Text(t) | Value::Json(t) => t.hash(state),
+                Value::Bytes(b) => b.hash(state),
+                Value::Uuid(u) => u.hash(state),
+                Value::Date(d) => d.hash(state),
+                Value::Time(t) => t.hash(state),
+                Value::Timestamp(t) => t.hash(state),
+                Value::TimestampTz(t) => t.timestamp_nanos_opt().hash(state),
+                // Rare as keys; equal values share a display form.
+                Value::Interval(_) | Value::Other { .. } => v.display().hash(state),
+            }
+        }
     }
 }
 
@@ -292,7 +338,7 @@ impl PkKey {
 pub(crate) struct PendingIndex<'a> {
     by_pk: HashMap<PkKey, &'a RowChange>,
     inserts: HashMap<u64, &'a BTreeMap<String, Value>>,
-    preserved: &'a BTreeMap<PkKey, BTreeMap<String, CellChange>>,
+    preserved: &'a HashMap<PkKey, BTreeMap<String, CellChange>>,
     /// Number of key lookups served; lets tests assert the index is used.
     lookups: std::cell::Cell<usize>,
 }
@@ -375,7 +421,7 @@ impl EditSession {
             column_types: HashMap::new(),
             dialect: Dialect::Sqlite,
             overlay: Vec::new(),
-            preserved_updates: BTreeMap::new(),
+            preserved_updates: HashMap::new(),
             editor: None,
             preview_open: false,
             committing: false,
@@ -402,7 +448,7 @@ impl EditSession {
             column_types: HashMap::new(),
             dialect,
             overlay: Vec::new(),
-            preserved_updates: BTreeMap::new(),
+            preserved_updates: HashMap::new(),
             editor: None,
             preview_open: false,
             committing: false,
@@ -436,7 +482,7 @@ impl EditSession {
                 column_types: column_type_map(structure),
                 dialect,
                 overlay: Vec::new(),
-                preserved_updates: BTreeMap::new(),
+                preserved_updates: HashMap::new(),
                 editor: None,
                 preview_open: false,
                 committing: false,
@@ -458,7 +504,7 @@ impl EditSession {
                 column_types,
                 dialect,
                 overlay: Vec::new(),
-                preserved_updates: BTreeMap::new(),
+                preserved_updates: HashMap::new(),
                 editor: None,
                 preview_open: false,
                 committing: false,
@@ -476,7 +522,7 @@ impl EditSession {
                 column_types,
                 dialect,
                 overlay: Vec::new(),
-                preserved_updates: BTreeMap::new(),
+                preserved_updates: HashMap::new(),
                 editor: None,
                 preview_open: false,
                 committing: false,
@@ -494,7 +540,7 @@ impl EditSession {
                 column_types,
                 dialect,
                 overlay: Vec::new(),
-                preserved_updates: BTreeMap::new(),
+                preserved_updates: HashMap::new(),
                 editor: None,
                 preview_open: false,
                 committing: false,
@@ -2204,5 +2250,52 @@ mod tests {
         );
         assert!(parse_edit_value("18446744073709551616", ColumnKind::Int, Dialect::Mysql).is_err());
         assert_eq!(Value::UInt(u64::MAX).display(), big);
+    }
+
+    #[test]
+    fn pending_index_pk_identity_matches_pk_match_for_edge_keys() {
+        let long_a = vec![7u8; 30];
+        let mut long_b = long_a.clone();
+        *long_b.last_mut().unwrap() = 8; // differs only after byte 24
+        let keys = [
+            Value::Null,
+            Value::text("NULL"),
+            Value::Bytes(long_a),
+            Value::Bytes(long_b),
+            Value::Float(0.0),
+        ];
+        let mut session =
+            EditSession::from_structure(&books_structure(), Dialect::Postgres, RelationKind::Table);
+        let cs = session.changeset.as_mut().unwrap();
+        for (n, k) in keys.iter().enumerate() {
+            cs.set_cell(
+                std::slice::from_ref(k),
+                "title",
+                Value::text("old"),
+                Value::text(format!("new{n}")),
+            )
+            .unwrap();
+        }
+        let index = session.pending_index();
+        // Each distinct key paints its own pending value: no collisions.
+        for (n, k) in keys.iter().enumerate() {
+            let pk = std::slice::from_ref(k);
+            assert_eq!(
+                index.pending_value(pk, "title"),
+                Some(&Value::text(format!("new{n}"))),
+                "key {k:?}"
+            );
+            assert_eq!(index.marker(pk), session.row_marker_for_server(pk));
+        }
+        // -0.0 is the same key as 0.0 (pk_match), so it hits the same change.
+        let neg = [Value::Float(-0.0)];
+        assert!(pk_match(&neg, &[Value::Float(0.0)]));
+        assert_eq!(
+            index.pending_value(&neg, "title"),
+            Some(&Value::text("new4"))
+        );
+        assert_eq!(index.marker(&neg), RowMarker::Dirty);
+        // A key never edited stays clean.
+        assert_eq!(index.marker(&[Value::text("other")]), RowMarker::Clean);
     }
 }
