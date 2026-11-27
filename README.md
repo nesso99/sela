@@ -63,6 +63,7 @@ Sample SQLite library: sidebar **Sample library**, or seed your own with `script
 | PRD | [docs/design/PRD.md](docs/design/PRD.md) |
 | Specs | [docs/design/SPECS.md](docs/design/SPECS.md) |
 | Roadmap | [docs/design/roadmap.md](docs/design/roadmap.md) |
+| Version roadmap | [docs/design/version-roadmap.md](docs/design/version-roadmap.md) |
 | UX specs | [docs/design/ux/README.md](docs/design/ux/README.md) |
 | ADRs | [docs/adr/](docs/adr/) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |

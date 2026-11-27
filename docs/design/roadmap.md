@@ -1,8 +1,8 @@
-> Source of truth: this file.
+> Source of truth for **milestones**: this file. **Semver release trains** (grouped versions): [version-roadmap.md](./version-roadmap.md).
 
 # Roadmap — Sela
 
-Milestones M0–M4. Relative sequencing for independent PRs — not calendar estimates. Each item is an independent PR with tests. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+Milestones M0–M4. Relative sequencing for independent PRs — not calendar estimates. Each milestone item is an independent PR with tests; **releases** bundle a theme per [version-roadmap.md](./version-roadmap.md). See [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 Product intent lives in [PRD.md](./PRD.md). Technical detail lives in [SPECS.md](./SPECS.md).
 
