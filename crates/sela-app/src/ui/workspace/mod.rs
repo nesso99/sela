@@ -1245,6 +1245,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::bench::mark_first_frame();
         // SSH-07 / SSH-18 dialogs are queued from async connect/test completions.
         self.show_host_key_mismatch_dialog_if_pending(window, cx);
         self.show_unknown_host_key_dialog_if_pending(window, cx);

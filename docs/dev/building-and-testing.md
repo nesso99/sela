@@ -37,6 +37,15 @@ same GPUI packages as the `test` job. Optional: `mesa-vulkan-drivers` / lavapipe
 if a test paints. Do not put secrets or connection URLs in assertions that print
 on failure.
 
+## NFR benchmarks (M4-2)
+
+```bash
+./scripts/bench-nfr.sh --out docs/benchmarks.md   # start, idle RSS, grid fps
+./scripts/bench-nfr.sh --check                     # offline self-test of the parsers
+```
+
+Needs `mutter`, `dbus-run-session` and `sqlite3` (or `BENCH_COMPOSITOR=session`). Results: [benchmarks.md](../benchmarks.md).
+
 ## Docker Compose databases
 
 ```bash

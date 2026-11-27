@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/bench-nfr.sh` measures cold start, idle memory and grid fps and writes `docs/benchmarks.md` (M4-2). An opt-in `SELA_BENCH_STARTUP=1` prints a first-frame timestamp on stderr.
+
 ### Fixed
 
 ## [0.8.0] - 2026-11-27
